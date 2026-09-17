@@ -1,0 +1,22 @@
+{
+  "operation": "chat",
+  "model": "chat-demo",
+  "messages": [
+    {
+      "role": "user",
+      "content": [{ "kind": "text", "text": "Summarize the fixture." }]
+    },
+    {
+      "role": "assistant",
+      "content": [{ "kind": "tool_call", "call": { "id": "call_fixture", "name": "lookup", "arguments": "{\"topic\":\"fixture\"}" } }]
+    },
+    {
+      "role": "tool",
+      "content": [{ "kind": "tool_result", "call_id": "call_fixture", "content": "fixture result" }]
+    }
+  ],
+  "tools": [{ "name": "lookup", "description": "Looks up fixture data.", "parameters": { "type": "object" } }],
+  "tool_choice": { "kind": "function", "name": "lookup" },
+  "stream": true,
+  "extensions": { "io.kanata.trace": { "sample": true } }
+}

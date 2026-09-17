@@ -1,0 +1,13 @@
+# Changelog
+
+## [0.1.0] - 2026-09-17
+
+### Added
+
+- Initial Rust package, binary entry point, and integration-test harness.
+- Provider-neutral inference requests, responses, normalized stream events, capabilities, trust zones, and stable error mappings.
+- Object-safe adapter contract with validated exact model and operation routing.
+- Canonical chat tool declarations, tool choices, calls, and results without tool execution.
+- Validated transcription files and bounded namespaced extensions.
+- Sanitized contract fixtures and provider-boundary architecture checks.
+- MVP contract and architecture documentation.

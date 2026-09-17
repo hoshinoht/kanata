@@ -1,0 +1,6 @@
+[
+  { "kind": "chat_started", "model": "chat-demo" },
+  { "kind": "chat_text_delta", "text": "Fixture " },
+  { "kind": "chat_text_delta", "text": "summary." },
+  { "kind": "chat_completed", "finish_reason": "stop", "usage": { "input_tokens": 12, "output_tokens": 3, "total_tokens": 15 } }
+]

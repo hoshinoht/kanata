@@ -1,0 +1,7 @@
+{
+  "operation": "transcription",
+  "model": "transcription-demo",
+  "file": { "file_name": "sample.wav", "media_type": "audio/wav", "bytes": [82, 73, 70, 70] },
+  "language": "en",
+  "extensions": { "io.kanata.audit": "fixture" }
+}
