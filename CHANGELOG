@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [1.0.0-beta.4] - 2026-09-24
+
+Capacity and resilience: distinct gateway busy codes, per-backend and per-key limits, a default-on circuit breaker, a request header timeout, and Codex scopes for any private key.
+
+### Added
+
+- `/v1/models` on the private listener shows each model's admission limits as `kanata.admission` (`max_in_flight`, `max_queue`, `queue_ms`, `adapter_max_in_flight`). The public listener doesn't show them.
+- Optional `adapters[].max_in_flight` caps all routes on one backend together; a request needs both a route slot and an adapter slot within `queue_ms`.
+- Optional per-key limits: `application_keys[].max_in_flight` (`429 gateway_key_busy`) and `rate_limit = { requests, per_ms }` (`429 gateway_key_rate_limited`). Requests refused by the key or route limits don't use up the rate limit.
+- A per-adapter circuit breaker, on by default: after 5 connection failures or unavailable responses in a row, that adapter answers `503 upstream_unavailable` with `Retry-After` for 30 s without calling the backend, then lets one probe through. Configure or disable it with `adapters[].circuit_breaker`. It adds no retries. The admin `/metrics` shows `kanata_circuit_breakers_open`.
+
+### Changed
+
+- Kanata's own admission refusals now have their own error codes and a `Retry-After` header: a full route queue returns `429 gateway_queue_full` (was `429 rate_limit_exceeded`), and a queue wait that runs out returns `503 gateway_busy` (was `504 upstream_timeout`). Upstream 429s and timeouts keep their existing codes. Metrics still record the `queue` timeout phase. `Retry-After` is slightly randomized so refused clients don't retry in step.
+- Any key, not just the owner, may now hold Codex scopes on the private listener. Codex still can't be public, and the public plane now leaves out every key with Codex scopes, not only the owner key.
+
+### Security
+
+- Connections that don't send a complete request head within 10 s, including idle keep-alive connections, are now closed. Previously hyper's header timeout was inactive because no timer was set, so a slow client could hold a connection slot indefinitely.
+
 ## [1.0.0-beta.3] - 2026-09-24
 
 Separate public and private processes: the public profile runs the public listener in its own container without Codex credentials or the owner key.
