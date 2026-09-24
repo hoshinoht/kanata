@@ -47,7 +47,7 @@
 | **vLLM** | Text chat, inline-audio chat, native ASR, and transcription through audio chat |
 | **OpenRouter** | Chat with sampling, structured output and reasoning |
 | **Apple Foundation Models** | Apple's on-device model through macOS 27's `fm serve`: chat, streaming, JSON-schema output and sampling. 8,192-token context, no tools. Expect loose formatting; guardrail refusals return `finish_reason: "content_filter"` |
-| **Codex** ⚠️ *experimental* | ChatGPT-subscription models via device-code sign-in (owner key only, private listener only), with effort aliases like `gpt-6-sol:high`. Uses an unofficial private backend that may change or break without notice |
+| **Codex** ⚠️ *experimental* | ChatGPT-subscription models via device-code sign-in (private listener only), with effort aliases like `gpt-6-sol:high`. Uses an unofficial private backend that may change or break without notice |
 
 ### 🎛️ Typed generation options
 - **Supported fields:** `response_format` (JSON object / JSON schema), `temperature`, `top_p`, `seed`, `max_tokens` / `max_completion_tokens` and `reasoning_effort`.
@@ -57,7 +57,7 @@
 
 ### 🔐 Keys and exposure
 - **`kanata key new`:** issues keys. The server stores only their digests.
-- **Owner key:** only one key may be the owner, and only it can use Codex. With the public profile, the owner key is never loaded by the public container, so use a separate key for public routes.
+- **Owner key:** only one key may be the owner. Any key may be given Codex scopes, but Codex is never served publicly, and with the public profile the public container never loads the owner key or any key with Codex scopes, so use a separate key for public routes.
 - **Public listener:** its allowlist is empty by default. Missing or invalid keys get 403 on **every** path, and it never serves Codex.
 
 ### 📈 Operations
@@ -169,7 +169,7 @@ Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you
 ## Security
 
 > [!IMPORTANT]
-> Keys are bearer credentials: whoever holds one gets its scopes. Only one key may be `owner = true`, and only it may hold Codex scopes.
+> Keys are bearer credentials: whoever holds one gets its scopes. Only one key may be `owner = true`. Any key may hold Codex scopes on the private listener; treat such keys like the owner key.
 
 > [!WARNING]
 > **Separate processes, shared host.** With the public profile, the public listener runs in its own `kanata-public` container (`kanata serve --plane public`) that loads only public routes, their adapters and public keys: no Codex adapter, credentials or volume. It still shares the host, the Docker daemon and backends such as Ollama, and Docker bridges alone don't isolate containers from each other. Running both listeners in one process (`--plane all`, the default outside Compose) puts the Codex credentials in the public process again.

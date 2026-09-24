@@ -74,6 +74,16 @@ impl ValidatedConfig {
                     ));
                 }
                 let public = config.publication.public_routes.clone();
+                let codex_selectors: Vec<RouteSelector> = config
+                    .routes
+                    .iter()
+                    .filter(|route| {
+                        config.adapters.iter().any(|adapter| {
+                            adapter.id == route.adapter_id && adapter.kind == ProviderKind::Codex
+                        })
+                    })
+                    .map(|route| route.identity.selector.clone())
+                    .collect();
                 // Container loopback only: the public process serves no private clients.
                 config.listeners.client.bind = IpAddr::V4(Ipv4Addr::LOCALHOST);
                 config
@@ -91,8 +101,14 @@ impl ValidatedConfig {
                 config.application_keys = config
                     .application_keys
                     .into_iter()
-                    // The owner key can reach Codex, so it never enters the public process.
-                    .filter(|key| !key.owner)
+                    // Keys that can reach Codex never enter the public process.
+                    .filter(|key| {
+                        !key.owner
+                            && key
+                                .permissions
+                                .iter()
+                                .all(|selector| !codex_selectors.contains(selector))
+                    })
                     .filter_map(|mut key| {
                         key.permissions.retain(|selector| public.contains(selector));
                         (!key.permissions.is_empty()).then_some(key)
@@ -1133,7 +1149,7 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
         &routes,
         &adapters,
     )?;
-    let application_keys = validate_application_keys(raw.application_keys, &routes, &adapters)?;
+    let application_keys = validate_application_keys(raw.application_keys, &routes)?;
     Ok(ValidatedConfig {
         listeners,
         publication,
@@ -1448,7 +1464,6 @@ fn validate_provider_zone(adapter: &RawAdapter, path: &str) -> Result<(), Config
 fn validate_application_keys(
     keys: Vec<RawApplicationKey>,
     routes: &[ValidatedRoute],
-    adapters: &[ValidatedAdapter],
 ) -> Result<Vec<ValidatedApplicationKey>, ConfigError> {
     let mut ids = BTreeSet::new();
     let mut digests = BTreeSet::new();
@@ -1488,23 +1503,13 @@ fn validate_application_keys(
                     "duplicate",
                 ));
             }
-            let Some(route) = routes.iter().find(|route| {
+            if !routes.iter().any(|route| {
                 route.identity.selector.model_alias.0 == permission.model_alias
                     && route.identity.selector.operation == permission.operation
-            }) else {
+            }) {
                 return Err(ConfigError::new(
                     format!("{path}.permissions[{permission_index}]"),
                     "unknown_route_selector",
-                ));
-            };
-            if !key.owner
-                && adapters.iter().any(|adapter| {
-                    adapter.id == route.adapter_id && adapter.kind == ProviderKind::Codex
-                })
-            {
-                return Err(ConfigError::new(
-                    format!("{path}.permissions[{permission_index}]"),
-                    "codex_owner_only",
                 ));
             }
         }

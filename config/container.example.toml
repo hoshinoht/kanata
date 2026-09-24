@@ -109,7 +109,7 @@ codex_reasoning_effort = "high"
 requires_streaming_chat = true
 requires_function_tools = true
 
-# The only key allowed Codex scopes. Stored as a digest; no key file is mounted.
+# Owner key. Stored as a digest; no key file is mounted.
 [[application_keys]]
 id = "owner"
 # Placeholder digest; `scripts/kanata.sh owner-key rotate` writes the real one.
