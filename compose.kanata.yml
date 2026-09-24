@@ -1,0 +1,59 @@
+services:
+  kanata:
+    image: kanata:test
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["serve", "--config", "/etc/kanata/config.toml"]
+    user: "10001:10001"
+    init: false
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    cpus: 1.0
+    mem_limit: 1g
+    stop_grace_period: 35s
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:mode=1777,size=16m
+    # No host ports: a reverse proxy reaches the client listener over private_ingress.
+    # Client keys are sha256 digests in the config; no key file is mounted.
+    volumes:
+      - type: bind
+        source: "${KANATA_CONFIG_FILE:?Set KANATA_CONFIG_FILE to an operator-managed config file}"
+        target: /etc/kanata/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: volume
+        source: codex_state
+        target: /var/lib/kanata/codex
+        volume:
+          nocopy: false
+    networks:
+      private_ingress:
+        ipv4_address: 172.30.0.2
+      backend_egress:
+        ipv4_address: 172.31.0.2
+
+volumes:
+  codex_state:
+
+networks:
+  private_ingress:
+    # Fixed name so the edge project can attach as an external network.
+    name: kanata_private_ingress
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  backend_egress:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24

@@ -1,0 +1,7 @@
+# Only compiler inputs enter the build context; operator files and fixtures stay out.
+**
+!Cargo.toml
+!Cargo.lock
+!src
+!src/**
+**/.DS_Store
