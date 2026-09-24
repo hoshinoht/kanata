@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Contributor guidance for coding agents: `AGENTS.md` at the root (repository map, CI commands, conventions) and in `src/`, `src/api/`, `src/adapter/` and `tests/` (module layout, layering rules, handler, adapter and test conventions).
+
 ## [1.0.0-beta.4] - 2026-09-24
 
 Capacity and resilience: distinct gateway busy codes, per-backend and per-key limits, a default-on circuit breaker, a request header timeout, and Codex scopes for any private key.
