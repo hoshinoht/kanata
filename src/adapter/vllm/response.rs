@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, de::IgnoredAny};
 
 use crate::core::{
     ChatContent, ChatMessage, ChatResponse, ChatRole, ErrorKind, FinishReason, GatewayError,
@@ -18,6 +18,21 @@ struct CompletionPayload {
     usage: Option<UsagePayload>,
     #[serde(default)]
     system_fingerprint: Option<String>,
+    // Recent vLLM metadata; accepted and not forwarded.
+    #[serde(default, rename = "service_tier")]
+    _service_tier: Option<IgnoredAny>,
+    #[serde(default, rename = "prompt_logprobs")]
+    _prompt_logprobs: Option<IgnoredAny>,
+    #[serde(default, rename = "prompt_token_ids")]
+    _prompt_token_ids: Option<IgnoredAny>,
+    #[serde(default, rename = "prompt_text")]
+    _prompt_text: Option<IgnoredAny>,
+    #[serde(default, rename = "kv_transfer_params")]
+    _kv_transfer_params: Option<IgnoredAny>,
+    #[serde(default, rename = "ec_transfer_params")]
+    _ec_transfer_params: Option<IgnoredAny>,
+    #[serde(default, rename = "metrics")]
+    _metrics: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -26,6 +41,14 @@ struct ChoicePayload {
     index: u64,
     message: MessagePayload,
     finish_reason: String,
+    #[serde(default, rename = "logprobs")]
+    _logprobs: Option<IgnoredAny>,
+    #[serde(default, rename = "stop_reason")]
+    _stop_reason: Option<IgnoredAny>,
+    #[serde(default, rename = "token_ids")]
+    _token_ids: Option<IgnoredAny>,
+    #[serde(default, rename = "routed_experts")]
+    _routed_experts: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -38,6 +61,15 @@ struct MessagePayload {
     _reasoning: Option<String>,
     #[serde(default, rename = "reasoning_content")]
     _reasoning_content: Option<String>,
+    // A refusal or audio without text content still fails as an empty reply.
+    #[serde(default, rename = "refusal")]
+    _refusal: Option<IgnoredAny>,
+    #[serde(default, rename = "annotations")]
+    _annotations: Option<IgnoredAny>,
+    #[serde(default, rename = "audio")]
+    _audio: Option<IgnoredAny>,
+    #[serde(default, rename = "function_call")]
+    _function_call: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -46,6 +78,10 @@ struct UsagePayload {
     prompt_tokens: u64,
     completion_tokens: u64,
     total_tokens: u64,
+    #[serde(default, rename = "prompt_tokens_details")]
+    _prompt_tokens_details: Option<IgnoredAny>,
+    #[serde(default, rename = "completion_tokens_details")]
+    _completion_tokens_details: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -61,6 +97,21 @@ struct TranscriptionCompletionPayload {
     usage: Option<UsagePayload>,
     #[serde(default)]
     system_fingerprint: Option<String>,
+    // Recent vLLM metadata; accepted and not forwarded.
+    #[serde(default, rename = "service_tier")]
+    _service_tier: Option<IgnoredAny>,
+    #[serde(default, rename = "prompt_logprobs")]
+    _prompt_logprobs: Option<IgnoredAny>,
+    #[serde(default, rename = "prompt_token_ids")]
+    _prompt_token_ids: Option<IgnoredAny>,
+    #[serde(default, rename = "prompt_text")]
+    _prompt_text: Option<IgnoredAny>,
+    #[serde(default, rename = "kv_transfer_params")]
+    _kv_transfer_params: Option<IgnoredAny>,
+    #[serde(default, rename = "ec_transfer_params")]
+    _ec_transfer_params: Option<IgnoredAny>,
+    #[serde(default, rename = "metrics")]
+    _metrics: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -69,6 +120,14 @@ struct TranscriptionChoicePayload {
     index: u64,
     message: TranscriptionMessagePayload,
     finish_reason: String,
+    #[serde(default, rename = "logprobs")]
+    _logprobs: Option<IgnoredAny>,
+    #[serde(default, rename = "stop_reason")]
+    _stop_reason: Option<IgnoredAny>,
+    #[serde(default, rename = "token_ids")]
+    _token_ids: Option<IgnoredAny>,
+    #[serde(default, rename = "routed_experts")]
+    _routed_experts: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -81,12 +140,23 @@ struct TranscriptionMessagePayload {
     _reasoning: Option<String>,
     #[serde(default, rename = "reasoning_content")]
     _reasoning_content: Option<String>,
+    // A refusal or audio without text content still fails as an empty reply.
+    #[serde(default, rename = "refusal")]
+    _refusal: Option<IgnoredAny>,
+    #[serde(default, rename = "annotations")]
+    _annotations: Option<IgnoredAny>,
+    #[serde(default, rename = "audio")]
+    _audio: Option<IgnoredAny>,
+    #[serde(default, rename = "function_call")]
+    _function_call: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativeTranscriptionPayload {
     text: String,
+    #[serde(default, rename = "usage")]
+    _usage: Option<IgnoredAny>,
 }
 
 pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatResponse, GatewayError> {
@@ -212,5 +282,29 @@ fn parse_finish_reason(value: &str) -> Result<FinishReason, GatewayError> {
 fn upstream_failure() -> GatewayError {
     GatewayError {
         kind: ErrorKind::UpstreamFailure,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::core::{ChatContent, ModelAlias};
+
+    const CHAT: &str = include_str!("../../../tests/fixtures/vllm/chat-vllm-0.30-response.json");
+    const NATIVE: &str =
+        include_str!("../../../tests/fixtures/vllm/native-asr-vllm-0.30-response.json");
+
+    #[test]
+    fn vllm_0_30_metadata_fields_are_accepted() {
+        let chat = super::decode(CHAT.as_bytes(), ModelAlias("omni".into())).expect("chat");
+        assert_eq!(
+            chat.message.content,
+            vec![ChatContent::Text {
+                text: "fixture audio transcript".into()
+            }]
+        );
+        let bridged = super::decode_transcription(CHAT.as_bytes()).expect("bridge");
+        assert_eq!(bridged.text, "fixture audio transcript");
+        let native = super::decode_native_transcription(NATIVE.as_bytes()).expect("native");
+        assert_eq!(native.text, "fixture native transcript");
     }
 }
