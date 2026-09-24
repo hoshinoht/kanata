@@ -113,18 +113,12 @@ codex_reasoning_effort = "high"
 requires_streaming_chat = true
 requires_function_tools = true
 
-# Owner key. Stored as a digest; no key file is mounted.
-[[application_keys]]
-id = "owner"
-# Placeholder digest; `scripts/kanata.sh owner-key rotate` writes the real one.
-secret_ref = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-owner = true
-permissions = [
-  { model_alias = "qwen3-0.6b", operation = "chat" },
-  { model_alias = "gpt-6-sol", operation = "chat" },
-  { model_alias = "gpt-6-sol:low", operation = "chat" },
-  { model_alias = "gpt-6-sol:high", operation = "chat" },
-]
+# Application keys live in a machine-managed file (paths are relative to this
+# file). Create the owner key with the host CLI:
+# `kanata key new --config <this file> --owner --id owner --chat <alias>... --expires <days>`
+[keys]
+file = "keys/keys.toml"
+usage_dir = "state"
 
 # Container logs (docker compose logs kanata). level: trace|debug|info|warn|error;
 # format: text|json. debug adds sanitized provider error messages.

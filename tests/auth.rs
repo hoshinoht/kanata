@@ -72,17 +72,42 @@ fn config() -> config::ValidatedConfig {
     config::load("tests/fixtures/config/example.toml").expect("example config validates")
 }
 
-fn personal_public_config(public_routes: &str) -> config::ValidatedConfig {
-    let contents = fs::read_to_string("config/personal.example.toml")
-        .expect("personal example reads")
-        .replace(
-            "[listeners.admin]",
-            "[listeners.public]\nbind = \"172.30.0.3\"\nport = 8081\n\n[listeners.admin]",
-        )
-        .replace(
-            "tailnet_addresses = [\"100.64.0.10\"]",
-            &format!("tailnet_addresses = [\"100.64.0.10\"]\npublic_routes = {public_routes}"),
-        );
+/// The personal template's former inline keys, kept here now that the template uses `[keys]`.
+const PERSONAL_INLINE_KEYS: &str = r#"[[application_keys]]
+id = "personal-client"
+secret_ref = "env:KANATA_CLIENT_KEY"
+owner = true
+permissions = [
+  { model_alias = "local-chat", operation = "chat" },
+  { model_alias = "ollama-cloud", operation = "chat" },
+  { model_alias = "private-chat-a", operation = "chat" },
+  { model_alias = "private-chat-b", operation = "chat" },
+  { model_alias = "private-audio-chat", operation = "chat" },
+  { model_alias = "private-audio-transcribe", operation = "transcription" },
+  { model_alias = "private-native-asr", operation = "transcription" },
+  { model_alias = "codex-chat", operation = "chat" },
+  { model_alias = "gpt-6-sol", operation = "chat" },
+  { model_alias = "gpt-6-luna:low", operation = "chat" },
+]
+
+[[application_keys]]
+id = "external-client"
+secret_ref = "env:KANATA_EXTERNAL_CLIENT_KEY"
+permissions = [
+  { model_alias = "private-chat-a", operation = "chat" },
+]
+"#;
+
+fn personal_inline_config(edit: impl FnOnce(String) -> String) -> config::ValidatedConfig {
+    let template =
+        fs::read_to_string("config/personal.example.toml").expect("personal example reads");
+    let keys_start = template.find("[keys]\n").expect("template keys table");
+    let keys_end = keys_start + template[keys_start..].find("\n\n").expect("keys table end");
+    let contents = edit(format!(
+        "{}{PERSONAL_INLINE_KEYS}{}",
+        &template[..keys_start],
+        &template[keys_end + 1..]
+    ));
     let path = std::env::temp_dir().join(format!(
         "kanata-auth-public-{}-{}.toml",
         std::process::id(),
@@ -91,7 +116,21 @@ fn personal_public_config(public_routes: &str) -> config::ValidatedConfig {
     fs::write(&path, contents).expect("fixture writes");
     let result = config::load(&path);
     fs::remove_file(path).expect("fixture removes");
-    result.expect("public personal config validates")
+    result.expect("personal config validates")
+}
+
+fn personal_public_config(public_routes: &str) -> config::ValidatedConfig {
+    personal_inline_config(|contents| {
+        contents
+            .replace(
+                "[listeners.admin]",
+                "[listeners.public]\nbind = \"172.30.0.3\"\nport = 8081\n\n[listeners.admin]",
+            )
+            .replace(
+                "tailnet_addresses = [\"100.64.0.10\"]",
+                &format!("tailnet_addresses = [\"100.64.0.10\"]\npublic_routes = {public_routes}"),
+            )
+    })
 }
 
 fn file_key_config(secret_path: &std::path::Path) -> config::ValidatedConfig {
@@ -370,7 +409,7 @@ fn production_file_keys_normalize_one_terminal_newline_and_stay_bounded() {
 async fn personal_codex_keys_filter_models_and_block_forbidden_dispatch() {
     const OWNER_KEY: &str = "OWNER_SYNTHETIC_KEY_001";
     const EXTERNAL_KEY: &str = "EXTERNAL_SYNTHETIC_KEY_001";
-    let config = config::load("config/personal.example.toml").expect("personal config validates");
+    let config = personal_inline_config(|contents| contents);
     let auth = ApplicationAuth::from_validated(&config, &DistinctScopeResolver)
         .expect("distinct scoped keys build");
     let owner = auth

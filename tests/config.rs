@@ -1,5 +1,6 @@
 use std::fs;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
@@ -12,16 +13,124 @@ fn personal_example() -> String {
     fs::read_to_string("config/personal.example.toml").expect("personal example exists")
 }
 
+/// A unique directory holding `config.toml` and optionally `keys/keys.toml`, so
+/// relative `[keys]` paths never resolve to shared or live files.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(config: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "kanata-config-{}-{}",
+            std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&dir).expect("scratch dir");
+        fs::write(dir.join("config.toml"), config).expect("config writes");
+        Self(dir)
+    }
+
+    fn with_keys(config: &str, keys: &str) -> Self {
+        let scratch = Self::new(config);
+        scratch.write_keys(keys.as_bytes());
+        scratch
+    }
+
+    fn config(&self) -> PathBuf {
+        self.0.join("config.toml")
+    }
+
+    fn keys(&self) -> PathBuf {
+        self.0.join("keys").join("keys.toml")
+    }
+
+    fn write_keys(&self, contents: &[u8]) {
+        fs::create_dir_all(self.0.join("keys")).expect("keys dir");
+        fs::write(self.keys(), contents).expect("keys writes");
+        set_mode(&self.keys(), 0o600);
+    }
+
+    fn load(&self) -> Result<kanata::config::ValidatedConfig, String> {
+        kanata::config::load(self.config()).map_err(|error| error.to_string())
+    }
+
+    fn run_check(&self) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_kanata"))
+            .arg("check")
+            .arg("--config")
+            .arg(self.config())
+            .output()
+            .expect("binary runs")
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("chmod");
+}
+
 fn check(contents: String) -> Result<kanata::config::ValidatedConfig, String> {
-    let path = std::env::temp_dir().join(format!(
-        "kanata-config-{}-{}.toml",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture writes");
-    let result = kanata::config::load(&path).map_err(|error| error.to_string());
-    fs::remove_file(path).expect("fixture removes");
-    result
+    Scratch::new(&contents).load()
+}
+
+fn template(name: &str) -> String {
+    fs::read_to_string(format!("config/{name}")).expect("template exists")
+}
+
+const MISSING_KEYS_WARNING: &str = "not found; no application keys are loaded";
+
+/// Stderr of a template `check`: exactly the missing-keys-file warning.
+fn assert_only_missing_keys_warning(output: &Output) {
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"configuration valid\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.starts_with("warning: keys file "), "{stderr}");
+    assert!(stderr.contains(MISSING_KEYS_WARNING), "{stderr}");
+}
+
+const EXAMPLE_INLINE_KEY: &str = "[[application_keys]]
+id = \"personal-client\"
+secret_ref = \"env:KANATA_CLIENT_KEY\"
+owner = true
+permissions = [
+  { model_alias = \"local-chat\", operation = \"chat\" },
+  { model_alias = \"private-chat\", operation = \"chat\" },
+  { model_alias = \"private-transcribe\", operation = \"transcription\" },
+  { model_alias = \"remote-chat\", operation = \"chat\" },
+  { model_alias = \"codex-chat\", operation = \"chat\" },
+]
+";
+
+/// The schema fixture with its inline key replaced by `[keys]`.
+fn keyed_example() -> String {
+    let contents = example().replace(
+        EXAMPLE_INLINE_KEY,
+        "[keys]\nfile = \"keys/keys.toml\"\nusage_dir = \"state\"\n",
+    );
+    assert!(contents.contains("[keys]"));
+    contents
+}
+
+fn digest(byte: u8) -> String {
+    format!("sha256:{}", format!("{byte:02x}").repeat(32))
+}
+
+/// One `[[keys]]` record; `body` holds permissions and optional fields.
+fn record(id: &str, digest_byte: u8, body: &str) -> String {
+    format!(
+        "[[keys]]\nid = \"{id}\"\ndigest = \"{}\"\ncreated_at = \"2026-01-01T00:00:00Z\"\n{body}\n",
+        digest(digest_byte)
+    )
+}
+
+fn keys_file(records: &[String]) -> String {
+    format!("version = 1\n\n{}", records.join("\n"))
 }
 
 #[test]
@@ -35,19 +144,19 @@ fn example_passes_offline_cli_check_without_resolving_secrets() {
         String::from_utf8(output.stdout).expect("utf8"),
         "configuration valid\n"
     );
-    assert!(output.stderr.is_empty());
+    // Inline keys still load; the only diagnostic is the deprecation notice.
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("utf8"),
+        "warning: inline [[application_keys]] are deprecated; move them to a keys file with `kanata key migrate`\n"
+    );
 }
 
 #[test]
 fn personal_template_keeps_multiple_vllm_endpoints_constructible_offline() {
-    let output = Command::new(env!("CARGO_BIN_EXE_kanata"))
-        .args(["check", "--config", "config/personal.example.toml"])
-        .output()
-        .expect("binary runs");
-    assert!(output.status.success());
-    let config = kanata::config::load("config/personal.example.toml").expect("template validates");
-    assert!(config.application_keys()[0].is_owner());
-    assert!(!config.application_keys()[1].is_owner());
+    let scratch = Scratch::new(&personal_example());
+    assert_only_missing_keys_warning(&scratch.run_check());
+    let config = scratch.load().expect("template validates");
+    assert!(config.application_keys().is_empty());
     for adapter in config
         .adapters()
         .iter()
@@ -85,41 +194,50 @@ fn personal_template_keeps_multiple_vllm_endpoints_constructible_offline() {
 }
 
 #[test]
-fn codex_scopes_allow_any_key_with_one_owner() {
+fn codex_scopes_allow_any_key_with_one_active_owner() {
     let personal = personal_example();
-    let renamed_owner =
-        check(personal.replace("id = \"personal-client\"", "id = \"renamed-owner\""))
-            .expect("owner status is selected by its flag, not key ID");
-    assert!(renamed_owner.application_keys()[0].is_owner());
-
-    let non_owner_codex = personal.replace(
-        "id = \"external-client\"\nsecret_ref = \"env:KANATA_EXTERNAL_CLIENT_KEY\"\npermissions = [\n  { model_alias = \"private-chat-a\", operation = \"chat\" },\n]",
-        "id = \"external-client\"\nsecret_ref = \"file:/run/secrets/EXTERNAL_SECRET_MARKER\"\npermissions = [\n  { model_alias = \"gpt-6-luna:low\", operation = \"chat\" },\n]",
+    let owner = record(
+        "renamed-owner",
+        1,
+        "owner = true\npermissions = [{ model_alias = \"local-chat\", operation = \"chat\" }]",
     );
-    assert_ne!(non_owner_codex, personal);
-    check(non_owner_codex).expect("non-owner keys may hold Codex scopes");
+    let external = |owner_flag: &str, revoked: &str| {
+        record(
+            "external-client",
+            2,
+            &format!(
+                "{owner_flag}{revoked}permissions = [{{ model_alias = \"gpt-6-luna:low\", operation = \"chat\" }}]"
+            ),
+        )
+    };
+    let config = Scratch::with_keys(&personal, &keys_file(&[owner.clone(), external("", "")]))
+        .load()
+        .expect("non-owner keys may hold Codex scopes");
+    assert!(config.application_keys()[0].is_owner());
+    assert!(!config.application_keys()[1].is_owner());
 
-    let duplicate_owners = personal.replace(
-        "id = \"external-client\"\n",
-        "id = \"external-client\"\nowner = true\n",
-    );
-    let error = check(duplicate_owners).unwrap_err();
+    let duplicate_owners = keys_file(&[owner.clone(), external("owner = true\n", "")]);
     assert_eq!(
-        error,
-        "config error at application_keys[1].owner: multiple_owners"
+        Scratch::with_keys(&personal, &duplicate_owners)
+            .load()
+            .unwrap_err(),
+        "config error at keys_file.keys[1].owner: multiple_owners"
     );
+    let revoked_owner = keys_file(&[
+        owner,
+        external("owner = true\n", "revoked_at = \"2026-02-01T00:00:00Z\"\n"),
+    ]);
+    Scratch::with_keys(&personal, &revoked_owner)
+        .load()
+        .expect("a revoked owner does not count toward the single owner");
 }
 
 #[test]
 fn container_template_uses_explicit_file_store_without_runtime_io() {
-    let output = Command::new(env!("CARGO_BIN_EXE_kanata"))
-        .args(["check", "--config", "config/container.example.toml"])
-        .output()
-        .expect("binary runs");
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
+    let scratch = Scratch::new(&template("container.example.toml"));
+    assert_only_missing_keys_warning(&scratch.run_check());
 
-    let config = kanata::config::load("config/container.example.toml").expect("template validates");
+    let config = scratch.load().expect("template validates");
     let auth = config.codex_auth().expect("Codex auth config");
     assert_eq!(auth.store(), kanata::config::CodexAuthStore::File);
     assert_eq!(
@@ -835,16 +953,10 @@ fn public_and_private_ingress_require_distinct_addresses() {
 
 #[test]
 fn public_container_template_is_offline_only_and_keeps_private_tailnet_input() {
-    let output = Command::new(env!("CARGO_BIN_EXE_kanata"))
-        .args(["check", "--config", "config/container.public.example.toml"])
-        .output()
-        .expect("binary runs");
-    assert!(output.status.success());
-    assert_eq!(output.stdout, b"configuration valid\n");
-    assert!(output.stderr.is_empty());
+    let scratch = Scratch::new(&template("container.public.example.toml"));
+    assert_only_missing_keys_warning(&scratch.run_check());
 
-    let config = kanata::config::load("config/container.public.example.toml")
-        .expect("public example validates");
+    let config = scratch.load().expect("public example validates");
     assert_eq!(config.listeners().client().bind().to_string(), "172.30.0.2");
     assert_eq!(
         config
@@ -861,12 +973,7 @@ fn public_container_template_is_offline_only_and_keeps_private_tailnet_input() {
         config.codex_auth().expect("Codex auth").store(),
         kanata::config::CodexAuthStore::File
     );
-    assert!(
-        config
-            .application_keys()
-            .iter()
-            .all(|key| { key.secret_ref().sha256_digest().is_some() })
-    );
+    assert!(config.application_keys().is_empty());
 }
 
 #[test]
@@ -1190,28 +1297,34 @@ fn apple_fm_adapters_are_local_chat_without_tools() {
 fn planes_split_listeners_routes_keys_and_codex() {
     use kanata::config::{Plane, ProviderKind};
 
-    let template = fs::read_to_string("config/container.public.example.toml").expect("template");
-    let extra_keys = r#"
-[[application_keys]]
-id = "tester"
-secret_ref = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-permissions = [{ model_alias = "qwen3-0.6b", operation = "chat" }]
-
-[[application_keys]]
-id = "private-codex"
-secret_ref = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-permissions = [
-  { model_alias = "qwen3-0.6b", operation = "chat" },
-  { model_alias = "gpt-6-sol", operation = "chat" },
-]
-"#;
-    let config = check(
-        template.replace(
+    let public_template = template("container.public.example.toml");
+    let keys = keys_file(&[
+        record(
+            "owner",
+            1,
+            "owner = true\npermissions = [{ model_alias = \"qwen3-0.6b\", operation = \"chat\" }]",
+        ),
+        record(
+            "tester",
+            2,
+            "permissions = [{ model_alias = \"qwen3-0.6b\", operation = \"chat\" }]",
+        ),
+        record(
+            "private-codex",
+            3,
+            "permissions = [\n  { model_alias = \"qwen3-0.6b\", operation = \"chat\" },\n  { model_alias = \"gpt-6-sol\", operation = \"chat\" },\n]",
+        ),
+    ]);
+    let config = Scratch::with_keys(
+        &public_template.replace(
             "public_routes = []",
             "public_routes = [{ model_alias = \"qwen3-0.6b\", operation = \"chat\" }]",
-        ) + extra_keys,
+        ),
+        &keys,
     )
+    .load()
     .expect("public template with a route");
+    assert_eq!(config.application_keys().len(), 3);
 
     let private = config.for_plane(Plane::Private).expect("private plane");
     assert!(private.listeners().public().is_none());
@@ -1251,16 +1364,16 @@ permissions = [
     }));
 
     // With nothing public, no key (owner or not) reaches the public process.
-    let nothing_public = check(template.clone() + extra_keys).expect("empty allowlist");
+    let nothing_public = Scratch::with_keys(&public_template, &keys)
+        .load()
+        .expect("empty allowlist");
     let nothing_public = nothing_public
         .for_plane(Plane::Public)
         .expect("public plane");
     assert!(nothing_public.application_keys().is_empty());
     assert!(nothing_public.routes().is_empty() && nothing_public.adapters().is_empty());
 
-    let without_listener =
-        check(fs::read_to_string("config/container.example.toml").expect("template"))
-            .expect("private template");
+    let without_listener = check(template("container.example.toml")).expect("private template");
     assert_eq!(
         without_listener
             .for_plane(Plane::Public)
@@ -1327,4 +1440,222 @@ fn optional_capacity_limits_validate_bounds() {
             format!("config error at {error}")
         );
     }
+}
+
+#[test]
+fn keys_file_loads_active_records_and_skips_revoked_ones() {
+    use kanata::config::KeySource;
+    use kanata::core::Operation;
+    use kanata::keys::time;
+
+    let keys = keys_file(&[
+        record(
+            "alice",
+            1,
+            "owner = true\nmax_in_flight = 2\nrate_limit = { requests = 4, per_ms = 60000 }\nexpires_at = \"2027-01-01T00:00:00Z\"\npermissions = [\n  { model_alias = \"local-chat\", operation = \"chat\" },\n  { model_alias = \"private-transcribe\", operation = \"transcription\" },\n]",
+        ),
+        record(
+            "bob",
+            2,
+            "permissions = [{ model_alias = \"private-chat\", operation = \"chat\" }]",
+        ),
+        // Revoked records keep syntax checks but not route checks.
+        record(
+            "gone",
+            3,
+            "revoked_at = \"2026-02-01T00:00:00Z\"\npermissions = [{ model_alias = \"removed-route\", operation = \"chat\" }]",
+        ),
+    ]);
+    let scratch = Scratch::with_keys(&keyed_example(), &keys);
+    let config = scratch.load().expect("keys file loads");
+
+    let ids: Vec<_> = config
+        .application_keys()
+        .iter()
+        .map(|key| key.id())
+        .collect();
+    assert_eq!(ids, ["alice", "bob"]);
+    let alice = &config.application_keys()[0];
+    assert!(alice.is_owner());
+    assert_eq!(alice.secret_ref().sha256_digest(), Some(&[1; 32]));
+    assert_eq!(alice.max_in_flight(), Some(2));
+    let rate_limit = alice.rate_limit().expect("rate limit");
+    assert_eq!((rate_limit.requests, rate_limit.per_ms), (4, 60_000));
+    assert_eq!(alice.expires_at(), time::parse("2027-01-01T00:00:00Z"));
+    assert_eq!(alice.permissions()[1].model_alias.0, "private-transcribe");
+    assert_eq!(alice.permissions()[1].operation, Operation::Transcription);
+    let bob = &config.application_keys()[1];
+    assert!(!bob.is_owner() && bob.expires_at().is_none() && bob.rate_limit().is_none());
+    let KeySource::File {
+        path,
+        usage_dir,
+        missing,
+        sha256,
+    } = config.key_source()
+    else {
+        panic!("file key source");
+    };
+    assert_eq!(path, &scratch.keys());
+    assert_eq!(
+        usage_dir.as_deref(),
+        Some(scratch.0.join("state").as_path())
+    );
+    assert!(!missing && sha256.is_some());
+
+    // The rendered form reparses to the same records, revoked included.
+    let bytes = fs::read(scratch.keys()).expect("keys read");
+    let file = kanata::keys::file::parse(&bytes, config.routes()).expect("parse");
+    assert_eq!(file.records().len(), 3);
+    let reparsed = file
+        .validated(config.routes())
+        .expect("rendered file validates");
+    assert_eq!(reparsed.records(), file.records());
+    let reloaded = config.with_application_keys(&reparsed).expect("reload");
+    assert_eq!(reloaded.application_keys().len(), 2);
+}
+
+#[test]
+fn keys_file_hardening_rules_report_path_and_class_only() {
+    let active = |id: &str, byte: u8, extra: &str| {
+        record(
+            id,
+            byte,
+            &format!(
+                "{extra}permissions = [{{ model_alias = \"local-chat\", operation = \"chat\" }}]"
+            ),
+        )
+    };
+    let revoked = "revoked_at = \"2026-02-01T00:00:00Z\"\n";
+    let cases: Vec<(String, &str)> = vec![
+        ("version = 1\n[[keys]\n".into(), "keys_file: parse_error"),
+        (active("a", 1, ""), "keys_file.version: required"),
+        (
+            keys_file(&[active("a", 1, "")]).replace("version = 1", "version = 2"),
+            "keys_file.version: unsupported_version",
+        ),
+        (
+            keys_file(&[active("a", 1, "LEAKED_MARKER = \"x\"\n")]),
+            "keys_file.keys[0]: unknown_field",
+        ),
+        (
+            keys_file(&[active("a", 1, "")]).replace(&digest(1), &digest(0xab).to_uppercase()),
+            "keys_file.keys[0].digest: invalid_digest",
+        ),
+        (
+            keys_file(&[active("a", 1, ""), active("b", 1, revoked)]),
+            "keys_file.keys[1].digest: duplicate_secret",
+        ),
+        (
+            keys_file(&[active("a", 1, revoked), active("a", 2, "")]),
+            "keys_file.keys[1].id: invalid_or_duplicate_id",
+        ),
+        (
+            keys_file(&[active("a", 1, "")]).replace("00:00:00Z", "00:00:00+00:00"),
+            "keys_file.keys[0].created_at: invalid_timestamp",
+        ),
+        (
+            keys_file(&[active("a", 1, "expires_at = \"2026-02-30T00:00:00Z\"\n")]),
+            "keys_file.keys[0].expires_at: invalid_timestamp",
+        ),
+        (
+            keys_file(&[active("a", 1, "")]).replace("local-chat", "missing-route"),
+            "keys_file.keys[0].permissions[0]: unknown_route_selector",
+        ),
+        (
+            keys_file(
+                &(0..=1000)
+                    .map(|index| active(&format!("k{index}"), 1, ""))
+                    .collect::<Vec<_>>(),
+            ),
+            "keys_file.keys: too_many",
+        ),
+        (
+            format!(
+                "{}\n#{}\n",
+                keys_file(&[active("a", 1, "")]),
+                "x".repeat(1024 * 1024)
+            ),
+            "keys.file: too_large",
+        ),
+    ];
+    for (contents, expected) in cases {
+        let error = Scratch::with_keys(&keyed_example(), &contents)
+            .load()
+            .err()
+            .unwrap_or_else(|| panic!("{expected} is rejected"));
+        assert_eq!(error, format!("config error at {expected}"));
+        assert!(!error.contains("sha256") && !error.contains("LEAKED_MARKER"));
+    }
+
+    for mode in [0o620, 0o602] {
+        let scratch = Scratch::with_keys(&keyed_example(), &keys_file(&[active("a", 1, "")]));
+        set_mode(&scratch.keys(), mode);
+        assert_eq!(
+            scratch.load().unwrap_err(),
+            "config error at keys.file: insecure_permissions"
+        );
+    }
+}
+
+#[test]
+fn key_sources_missing_unreadable_and_conflicting() {
+    let missing = Scratch::new(&keyed_example());
+    let config = missing.load().expect("missing keys file loads empty");
+    assert!(config.application_keys().is_empty());
+    let warnings = config.key_warnings(0);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains(MISSING_KEYS_WARNING));
+
+    let unreadable = Scratch::with_keys(&keyed_example(), "version = 1\n");
+    set_mode(&unreadable.keys(), 0o000);
+    // Root ignores file modes; the check only applies to unprivileged runs.
+    if fs::read(unreadable.keys()).is_err() {
+        assert_eq!(
+            unreadable.load().unwrap_err(),
+            "config error at keys.file: read_error"
+        );
+    }
+
+    let conflicting = format!("{}\n{EXAMPLE_INLINE_KEY}", keyed_example());
+    assert_eq!(
+        check(conflicting).unwrap_err(),
+        "config error at keys: conflicting_key_sources"
+    );
+}
+
+#[test]
+fn key_warnings_name_expired_and_soon_expiring_keys_only() {
+    use kanata::keys::time;
+
+    let now = time::parse("2026-09-25T00:00:00Z").expect("now");
+    let permissions = "permissions = [{ model_alias = \"local-chat\", operation = \"chat\" }]";
+    let keys = keys_file(&[
+        record(
+            "expired",
+            1,
+            &format!("expires_at = \"2026-09-01T00:00:00Z\"\n{permissions}"),
+        ),
+        record(
+            "soon",
+            2,
+            &format!("expires_at = \"2026-10-02T00:00:00Z\"\n{permissions}"),
+        ),
+        record(
+            "later",
+            3,
+            &format!("expires_at = \"2026-10-02T00:00:01Z\"\n{permissions}"),
+        ),
+        record("forever", 4, permissions),
+    ]);
+    let config = Scratch::with_keys(&keyed_example(), &keys)
+        .load()
+        .expect("keys load");
+    assert!(config.application_keys()[0].is_expired(now));
+    assert_eq!(
+        config.key_warnings(now),
+        [
+            "key expired expired at 2026-09-01T00:00:00Z",
+            "key soon expires at 2026-10-02T00:00:00Z",
+        ]
+    );
 }

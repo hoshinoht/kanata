@@ -99,7 +99,7 @@ pub(super) async fn transcriptions(
         Err(_) => return invalid(),
     };
     let mut permit = match deadline
-        .run(|| state.admission().acquire(route, auth.key_identity()))
+        .run(|| state.admission().acquire(route, auth.key_limits()))
         .await
     {
         Ok(Ok(permit)) => permit,

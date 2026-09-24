@@ -17,6 +17,8 @@ fn main() {
 
     match result {
         Ok(None) => println!("{} {}", kanata::NAME, kanata::VERSION),
+        // Empty when the command already wrote its own output.
+        Ok(Some(message)) if message.is_empty() => {}
         Ok(Some(message)) => println!("{message}"),
         Err(message) => {
             eprintln!("{message}");

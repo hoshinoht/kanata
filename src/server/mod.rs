@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::fmt;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -20,9 +21,12 @@ use serde_json::json;
 use tower::{ServiceBuilder, ServiceExt, util::BoxCloneSyncService};
 
 use crate::adapter::Adapter;
-use crate::auth::{ApplicationAuth, AuthBuildError, AuthContext, SecretResolver};
-use crate::config::ValidatedConfig;
+use crate::auth::{
+    ApplicationAuth, AuthBuildError, AuthContext, AuthError, KeyHandle, SecretResolver,
+};
+use crate::config::{KeySource, Plane, ValidatedConfig};
 use crate::core::RouteSelector;
+use crate::keys::usage::UsageHandle;
 use crate::routing::{Registry, admission::Admission};
 
 mod runtime;
@@ -59,7 +63,8 @@ impl Readiness {
 
 #[derive(Clone)]
 pub(crate) struct ClientState {
-    auth: Arc<ApplicationAuth>,
+    keys: KeyHandle,
+    usage: Arc<OnceLock<UsageHandle>>,
     registry: Arc<Registry>,
     admission: Arc<Admission>,
     adapters: Arc<BTreeMap<String, Arc<dyn Adapter>>>,
@@ -206,6 +211,10 @@ pub struct TwoPlaneServer {
     admin: Router,
     admission: Arc<Admission>,
     readiness: Readiness,
+    keys: KeyHandle,
+    usage: Arc<OnceLock<UsageHandle>>,
+    /// `(usage_dir, keys file)` when usage is persisted.
+    usage_paths: Option<(PathBuf, PathBuf)>,
 }
 
 type PublicClientService = BoxCloneSyncService<Request<Body>, Response, Infallible>;
@@ -267,8 +276,19 @@ impl TwoPlaneServer {
                 .map_err(|_| ServerBuildError::AdmissionLimits)?,
         );
         let telemetry = Arc::new(crate::telemetry::Telemetry::new());
+        let keys = KeyHandle::new(auth);
+        let usage = Arc::new(OnceLock::new());
+        let usage_paths = match config.key_source() {
+            KeySource::File {
+                path,
+                usage_dir: Some(usage_dir),
+                ..
+            } => Some((usage_dir.clone(), path.clone())),
+            _ => None,
+        };
         let client_state = ClientState {
-            auth: Arc::new(auth),
+            keys: keys.clone(),
+            usage: usage.clone(),
             registry: registry.clone(),
             admission: admission.clone(),
             adapters: Arc::new(bound),
@@ -303,11 +323,37 @@ impl TwoPlaneServer {
             admin: admin_router(readiness.clone(), admission.clone(), telemetry),
             admission,
             readiness,
+            keys,
+            usage,
+            usage_paths,
         })
     }
 
     pub fn plan(&self) -> ServerPlan {
         self.plan
+    }
+
+    /// Handle to the live key set, for the keys-file reloader.
+    #[doc(hidden)]
+    pub fn key_handle(&self) -> KeyHandle {
+        self.keys.clone()
+    }
+
+    /// Loads `usage-<plane>.json` and starts recording; `None` without `[keys] usage_dir`.
+    /// Later calls return the first handle.
+    pub fn open_usage(&self, plane: Plane) -> Option<UsageHandle> {
+        let (usage_dir, keys_path) = self.usage_paths.as_ref()?;
+        Some(
+            self.usage
+                .get_or_init(|| UsageHandle::open(usage_dir, keys_path, plane))
+                .clone(),
+        )
+    }
+
+    /// Usage recorder once [`Self::open_usage`] ran.
+    #[doc(hidden)]
+    pub fn usage_handle(&self) -> Option<UsageHandle> {
+        self.usage.get().cloned()
     }
 
     pub async fn client_oneshot(&self, request: Request<Body>) -> Result<Response, Infallible> {
@@ -340,8 +386,8 @@ pub(crate) struct Authenticated {
 }
 
 impl Authenticated {
-    pub(crate) fn key_identity(&self) -> &str {
-        self.context.key_identity()
+    pub(crate) fn key_limits(&self) -> Option<&crate::routing::admission::KeyLimits> {
+        self.context.key_limits()
     }
 
     #[allow(dead_code)]
@@ -367,14 +413,21 @@ impl FromRequestParts<ClientState> for Authenticated {
         parts: &mut Parts,
         state: &ClientState,
     ) -> Result<Self, Self::Rejection> {
-        let context = parts
-            .extensions
-            .get::<PublicAuthContext>()
-            .map(|authenticated| authenticated.0.clone())
-            .or_else(|| state.auth.authenticate_headers(&parts.headers).ok())
-            .ok_or_else(unauthorized)?;
-        if let Some(observer) = parts.extensions.get::<crate::telemetry::Observer>() {
+        let observer = parts.extensions.get::<crate::telemetry::Observer>();
+        let context = match parts.extensions.get::<PublicAuthContext>() {
+            Some(authenticated) => authenticated.0.clone(),
+            None => match state.keys.current().authenticate_headers(&parts.headers) {
+                Ok(context) => context,
+                Err(AuthError::Invalid) => return Err(unauthorized()),
+                Err(AuthError::Expired { key_id }) => return Err(key_expired(observer, &key_id)),
+            },
+        };
+        if let Some(observer) = observer {
             observer.annotate_key(context.key_identity());
+        }
+        // Counted here only, so public requests authenticated by middleware count once.
+        if let Some(usage) = state.usage.get() {
+            usage.record(context.key_identity());
         }
         Ok(Self {
             context,
@@ -446,8 +499,15 @@ async fn authenticate_public_request(
     mut request: Request<Body>,
     next: middleware::Next,
 ) -> Response {
-    let Ok(context) = state.auth.authenticate_headers(request.headers()) else {
-        return ForbiddenResponse.into_response();
+    let context = match state.keys.current().authenticate_headers(request.headers()) {
+        Ok(context) => context,
+        Err(AuthError::Invalid) => return ForbiddenResponse.into_response(),
+        Err(AuthError::Expired { key_id }) => {
+            return key_expired(
+                request.extensions().get::<crate::telemetry::Observer>(),
+                &key_id,
+            );
+        }
     };
     request.extensions_mut().insert(PublicAuthContext(context));
     next.run(request).await
@@ -564,6 +624,24 @@ pub(crate) fn unauthorized() -> Response {
     response.headers_mut().insert(
         axum::http::header::WWW_AUTHENTICATE,
         HeaderValue::from_static("Bearer realm=\"kanata\""),
+    );
+    response
+}
+
+/// Sent on both listeners: only the holder of the exact secret can learn it expired.
+fn key_expired(observer: Option<&crate::telemetry::Observer>, key_id: &str) -> Response {
+    if let Some(observer) = observer {
+        observer.annotate_key(key_id);
+    }
+    let mut response = error_response(
+        StatusCode::UNAUTHORIZED,
+        "API key has expired",
+        "authentication_error",
+        "key_expired",
+    );
+    response.headers_mut().insert(
+        axum::http::header::WWW_AUTHENTICATE,
+        HeaderValue::from_static("Bearer realm=\"kanata\", error=\"invalid_token\""),
     );
     response
 }

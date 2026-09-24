@@ -23,7 +23,6 @@ use super::{
 pub(crate) struct Admission {
     routes: BTreeMap<String, RouteAdmission>,
     adapters: BTreeMap<String, AdapterAdmission>,
-    keys: BTreeMap<String, KeyAdmission>,
     limits: AdmissionLimits,
     queue_timeout: Duration,
     closed: AtomicBool,
@@ -48,7 +47,10 @@ struct AdapterAdmission {
     breaker: Arc<Breaker>,
 }
 
-struct KeyAdmission {
+/// One key's limiter; shared across key reloads while its limits are unchanged.
+pub(crate) struct KeyLimits {
+    max_in_flight: Option<u64>,
+    rate_limit: Option<KeyRateLimit>,
     active: Option<Arc<Semaphore>>,
     bucket: Option<Mutex<TokenBucket>>,
 }
@@ -133,31 +135,10 @@ impl Admission {
                 ))
             })
             .collect::<Result<_, AdmissionBuildError>>()?;
-        let keys = config
-            .application_keys()
-            .iter()
-            .filter(|key| key.max_in_flight().is_some() || key.rate_limit().is_some())
-            .map(|key| {
-                let active = key
-                    .max_in_flight()
-                    .map(|limit| permits(limit).map(|limit| Arc::new(Semaphore::new(limit))))
-                    .transpose()?;
-                Ok((
-                    key.id().to_owned(),
-                    KeyAdmission {
-                        active,
-                        bucket: key
-                            .rate_limit()
-                            .map(|limit| Mutex::new(TokenBucket::new(limit))),
-                    },
-                ))
-            })
-            .collect::<Result<_, AdmissionBuildError>>()?;
 
         Ok(Self {
             routes,
             adapters,
-            keys,
             limits,
             queue_timeout: Duration::from_millis(limits.queue_ms),
             closed: AtomicBool::new(false),
@@ -208,11 +189,11 @@ impl Admission {
             route.tickets.close();
             route.active.close();
         }
+        // Key semaphores are try-acquired only after the closed check, so they stay open.
         for semaphore in self
             .adapters
             .values()
             .filter_map(|adapter| adapter.active.as_ref())
-            .chain(self.keys.values().filter_map(|key| key.active.as_ref()))
         {
             semaphore.close();
         }
@@ -221,7 +202,7 @@ impl Admission {
     pub(crate) async fn acquire(
         &self,
         route: &RouteEntry,
-        key_id: &str,
+        key_admission: Option<&KeyLimits>,
     ) -> Result<AdmissionPermit, AdmissionError> {
         if self.is_closed() {
             return Err(AdmissionError::Closed);
@@ -236,7 +217,6 @@ impl Admission {
             .breaker
             .admit()
             .map_err(|wait| AdmissionError::CircuitOpen { wait })?;
-        let key_admission = self.keys.get(key_id);
         let key = match key_admission {
             Some(key) => key.acquire()?,
             None => None,
@@ -275,7 +255,36 @@ impl Admission {
     }
 }
 
-impl KeyAdmission {
+impl KeyLimits {
+    /// `None` when the key has no limits.
+    pub(crate) fn build(
+        max_in_flight: Option<u64>,
+        rate_limit: Option<KeyRateLimit>,
+    ) -> Option<Arc<Self>> {
+        if max_in_flight.is_none() && rate_limit.is_none() {
+            return None;
+        }
+        Some(Arc::new(Self {
+            max_in_flight,
+            rate_limit,
+            active: max_in_flight.map(|limit| {
+                let limit = usize::try_from(limit)
+                    .unwrap_or(usize::MAX)
+                    .min(Semaphore::MAX_PERMITS);
+                Arc::new(Semaphore::new(limit))
+            }),
+            bucket: rate_limit.map(|limit| Mutex::new(TokenBucket::new(limit))),
+        }))
+    }
+
+    pub(crate) fn same_limits(
+        &self,
+        max_in_flight: Option<u64>,
+        rate_limit: Option<KeyRateLimit>,
+    ) -> bool {
+        self.max_in_flight == max_in_flight && self.rate_limit == rate_limit
+    }
+
     fn acquire(&self) -> Result<Option<OwnedSemaphorePermit>, AdmissionError> {
         self.active
             .as_ref()
