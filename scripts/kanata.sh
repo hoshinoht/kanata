@@ -4,7 +4,9 @@
 set -euo pipefail
 cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
-IMAGE=${KANATA_IMAGE:-kanata:test}
+# Image tag: KANATA_IMAGE from the environment or .env, as Compose resolves it.
+IMAGE=${KANATA_IMAGE:-$(sed -n 's/^KANATA_IMAGE=//p' .env 2>/dev/null | tail -1)}
+IMAGE=${IMAGE:-kanata:test}
 # Temp paths are global so EXIT traps can still see them.
 tmp=
 

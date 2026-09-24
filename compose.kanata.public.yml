@@ -9,7 +9,7 @@ services:
     command: ["serve", "--config", "/etc/kanata/config.toml", "--plane", "private"]
 
   kanata-public:
-    image: kanata:test
+    image: ${KANATA_IMAGE:-kanata:test}
     pull_policy: never
     command: ["serve", "--config", "/etc/kanata/config.toml", "--plane", "public"]
     user: "10001:10001"

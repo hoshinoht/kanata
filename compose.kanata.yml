@@ -1,6 +1,6 @@
 services:
   kanata:
-    image: kanata:test
+    image: ${KANATA_IMAGE:-kanata:test}
     pull_policy: never
     build:
       context: .
