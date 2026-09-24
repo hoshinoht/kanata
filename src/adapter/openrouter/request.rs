@@ -1,7 +1,9 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Serialize;
 
 use crate::core::{
-    ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, GatewayError, ResponseFormat,
+    ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, GatewayError, InputAudioFormat,
+    ResponseFormat, TranscriptionRequest,
 };
 
 #[derive(Serialize)]
@@ -32,7 +34,36 @@ struct ReasoningOptions {
 #[derive(Serialize)]
 struct MessagePayload {
     role: &'static str,
-    content: String,
+    content: MessageContent,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum MessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ContentPart {
+    Text { text: String },
+    InputAudio { input_audio: AudioPayload },
+}
+
+#[derive(Serialize)]
+pub(super) struct AudioPayload {
+    data: String,
+    format: &'static str,
+}
+
+#[derive(Serialize)]
+pub(super) struct TranscriptionPayload {
+    model: String,
+    input_audio: AudioPayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
+    response_format: &'static str,
 }
 
 #[derive(Serialize)]
@@ -87,6 +118,39 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
         ChatRole::Tool => return Err(unsupported_operation()),
     };
 
+    let has_audio = message
+        .content
+        .iter()
+        .any(|segment| matches!(segment, ChatContent::InputAudio { .. }));
+    if has_audio {
+        if message.role != ChatRole::User {
+            return Err(unsupported_operation());
+        }
+        let parts = message
+            .content
+            .iter()
+            .map(|segment| match segment {
+                ChatContent::Text { text } if !text.is_empty() => {
+                    Ok(ContentPart::Text { text: text.clone() })
+                }
+                ChatContent::Text { .. } => Err(invalid_request()),
+                ChatContent::InputAudio { audio } => Ok(ContentPart::InputAudio {
+                    input_audio: AudioPayload {
+                        data: STANDARD.encode(audio.bytes()),
+                        format: chat_audio_format(audio.format()),
+                    },
+                }),
+                ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. } => {
+                    Err(unsupported_operation())
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(MessagePayload {
+            role,
+            content: MessageContent::Parts(parts),
+        });
+    }
+
     let mut content = String::new();
     for segment in &message.content {
         let ChatContent::Text { text } = segment else {
@@ -101,7 +165,50 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
         return Err(invalid_request());
     }
 
-    Ok(MessagePayload { role, content })
+    Ok(MessagePayload {
+        role,
+        content: MessageContent::Text(content),
+    })
+}
+
+fn chat_audio_format(format: InputAudioFormat) -> &'static str {
+    match format {
+        InputAudioFormat::Wav => "wav",
+        InputAudioFormat::Mp3 => "mp3",
+    }
+}
+
+/// Maps an accepted upload media type to an OpenRouter STT audio format.
+pub(super) fn transcription_format(media_type: &str) -> Option<&'static str> {
+    match media_type {
+        "audio/wav" | "audio/x-wav" => Some("wav"),
+        "audio/mpeg" => Some("mp3"),
+        "audio/flac" => Some("flac"),
+        "audio/mp4" => Some("m4a"),
+        "audio/ogg" => Some("ogg"),
+        "audio/webm" => Some("webm"),
+        _ => None,
+    }
+}
+
+pub(super) fn encode_transcription(
+    transcription: &TranscriptionRequest,
+    upstream_model: &str,
+) -> Result<TranscriptionPayload, GatewayError> {
+    if upstream_model.trim().is_empty() || transcription.file.bytes().is_empty() {
+        return Err(invalid_request());
+    }
+    let format =
+        transcription_format(transcription.file.media_type()).ok_or_else(invalid_request)?;
+    Ok(TranscriptionPayload {
+        model: upstream_model.to_owned(),
+        input_audio: AudioPayload {
+            data: STANDARD.encode(transcription.file.bytes()),
+            format,
+        },
+        language: transcription.language.clone(),
+        response_format: "json",
+    })
 }
 
 fn invalid_request() -> GatewayError {

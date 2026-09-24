@@ -45,7 +45,7 @@
 | --- | --- |
 | **Ollama** | Chat, tools, structured output, sampling and reasoning controls |
 | **vLLM** | Text chat, inline-audio chat, native ASR, and transcription through audio chat |
-| **OpenRouter** | Chat with sampling, structured output and reasoning |
+| **OpenRouter** | Chat with sampling, structured output and reasoning; inline-audio chat and speech-to-text |
 | **Apple Foundation Models** | Apple's on-device model through macOS 27's `fm serve`: chat, streaming, JSON-schema output and sampling. 8,192-token context, no tools. Expect loose formatting; guardrail refusals return `finish_reason: "content_filter"` |
 | **Codex** ⚠️ *experimental* | ChatGPT-subscription models via device-code sign-in (private listener only), with effort aliases like `gpt-6-sol:high`. Uses an unofficial private backend that may change or break without notice |
 

@@ -2,7 +2,7 @@ use serde::{Deserialize, de::IgnoredAny};
 
 use crate::core::{
     ChatContent, ChatMessage, ChatResponse, ChatRole, ErrorKind, FinishReason, GatewayError,
-    ModelAlias, Usage,
+    ModelAlias, TranscriptionResponse, Usage,
 };
 
 #[derive(Deserialize)]
@@ -118,6 +118,26 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         },
         finish_reason,
         usage,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TranscriptionPayload {
+    text: String,
+    #[serde(default, rename = "usage")]
+    _usage: Option<IgnoredAny>,
+}
+
+pub(super) fn decode_transcription(bytes: &[u8]) -> Result<TranscriptionResponse, GatewayError> {
+    let payload: TranscriptionPayload =
+        serde_json::from_slice(bytes).map_err(|_| upstream_failure())?;
+    let text = payload.text.trim();
+    if text.is_empty() {
+        return Err(upstream_failure());
+    }
+    Ok(TranscriptionResponse {
+        text: text.to_owned(),
     })
 }
 

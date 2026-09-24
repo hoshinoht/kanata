@@ -56,39 +56,45 @@ fn constructor_declares_configured_text_streaming_without_other_features() {
 }
 
 #[test]
-fn constructor_rejects_capabilities_and_operations_not_implemented_in_this_slice() {
-    let resolver = SyntheticResolver;
-    for config in [
-        config_with(
-            "https://openrouter.invalid/api/v1",
-            "chat",
-            "chat",
-            false,
-            true,
-            false,
-        ),
-        config_with(
-            "https://openrouter.invalid/api/v1",
-            "chat",
-            "chat",
-            false,
-            false,
-            true,
-        ),
-        config_with(
-            "https://openrouter.invalid/api/v1",
-            "transcription",
-            "transcription",
-            false,
-            false,
-            false,
-        ),
-    ] {
-        assert!(
-            OpenRouterAdapter::from_config(&config, ADAPTER_ID, ROUTE_ID, &resolver).is_err(),
-            "accepted unsupported configured capabilities"
-        );
-    }
+fn constructor_rejects_function_tools() {
+    let config = config_with(
+        "https://openrouter.invalid/api/v1",
+        "chat",
+        "chat",
+        false,
+        true,
+        false,
+    );
+    assert!(
+        OpenRouterAdapter::from_config(&config, ADAPTER_ID, ROUTE_ID, &SyntheticResolver).is_err()
+    );
+}
+
+#[test]
+fn constructor_accepts_input_audio_and_transcription() {
+    let audio = config_with(
+        "https://openrouter.invalid/api/v1",
+        "chat",
+        "chat",
+        false,
+        false,
+        true,
+    );
+    assert!(adapter(&audio).capabilities().input_audio);
+    let transcription = config_with(
+        "https://openrouter.invalid/api/v1",
+        "transcription",
+        "transcription",
+        false,
+        false,
+        false,
+    );
+    assert!(
+        adapter(&transcription)
+            .capabilities()
+            .operations
+            .contains(&Operation::Transcription)
+    );
 }
 
 #[tokio::test]
