@@ -1,8 +1,16 @@
 # Kanata MVP contracts
 
+## Deployment goal
+
+The MVP targets one Kanata process on a personal homelab node. The private client listener sits behind a tailnet-only reverse proxy; an optional second client listener is reached through a Cloudflare tunnel. Both require bearer keys and share adapter/admission state. The private listener can serve every key-authorized route, including owner-key Codex; the public listener starts with zero routes and can serve only explicitly allowlisted non-Codex chat or transcription/ASR selectors. Admin remains container-loopback. These are intended operator-owned hostnames, not verified DNS, tunnel, or deployment state. macOS is the current development environment; Windows 11 Docker is KIV and Linux host deployment is later.
+
+The deployment routes local models through Ollama and vLLM, and remote models through OpenRouter and OpenAI using OAuth. Local runtimes remain responsible for model loading and inference. Kanata is responsible for the client-facing API, authentication, exact route selection, policy, and provider adaptation.
+
 ## Support matrix
 
-The MVP exposes models, chat, and transcription endpoints. Its initial routes are Ollama/local chat, OpenRouter transcription, and Codex chat. `Operation` is limited to adapter-routable `chat` and `transcription`; models is a registry-local API listing, not an adapter request or response. A route is an exact `(model alias, operation)` match with explicit `route_id` and `upstream_id`. Aliases are never wildcarded, suffixed, or rewritten.
+The MVP exposes models, chat, and transcription endpoints. Its initial routes cover local chat through Ollama and vLLM, and remote model access through OpenRouter and private OpenAI/Codex OAuth. Transcription is available only where the configured upstream declares that capability. `Operation` is limited to adapter-routable `chat` and `transcription`; models is a registry-local API listing, not an adapter request or response. A route is an exact `(model alias, operation)` match with explicit `route_id` and `upstream_id`. An explicitly configured Codex alias may include a literal `:low`, `:medium`, or `:high` effort suffix validated in provider configuration; core never parses or strips it. No wildcarding or upstream-model rewriting occurs.
+
+The planned public-route policy intersects an authenticated key's exact permissions with a separately configured listener allowlist and bound adapter capabilities; the allowlist defaults empty. Selecting a multimodal chat alias does not implicitly select its transcription/ASR operation. Codex is never a public-listener route, even for the owner key, and a non-owner key cannot be configured to authorize Codex. This is API routing isolation, not isolation of in-process Codex credentials after a public-origin process compromise.
 
 ## Core boundary
 
@@ -22,4 +30,4 @@ Trust zones are `local`, `private_network`, and `external`; routing must not sil
 
 ## Non-goals
 
-No provider code, network access, retry/fallback, tool execution, media fetching, dynamic plugins, model lifecycle, multimedia chat, or unknown-field forwarding is introduced by these contracts.
+No provider code, network access, deployment automation, Tailscale/Cloudflare/DNS management, retry/fallback, tool execution, media fetching, dynamic plugins, model lifecycle, multimedia chat, or unknown-field forwarding is introduced by these contracts. The optional public-ingress profile requires separate STRIDE review, authenticated client-only routing and operator attestation; this contract document does not expose it.
