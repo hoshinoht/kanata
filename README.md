@@ -1,69 +1,177 @@
+<div align="center">
+
 # Kanata
 
-Kanata is a lightweight Rust inference gateway. It presents one OpenAI-compatible API in front of local and remote AI runtimes, and handles authentication, routing and policy for them.
+**A lightweight Rust inference gateway: one OpenAI-compatible API in front of your local and remote models.**
+
+[![Version](https://img.shields.io/badge/version-1.0.0--beta.1-orange)](CHANGELOG)
+[![Rust](https://img.shields.io/badge/rust-1.98%2B-b7410e?logo=rust)](Cargo.toml)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
+[![OpenAI compatible](https://img.shields.io/badge/API-OpenAI%20compatible-412991)](#api)
+
+[Features](#features) · [Architecture](#architecture) · [Quick start](#quick-start) · [API](#api) · [Security](#security) · [Development](#development)
+
+</div>
 
 > **Kanata serves inference. Kanata does not perform inference.**
+>
+> Model execution, batching, tokenization, GPU scheduling and model loading belong to runtimes such as Ollama, vLLM and hosted providers. Kanata owns the application-facing boundary: keys, routing, validation, limits and a safe public edge.
 
-Model execution, batching, tokenization, GPU scheduling and model loading belong to runtimes such as Ollama, vLLM and hosted providers. Kanata owns the application-facing boundary: static bearer keys with exact per-model scopes, routing, request validation, admission limits, cancellation, timeouts, and a separate public listener.
+> [!NOTE]
+> **Beta (`1.0.0-beta.1`).** Kanata targets single-host personal deployments. Interfaces may still change before 1.0.
 
-**Status: beta (`1.0.0-beta.1`).** Kanata runs as a single-host personal deployment. Interfaces may still change before 1.0.
+## At a glance
+
+| | |
+| --- | --- |
+| **Endpoints** | `GET /v1/models` · `POST /v1/chat/completions` (JSON and SSE) · `POST /v1/audio/transcriptions` |
+| **Backends** | Ollama · vLLM · OpenRouter · Codex (ChatGPT sign-in) |
+| **Auth** | Static `kanata_sk_…` bearer keys with exact per-model scopes, stored as SHA-256 digests |
+| **Listeners** | Private (behind your tailnet proxy) · optional public (Cloudflare tunnel) · loopback admin |
+| **Deploy** | Distroless, non-root, read-only container; Compose profiles publish **no** host ports |
 
 ## Features
 
-- **OpenAI-compatible API:** `GET /v1/models`, `POST /v1/chat/completions` (JSON and SSE), and `POST /v1/audio/transcriptions` (multipart).
-- **Exact routing:** each `(model alias, operation)` pair maps to one adapter and upstream model. One alias can serve several operations (e.g. chat plus transcription), and `/v1/models` lists only what the caller's key may use.
-- **Adapters:**
+### 🧭 Routing
+- **Exact routing:** each `(model alias, operation)` maps to one adapter and upstream model, with no wildcards, fallbacks or silent rewrites.
+- **Multi-modal aliases:** one alias can serve several operations, e.g. chat and transcription.
+- **Scoped listing:** `/v1/models` lists only what the caller's key may use, and each entry includes a `kanata` capability object.
 
-  | Adapter | Scope |
-  | --- | --- |
-  | Ollama | Chat and tools |
-  | vLLM | Text chat, audio chat, native ASR, and transcription through audio chat |
-  | OpenRouter | Chat |
-  | Codex | Via a ChatGPT sign-in; owner key only, private listener only |
-- **Generation options:** `response_format` (JSON object / JSON schema), `temperature`, `top_p`, `seed`, `max_tokens` / `max_completion_tokens` and `reasoning_effort` are typed and bounded. Each adapter declares which options it supports, and unsupported options return a 400 naming the parameter instead of being dropped.
-- **Tools:** tool declarations, calls and results pass through. Kanata never executes tools.
-- **Keys:** static bearer keys with exact scopes. `kanata key new` issues `kanata_sk_…` keys stored in config only as SHA-256 digests.
-- **Two client listeners in one process:** a private listener (typically behind a tailnet-only reverse proxy) and an optional public listener behind a Cloudflare tunnel. The public listener's model allowlist is empty by default, and it never serves Codex. A loopback-only admin listener serves `/ready` and `/metrics`.
-- **Operational limits:** bounded admission, request bodies and uploads, phased timeouts, cancellation on client disconnect, and graceful drain.
-- **Container:** a hardened image (distroless, non-root, read-only) with Compose profiles that publish **no** host ports.
+### 🔌 Adapters
+
+| Adapter | What it serves |
+| --- | --- |
+| **Ollama** | Chat, tools, structured output, sampling and reasoning controls |
+| **vLLM** | Text chat, inline-audio chat, native ASR, and transcription through audio chat |
+| **OpenRouter** | Chat with sampling, structured output and reasoning |
+| **Codex** | ChatGPT-subscription models via device-code sign-in (owner key only, private listener only), with effort aliases like `gpt-6-sol:high` |
+
+### 🎛️ Typed generation options
+- **Supported fields:** `response_format` (JSON object / JSON schema), `temperature`, `top_p`, `seed`, `max_tokens` / `max_completion_tokens` and `reasoning_effort`.
+- **Bounds:** each field is validated and size-limited.
+- **Capability-gated:** if a route can't honour an option, the request gets **400 naming the parameter** instead of a silent drop.
+- **Tools pass through:** tool declarations, calls and results are forwarded. Kanata never executes tools.
+
+### 🔐 Keys and exposure
+- **`kanata key new`:** issues keys. The server stores only their digests.
+- **Owner key:** only one key may be the owner, and only it can use Codex.
+- **Public listener:** its allowlist is empty by default. Missing or invalid keys get 403 on **every** path, and it never serves Codex.
+
+### 📈 Operations
+- **Admission and limits:** bounded admission, request bodies and uploads, and phased timeouts.
+- **Lifecycle:** cancellation on client disconnect and graceful drain.
+- **Logs:** one access line per request (key id, model, status, timing), and upstream-failure diagnostics that never include keys, prompts or bodies.
+- **Metrics:** Prometheus-style `/metrics` with per-key and per-model counters.
 
 ## Architecture
 
-```text
-OpenAI-compatible client
-     │ private: tailnet → your reverse proxy          public: Cloudflare tunnel
-     ▼                                                  ▼
-  Kanata private listener                            Kanata public listener
-     └────────── auth · routing · limits · telemetry ──────────┘
-                              │
-                 provider-neutral adapter boundary
-                 ├── Ollama   ├── vLLM   ├── OpenRouter   └── Codex
+```mermaid
+flowchart LR
+  subgraph Clients
+    P[Private clients<br/>on your tailnet]
+    X[Public clients]
+  end
+  P -->|HTTPS| RP[Your reverse proxy<br/>tailnet IP only]
+  X -->|HTTPS| CF[Cloudflare tunnel<br/>cloudflared sidecar]
+  RP --> KP
+  CF --> KU
+  subgraph Kanata["Kanata (one process)"]
+    KP[Private listener]
+    KU[Public listener<br/>allowlist only]
+    CORE[auth · routing · limits · telemetry]
+    KP --> CORE
+    KU --> CORE
+  end
+  CORE --> O[Ollama]
+  CORE --> V[vLLM]
+  CORE --> R[OpenRouter]
+  CORE --> C[Codex]
 ```
 
-See [the contract notes](docs/architecture/kanata-mvp.md) for the core types and boundaries.
+Both listeners sit on internal Docker networks; the container publishes no host ports. See [the contract notes](docs/architecture/kanata-mvp.md) for core types and boundaries.
 
-## Quick start (Docker)
+## Quick start
 
-Requirements: Docker with Compose v2, and a reverse proxy for the private route. Any proxy that can join a Docker network works, such as Caddy.
+**Requirements:** Docker with Compose v2, plus any reverse proxy that can join a Docker network (e.g. Caddy) for the private route.
 
-1. **Build the image:** `docker build -t kanata:test .`
-2. **Create your config:** copy [`config/container.example.toml`](config/container.example.toml) to `config/config.toml` (git-ignored) and edit the tailnet address, adapters and routes. [`config/README.md`](config/README.md) explains the fields.
-3. **Create `.env`** from [`.env.example`](.env.example). It holds only file paths and the Compose file list.
-4. **Create the owner key, then start:**
-   ```sh
-   mkdir -p ~/.config/kanata && chmod 700 ~/.config/kanata
-   scripts/rotate-owner-key.sh --no-restart   # key → ~/.config/kanata/owner-client-key; digest → config
-   docker compose up -d
-   ```
-   The container never receives a plaintext client key: the config holds only `sha256:` digests.
-5. **Wire up the private route:** attach your reverse proxy to the `kanata_private_ingress` network and forward to `172.30.0.2:8080`. See [deploy/docker/README.md](deploy/docker/README.md).
-6. **Optional:** set up the public route with Cloudflare ([deploy/cloudflared/README.md](deploy/cloudflared/README.md)), log in to Codex (`scripts/codex-login.sh`), and issue keys for others (`scripts/new-client-key.sh`).
+```sh
+# 1. Build
+docker build -t kanata:test .
 
-Hand testers [the API quickstart](docs/guides/public-api-quickstart.md).
+# 2. Configure (config/config.toml is git-ignored)
+cp config/container.example.toml config/config.toml   # edit tailnet address, adapters, routes
+cp .env.example .env                                   # file paths + Compose file list only
+
+# 3. Create the owner key (key stays on the host, digest goes into the config), then start
+mkdir -p ~/.config/kanata && chmod 700 ~/.config/kanata
+scripts/rotate-owner-key.sh --no-restart
+docker compose up -d
+docker compose logs -f kanata
+```
+
+**Next steps:**
+
+| Step | Guide |
+| --- | --- |
+| Put your reverse proxy on `kanata_private_ingress` → `172.30.0.2:8080` | [deploy/docker](deploy/docker/README.md) |
+| Expose chosen models publicly through a Cloudflare tunnel | [deploy/cloudflared](deploy/cloudflared/README.md) |
+| Sign in to Codex | `scripts/codex-login.sh` |
+| Issue a key for someone else | `scripts/new-client-key.sh alice ~/.config/kanata/keys/alice.key --chat <alias>` |
+| Rotate the owner key | `scripts/rotate-owner-key.sh` |
+| Config fields and templates | [config/README.md](config/README.md) |
+
+## API
+
+Kanata works with the official OpenAI SDKs and any client that lets you set a base URL:
+
+```sh
+curl https://kanata.example.com/v1/chat/completions \
+  -H "Authorization: Bearer $KANATA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3-0.6b","messages":[{"role":"user","content":"Say hello"}]}'
+```
+
+`/v1/models` tells clients what each alias supports:
+
+```json
+{
+  "id": "gpt-6-luna:low",
+  "object": "model",
+  "owned_by": "kanata",
+  "kanata": {
+    "operations": ["chat"],
+    "structured_output": false,
+    "sampling_controls": false,
+    "reasoning_control": true,
+    "reasoning_efforts": ["low", "medium", "high"],
+    "function_tools": true,
+    "streaming": true,
+    "input_audio": false,
+    "trust_zone": "external"
+  }
+}
+```
+
+Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you give keys to.
+
+## Security
+
+> [!IMPORTANT]
+> Keys are bearer credentials: whoever holds one gets its scopes. Only one key may be `owner = true`, and only it may hold Codex scopes.
+
+> [!WARNING]
+> **One process, two listeners.** The public and private listeners share one process, which also holds the Codex credentials. A compromise through the public listener could expose them. Expose publicly only what you'd accept that risk for.
+
+> [!CAUTION]
+> **Codex** uses ChatGPT's private backend with *your* sign-in; it may change without notice. OpenAI's [Terms of Use](https://openai.com/policies/terms-of-use/) forbid sharing account access, so never expose Codex to other people.
+
+- **Host isolation:** Docker bridges alone don't isolate containers from each other or from the host, so use a host firewall.
+- **Cloudflare Access** on the public route is optional defence in depth, never a replacement for keys.
+- **Suspected compromise:** run `scripts/rotate-owner-key.sh`. It rotates the owner key immediately and prints what else to rotate: other keys, the Codex sign-in, the tunnel token, and proxy DNS tokens.
 
 ## Development
 
-Requires Rust 1.98 or newer.
+Requires Rust **1.98+**.
 
 ```sh
 cargo fmt --all -- --check
@@ -72,16 +180,21 @@ cargo test --all-targets
 cargo run -q -- check --config config/container.example.toml
 ```
 
-The offline schema fixture lives in `tests/fixtures/config/example.toml`; never serve it.
+<details>
+<summary>Repository layout</summary>
 
-## Security notes
+| Path | Contents |
+| --- | --- |
+| `src/api`, `src/server` | HTTP handlers, listeners, wire decoding |
+| `src/core`, `src/routing`, `src/auth` | Provider-neutral contracts, route registry, key auth |
+| `src/adapter/*` | Ollama, vLLM, OpenRouter, Codex, shared transport |
+| `src/telemetry` | Access logs, diagnostics, metrics |
+| `config/` | Templates (your `config.toml` is git-ignored) |
+| `compose.kanata*.yml`, `Dockerfile` | Container and Compose profiles |
+| `scripts/` | Codex login, client keys, owner-key rotation |
+| `tests/` | Integration tests and sanitized fixtures (`tests/fixtures/config/example.toml` is a schema fixture; never serve it) |
 
-- **Keys:** keys are bearer credentials. Anyone holding one gets its scopes. Only one key may be `owner = true`, and only it may hold Codex scopes.
-- **Public listener:** missing or invalid keys get 403 on every path, and so do models that aren't allowlisted. Cloudflare Access is optional defence in depth, never a replacement for keys.
-- **Same process:** the public and private listeners share one process, which also holds the Codex credentials. A compromise through the public listener could expose those credentials, and the listener split does not prevent that. Expose publicly only what you would accept that risk for.
-- **Codex:** Kanata calls ChatGPT's Codex backend with your own sign-in. That is an unofficial, private interface and may change. OpenAI's [Terms of Use](https://openai.com/policies/terms-of-use/) forbid sharing account access, so never expose Codex to other people.
-- **Host isolation:** Docker bridges alone do not isolate containers from each other or from the host. Use a host firewall appropriate to your platform.
-- **Suspected compromise:** run `scripts/rotate-owner-key.sh`. It writes a fresh owner key and recreates Kanata so the old key stops working, then prints what else to rotate: other client keys, the Codex sign-in, the tunnel token, and your proxy's DNS API token.
+</details>
 
 ## Non-goals
 
@@ -89,4 +202,4 @@ Kanata is not an inference engine, GPU scheduler, model manager, agent framework
 
 ## License
 
-Kanata is licensed under the [GNU General Public License v3.0](LICENSE).
+[GNU General Public License v3.0](LICENSE)
