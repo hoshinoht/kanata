@@ -4,6 +4,8 @@
 
 **A lightweight Rust inference gateway: one OpenAI-compatible API in front of your local and remote models.**
 
+*Built for homelabs. Designed as the model gateway for [kanade](https://github.com/hoshinoht/kanade-bot).*
+
 [![Version](https://img.shields.io/badge/version-1.0.0--beta.1-orange)](CHANGELOG)
 [![Rust](https://img.shields.io/badge/rust-1.98%2B-b7410e?logo=rust)](Cargo.toml)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
