@@ -22,7 +22,7 @@ Kanata is a single Rust crate (edition 2024, `rust-version = "1.98"`): an OpenAI
 - `tests/`: integration suites and fixtures; see `tests/AGENTS.md`.
 - `config/`: `*.example.toml` templates plus `config/README.md` (template index, config concepts). `config/config.toml` is the live, git-ignored config.
 - `deploy/docker/`, `deploy/cloudflared/`: Compose and public-tunnel runbooks (READMEs).
-- `Dockerfile`, `compose.kanata.yml` (private base), `compose.kanata.public.yml` (separate `kanata-public` container, `--plane public`), `compose.kanata.host-ollama.yml`, `compose.kanata.openrouter.yml` (opt-in overlays).
+- `Dockerfile`, `compose.kanata.yml` (private base), `compose.kanata.public.yml` (separate `kanata-public` container, `--plane public`), `compose.kanata.host-ollama.yml`, `compose.kanata.openrouter.yml`, `compose.kanata.omnilion.yml` (opt-in overlays).
 - `scripts/kanata.sh`: operator helper (`build`, `check`, `up`, `down`, `restart`, `status`, `logs`, `codex`, `key ...` and `owner-key rotate` (deprecated wrappers for the host `kanata key`), `ollama-context`, `fm-serve`); run `scripts/kanata.sh help`.
 - `docs/architecture/kanata-mvp.md` (contracts, plane boundaries), `docs/guides/public-api-quickstart.md` (client guide, error table).
 - Ignored, not part of the repo: `research/` (local security/threat docs), `luna-sonata/` (separate project with its own AGENTS.md), `.opencode/`.

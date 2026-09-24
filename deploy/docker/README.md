@@ -18,6 +18,7 @@ Kanata makes its outbound calls to model backends over the separate `backend_egr
 | `compose.kanata.host-ollama.yml` | Opt-in `host.orb.internal` mapping so Kanata can reach Ollama running on the Docker host (e.g. macOS for Metal) |
 | `compose.kanata.public.yml` | Opt-in public plane: a separate `kanata-public` container (`--plane public`, no Codex volume) on the public network, the `cloudflared` sidecar, and `--plane private` for the main container |
 | `compose.kanata.openrouter.yml` | Opt-in OpenRouter API key as a Compose secret at `/run/secrets/openrouter-api-key`, from `KANATA_OPENROUTER_KEY_FILE` |
+| `compose.kanata.omnilion.yml` | Opt-in OmniLion API key as a Compose secret at `/run/secrets/omnilion-api-key` in both `kanata` and `kanata-public`, from `KANATA_OMNILION_KEY_FILE`; needs `compose.kanata.public.yml` |
 | `.env` (git-ignored; from `.env.example`) | `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`, and paths to the config, the host-side owner key and the tunnel token. Paths only, never secrets |
 
 ## Config and secrets
