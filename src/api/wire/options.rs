@@ -48,6 +48,7 @@ impl OptionsWire {
             reasoning_effort: field(self.reasoning_effort, "reasoning_effort", |value| {
                 ReasoningEffort::parse(value.as_str()?)
             })?,
+            enable_thinking: None,
         })
     }
 }

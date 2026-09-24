@@ -1,9 +1,15 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, de::IgnoredAny};
 
 use crate::core::{
     ChatContent, ChatMessage, ChatResponse, ChatRole, ErrorKind, FinishReason, GatewayError,
-    ModelAlias, TranscriptionResponse, Usage,
+    ModelAlias, ToolCall, TranscriptionResponse, Usage,
 };
+
+pub(super) const MAX_TOOL_CALLS: usize = 64;
+const MAX_TOOL_CALL_ID_BYTES: usize = 128;
+const MAX_TOOL_NAME_BYTES: usize = 64;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,6 +55,9 @@ struct ChoicePayload {
     _token_ids: Option<IgnoredAny>,
     #[serde(default, rename = "routed_experts")]
     _routed_experts: Option<IgnoredAny>,
+    // LiteLLM proxy metadata.
+    #[serde(default, rename = "provider_specific_fields")]
+    _provider_specific_fields: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -57,6 +66,8 @@ struct MessagePayload {
     role: String,
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ToolCallPayload>>,
     #[serde(default, rename = "reasoning")]
     _reasoning: Option<String>,
     #[serde(default, rename = "reasoning_content")]
@@ -70,6 +81,8 @@ struct MessagePayload {
     _audio: Option<IgnoredAny>,
     #[serde(default, rename = "function_call")]
     _function_call: Option<IgnoredAny>,
+    #[serde(default, rename = "provider_specific_fields")]
+    _provider_specific_fields: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -128,6 +141,9 @@ struct TranscriptionChoicePayload {
     _token_ids: Option<IgnoredAny>,
     #[serde(default, rename = "routed_experts")]
     _routed_experts: Option<IgnoredAny>,
+    // LiteLLM proxy metadata.
+    #[serde(default, rename = "provider_specific_fields")]
+    _provider_specific_fields: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -149,6 +165,24 @@ struct TranscriptionMessagePayload {
     _audio: Option<IgnoredAny>,
     #[serde(default, rename = "function_call")]
     _function_call: Option<IgnoredAny>,
+    #[serde(default, rename = "provider_specific_fields")]
+    _provider_specific_fields: Option<IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolCallPayload {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    function: FunctionCallPayload,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FunctionCallPayload {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Deserialize)]
@@ -183,15 +217,38 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         return Err(upstream_failure());
     }
     let finish_reason = parse_finish_reason(&choice.finish_reason)?;
-    if finish_reason == FinishReason::ToolCalls {
+    let mut content = Vec::new();
+    if let Some(text) = choice.message.content.filter(|text| !text.is_empty()) {
+        content.push(ChatContent::Text { text });
+    }
+    let calls = choice.message.tool_calls.unwrap_or_default();
+    if calls.len() > MAX_TOOL_CALLS {
         return Err(upstream_failure());
     }
-    let content = match choice.message.content.filter(|text| !text.is_empty()) {
-        Some(text) => vec![ChatContent::Text { text }],
-        // A length stop may carry no visible output.
-        None if finish_reason == FinishReason::Length => Vec::new(),
-        None => return Err(upstream_failure()),
-    };
+    let mut ids = BTreeSet::new();
+    for call in calls {
+        if call.kind != "function"
+            || !valid_call_id(&call.id)
+            || !ids.insert(call.id.clone())
+            || !valid_tool_name(&call.function.name)
+        {
+            return Err(upstream_failure());
+        }
+        content.push(ChatContent::ToolCall {
+            call: ToolCall {
+                id: call.id,
+                name: call.function.name,
+                arguments: call.function.arguments,
+            },
+        });
+    }
+    let has_tool_calls = !ids.is_empty();
+    // A length stop may carry no visible output.
+    if (content.is_empty() && finish_reason != FinishReason::Length)
+        || (finish_reason == FinishReason::ToolCalls) != has_tool_calls
+    {
+        return Err(upstream_failure());
+    }
 
     let usage = payload.usage.map(normalize_usage).transpose()?;
     Ok(ChatResponse {
@@ -274,9 +331,24 @@ fn parse_finish_reason(value: &str) -> Result<FinishReason, GatewayError> {
     match value {
         "stop" => Ok(FinishReason::Stop),
         "length" => Ok(FinishReason::Length),
+        "tool_calls" => Ok(FinishReason::ToolCalls),
         "content_filter" => Ok(FinishReason::ContentFilter),
         _ => Err(upstream_failure()),
     }
+}
+
+pub(super) fn valid_call_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_TOOL_CALL_ID_BYTES
+        && value.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
+pub(super) fn valid_tool_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_TOOL_NAME_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 fn upstream_failure() -> GatewayError {
@@ -306,5 +378,33 @@ mod tests {
         assert_eq!(bridged.text, "fixture audio transcript");
         let native = super::decode_native_transcription(NATIVE.as_bytes()).expect("native");
         assert_eq!(native.text, "fixture native transcript");
+    }
+
+    #[test]
+    fn litellm_tool_call_response_decodes() {
+        const TOOL: &str =
+            include_str!("../../../tests/fixtures/vllm/chat-litellm-tool-call-response.json");
+        let chat = super::decode(TOOL.as_bytes(), ModelAlias("omni".into())).expect("chat");
+        assert_eq!(chat.finish_reason, crate::core::FinishReason::ToolCalls);
+        assert!(matches!(
+            chat.message.content.as_slice(),
+            [ChatContent::ToolCall { call }]
+                if call.name == "get_weather" && call.arguments == r#"{"city": "Singapore"}"#
+        ));
+    }
+
+    #[test]
+    fn litellm_proxy_fields_are_accepted() {
+        const LITELLM: &str =
+            include_str!("../../../tests/fixtures/vllm/chat-litellm-proxy-response.json");
+        let chat = super::decode(LITELLM.as_bytes(), ModelAlias("omni".into())).expect("chat");
+        assert_eq!(
+            chat.message.content,
+            vec![ChatContent::Text {
+                text: "fixture litellm reply".into()
+            }]
+        );
+        let bridged = super::decode_transcription(LITELLM.as_bytes()).expect("bridge");
+        assert_eq!(bridged.text, "fixture litellm reply");
     }
 }

@@ -1,5 +1,8 @@
 mod request;
 mod response;
+mod stream;
+mod stream_state;
+mod stream_wire;
 mod validation;
 
 use std::{fmt, sync::Arc};
@@ -25,7 +28,7 @@ use crate::{
 
 use super::transport::{
     Accept, COMPLETE_RESPONSE_BYTES, CredentialHeader, Endpoint, MultipartFile, MultipartRequest,
-    ResponseContentType, Transport, TransportRequest,
+    ResponseBody, ResponseContentType, STREAM_RESPONSE_BYTES, Transport, TransportRequest,
 };
 
 const NATIVE_ASR_MULTIPART_OVERHEAD_BYTES: usize = 8 * 1024;
@@ -100,14 +103,18 @@ impl VllmAdapter {
             TrustZone::Local | TrustZone::PrivateNetwork => true,
             TrustZone::External => bearer_token.is_some(),
         };
+        // Streaming and tools are chat features; audio variants also need input audio.
+        let chat_features_valid = (supports_chat
+            || !(configured.streaming_chat || configured.function_tools))
+            && (!configured.audio_streaming_chat
+                || (configured.input_audio && configured.streaming_chat))
+            && (!configured.audio_function_tools
+                || (configured.input_audio && configured.function_tools));
         if adapter.kind() != ProviderKind::Vllm
             || !zone_allowed
             || adapter.secret_ref().is_some() != bearer_token.is_some()
             || !supported_operations
-            || configured.streaming_chat
-            || configured.function_tools
-            || configured.audio_streaming_chat
-            || configured.audio_function_tools
+            || !chat_features_valid
             || configured.reasoning_control
         {
             return Err(internal_error());
@@ -256,6 +263,37 @@ impl VllmAdapter {
         Self::post_json(transport, request, label).await
     }
 
+    async fn post_stream(
+        transport: Arc<Transport>,
+        payload: request::ChatPayload,
+        credential: Option<CredentialHeader>,
+        request_budget: usize,
+        label: UpstreamLabel,
+    ) -> Result<ResponseBody, GatewayError> {
+        let request = TransportRequest::json(
+            Method::POST,
+            Endpoint::new(&["chat", "completions"])?,
+            &payload,
+            credential,
+            Some(Accept::EventStream),
+            request_budget,
+            STREAM_RESPONSE_BYTES,
+        )?;
+        let mut response = transport.execute(request).await?;
+        if response.status != 200 {
+            label.status(response.status, &mut response.body).await;
+            return Err(status_error(response.status));
+        }
+        if !matches!(
+            response.content_type,
+            Some(ResponseContentType::EventStream)
+        ) {
+            label.content_type(response.status, response.media_type.as_deref());
+            return Err(upstream_failure());
+        }
+        Ok(response.body)
+    }
+
     fn native_transcription_request(
         transcription: &crate::core::TranscriptionRequest,
         upstream_model: &str,
@@ -365,7 +403,22 @@ impl Adapter for VllmAdapter {
                         Ok(payload) => payload,
                         Err(error) => return Box::pin(async move { Err(error) }),
                     };
+                let streaming = chat.stream;
                 Box::pin(async move {
+                    if streaming {
+                        let body = Self::post_stream(
+                            transport,
+                            payload,
+                            credential,
+                            request_budget,
+                            label,
+                        )
+                        .await?;
+                        return Ok(AdapterOutput::Events(Box::pin(stream::VllmStream::new(
+                            body,
+                            public_model,
+                        ))));
+                    }
                     let body = Self::post_completion(
                         transport,
                         payload,

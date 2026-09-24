@@ -387,6 +387,9 @@ pub struct ChatOptions {
     pub max_output_tokens_param: MaxTokensParam,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Chat-template thinking switch (`chat_template_kwargs.enable_thinking`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_thinking: Option<bool>,
 }
 
 /// Wire field name used for the output token limit.
@@ -457,6 +460,8 @@ impl<'de> Deserialize<'de> for ChatOptions {
             max_output_tokens: Option<u64>,
             #[serde(default)]
             reasoning_effort: Option<ReasoningEffort>,
+            #[serde(default)]
+            enable_thinking: Option<bool>,
         }
 
         let raw = RawChatOptions::deserialize(deserializer)?;
@@ -471,6 +476,7 @@ impl<'de> Deserialize<'de> for ChatOptions {
             max_output_tokens,
             max_output_tokens_param: MaxTokensParam::default(),
             reasoning_effort: raw.reasoning_effort,
+            enable_thinking: raw.enable_thinking,
         })
     }
 }

@@ -1,0 +1,12 @@
+data: {"id":"chatcmpl-fixture","created":1790273300,"model":"omnilion","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"id":"chatcmpl-tool-fixture","function":{"arguments":"","name":"get_weather"},"type":"function","index":0}]}}]}
+
+data: {"id":"chatcmpl-fixture","created":1790273300,"model":"omnilion","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"function":{"arguments":"{\"city\": \""},"type":"function","index":0}]}}]}
+
+data: {"id":"chatcmpl-fixture","created":1790273300,"model":"omnilion","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"function":{"arguments":"Singapore\"}"},"type":"function","index":0}]}}]}
+
+data: {"id":"chatcmpl-fixture","created":1790273300,"model":"omnilion","object":"chat.completion.chunk","choices":[{"finish_reason":"tool_calls","index":0,"delta":{}}]}
+
+data: {"id":"chatcmpl-fixture","created":1790273300,"model":"omnilion","object":"chat.completion.chunk","choices":[{"index":0,"delta":{}}],"usage":{"completion_tokens":26,"prompt_tokens":276,"total_tokens":302,"completion_tokens_details":{"reasoning_tokens":0}}}
+
+data: [DONE]
+

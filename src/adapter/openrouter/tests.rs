@@ -699,6 +699,7 @@ fn chat_options_encode_with_reasoning_as_an_effort_object() {
             max_output_tokens: Some(64),
             max_output_tokens_param: Default::default(),
             reasoning_effort: Some(ReasoningEffort::Max),
+            enable_thinking: None,
         },
         extensions: Extensions::default(),
     };

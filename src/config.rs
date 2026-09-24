@@ -637,6 +637,11 @@ impl ProviderKind {
         }
     }
 
+    /// Whether a request may set `chat_template_kwargs.enable_thinking`.
+    pub fn accepts_enable_thinking(self) -> bool {
+        matches!(self, Self::Vllm)
+    }
+
     /// Config name, used as the provider label in logs and metrics.
     pub fn label(self) -> &'static str {
         match self {

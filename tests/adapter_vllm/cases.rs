@@ -40,8 +40,6 @@ async fn adapter_declares_only_fixture_backed_nonstream_text_chat() {
 async fn constructor_rejects_unimplemented_capabilities_and_secret_references() {
     for (operation, streaming, tools, secret_ref) in [
         (Operation::Transcription, false, false, false),
-        (Operation::Chat, true, false, false),
-        (Operation::Chat, false, true, false),
         (Operation::Chat, false, false, true),
     ] {
         let config = config_with("127.0.0.1:8000", operation, streaming, tools, secret_ref);

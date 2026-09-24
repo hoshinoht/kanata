@@ -10,6 +10,8 @@ use crate::{
 pub(super) struct RouteBinding {
     identity: RouteIdentity,
     allows_input_audio: bool,
+    allows_audio_streaming_chat: bool,
+    allows_audio_function_tools: bool,
     enable_thinking: Option<bool>,
 }
 
@@ -34,10 +36,12 @@ pub(super) fn bind_route(
             .contains(&route.identity().selector.operation)
         || route.identity().route_id.trim().is_empty()
         || route.identity().upstream_id.trim().is_empty()
-        || route.requires_streaming_chat()
-        || route.requires_function_tools()
-        || route.allows_audio_streaming_chat()
-        || route.allows_audio_function_tools()
+        || (route.requires_streaming_chat() && !capabilities.streaming_chat)
+        || (route.requires_function_tools() && !capabilities.function_tools)
+        || (route.allows_audio_streaming_chat()
+            && !(route.allows_input_audio() && capabilities.audio_streaming_chat))
+        || (route.allows_audio_function_tools()
+            && !(route.allows_input_audio() && capabilities.audio_function_tools))
         || (route.allows_input_audio()
             && (route.identity().selector.operation != crate::core::Operation::Chat
                 || !capabilities.input_audio))
@@ -47,6 +51,8 @@ pub(super) fn bind_route(
     Ok(RouteBinding {
         identity: route.identity().clone(),
         allows_input_audio: route.allows_input_audio(),
+        allows_audio_streaming_chat: route.allows_audio_streaming_chat(),
+        allows_audio_function_tools: route.allows_audio_function_tools(),
         enable_thinking: route.enable_thinking(),
     })
 }
@@ -92,7 +98,8 @@ pub(super) fn validate(
         Request::Chat(chat) => validate_chat(
             chat,
             max_audio_bytes,
-            route_binding.map(|binding| binding.allows_input_audio),
+            capabilities.function_tools,
+            route_binding,
         ),
         Request::Transcription(transcription) => {
             if !matches!(
@@ -114,19 +121,14 @@ pub(super) fn validate(
 fn validate_chat(
     chat: &crate::core::ChatRequest,
     max_audio_bytes: usize,
-    route_allows_input_audio: Option<bool>,
+    function_tools: bool,
+    route_binding: Option<&RouteBinding>,
 ) -> Result<(), GatewayError> {
     if chat.model.0.is_empty()
         || chat.messages.is_empty()
         || chat.extensions.iter().next().is_some()
     {
         return Err(invalid_request());
-    }
-    if chat.stream
-        || !chat.tools.is_empty()
-        || !matches!(&chat.tool_choice, ToolChoice::Auto | ToolChoice::None)
-    {
-        return Err(unsupported_operation());
     }
 
     let has_audio = chat.messages.iter().any(|message| {
@@ -135,7 +137,26 @@ fn validate_chat(
             .iter()
             .any(|content| matches!(content, ChatContent::InputAudio { .. }))
     });
-    if has_audio && route_allows_input_audio == Some(false) {
+    let uses_tools = !chat.tools.is_empty()
+        || !matches!(&chat.tool_choice, ToolChoice::Auto | ToolChoice::None)
+        || chat.messages.iter().any(|message| {
+            message.content.iter().any(|content| {
+                matches!(
+                    content,
+                    ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. }
+                )
+            })
+        });
+    // Tool history needs tool support even when the request declares no tools.
+    if uses_tools && !function_tools {
+        return Err(unsupported_operation());
+    }
+    if let Some(binding) = route_binding
+        && has_audio
+        && (!binding.allows_input_audio
+            || (chat.stream && !binding.allows_audio_streaming_chat)
+            || (uses_tools && !binding.allows_audio_function_tools))
+    {
         return Err(unsupported_operation());
     }
 
@@ -144,13 +165,14 @@ fn validate_chat(
         if message.content.is_empty() {
             return Err(invalid_request());
         }
-        if message.role == ChatRole::Tool {
-            return Err(unsupported_operation());
-        }
         for content in &message.content {
             match content {
                 ChatContent::Text { text } if !text.is_empty() => {}
+                // Clients send empty text beside an assistant's tool calls.
+                ChatContent::Text { .. } if message.role == ChatRole::Assistant => {}
                 ChatContent::Text { .. } => return Err(invalid_request()),
+                ChatContent::ToolCall { .. } if message.role == ChatRole::Assistant => {}
+                ChatContent::ToolResult { .. } if message.role == ChatRole::Tool => {}
                 ChatContent::InputAudio { audio } if message.role == ChatRole::User => {
                     total_audio_bytes = total_audio_bytes
                         .checked_add(audio.bytes().len())
@@ -161,7 +183,7 @@ fn validate_chat(
                 }
                 ChatContent::InputAudio { .. } => return Err(unsupported_operation()),
                 ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. } => {
-                    return Err(unsupported_operation());
+                    return Err(invalid_request());
                 }
             }
         }

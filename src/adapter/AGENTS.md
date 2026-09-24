@@ -6,7 +6,7 @@
 ## Layout
 - One directory per provider, split by concern: `mod.rs` (adapter, `execute`, `status_error`), `request.rs` (IR → provider payload), `response.rs` (provider → IR), `stream.rs` + `stream_state.rs` + `stream_wire.rs` (streaming), `validation.rs` (capability and option checks).
   - `ollama/`: also `apple_fm.rs` (`ProviderKind::AppleFm` reuses the Ollama chat path) and `sse.rs` (re-export of the transport SSE framing).
-  - `vllm/`: non-streaming chat and transcription (multipart) only; construction rejects streaming, tools, reasoning control and a `secret_ref`.
+  - `vllm/`: chat (streaming and tools when declared, also behind LiteLLM) and transcription (multipart or audio chat); construction rejects reasoning control, and a `secret_ref` without a resolved token.
   - `openrouter/`: tests in `tests.rs` and `tests/stream.rs`.
   - `codex/`: `provider.rs` (instead of `mod.rs` logic), `protocol/` (Responses wire protocol + tests), `auth/` (device login, token refresh with single-flight `RefreshCoordinator`, keyring/file credential store with a lock, pinned-TLS `net.rs`).
 - `transport/`: the only HTTP client. HTTP/1 over hyper with rustls, per-request connection (no pool), `origin.rs` (URL and TLS rules, credentials only over HTTPS), `resolver.rs` (DNS lookups capped at 16), `time.rs` (connect/headers/first-byte/idle phases), `body.rs` (bounded bodies), `multipart.rs`, `sse.rs`. Tests live in `transport/tests/`.

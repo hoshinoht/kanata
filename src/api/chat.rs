@@ -126,6 +126,9 @@ async fn dispatch_chat(
     }
     let extensions = chat.extensions.clone();
     let reasoning_effort = chat.options.reasoning_effort;
+    if chat.options.enable_thinking.is_some() && !route.provider_kind.accepts_enable_thinking() {
+        return invalid_param("chat_template_kwargs");
+    }
     let request = CoreRequest::Chat(chat);
     match check_supported(&route.capabilities, adapter.capabilities(), &request) {
         Ok(()) => {}
