@@ -1,0 +1,18 @@
+{
+  "id": "chatcmpl_vllm_audio_transcription_1",
+  "object": "chat.completion",
+  "created": 1700000001,
+  "model": "served-transcriber",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "  fixture transcript  ",
+        "reasoning_content": "PRIVATE_REASONING_MARKER"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
+}

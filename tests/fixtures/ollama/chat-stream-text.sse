@@ -1,0 +1,13 @@
+: fixture comment
+event: message
+data: {"id":"stream_fixture_text","object":"chat.completion.chunk","model":"ollama-concrete-stream","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"stream_fixture_text","object":"chat.completion.chunk","model":"ollama-concrete-stream","choices":[{"index":0,"delta":{"content":"hello "},"finish_reason":null}]}
+
+data: {"id":"stream_fixture_text","object":"chat.completion.chunk","model":"ollama-concrete-stream","choices":[{"index":0,"delta":{"content":"🌍"},"finish_reason":null}]}
+
+data: {"id":"stream_fixture_text","object":"chat.completion.chunk","model":"ollama-concrete-stream","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}
+
+data: [DONE]
+
+: trailing comment

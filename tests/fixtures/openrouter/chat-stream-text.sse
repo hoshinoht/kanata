@@ -1,0 +1,18 @@
+﻿: OPENROUTER PROCESSING
+
+data: {"id":"gen-fixture-stream","object":"chat.completion.chunk",
+data: "created":1700000000,"model":"openai/gpt-4o-mini","provider":"fixture",
+data: "system_fingerprint":"fp-fixture","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-fixture-stream","object":"chat.completion.chunk","created":1700000000,"model":"openai/gpt-4o-mini","provider":"fixture","choices":[{"index":0,"delta":{"content":"Hello "},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-fixture-stream","object":"chat.completion.chunk","created":1700000000,"model":"openai/gpt-4o-mini","provider":"fixture","choices":[{"index":0,"delta":{"content":"café 🌍"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-fixture-stream","object":"chat.completion.chunk","created":1700000000,"model":"openai/gpt-4o-mini","provider":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"stop","native_finish_reason":"end_turn"}]}
+
+data: {"id":"gen-fixture-stream","object":"chat.completion.chunk","created":1700000000,"model":"openai/gpt-4o-mini","provider":"fixture","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"end_turn"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"cost":0.0012,"cost_details":{"upstream_inference_cost":0.0012},"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":0},"is_byok":false,"server_tool_use":{"web_search_requests":0},"server_tool_use_details":{"tool_calls_requested":0}},"openrouter_metadata":{"provider":"fixture","attempt":1},"service_tier":"default"}
+
+data: [DONE]
+
+event: unexpected-after-done
+data: {not-json}

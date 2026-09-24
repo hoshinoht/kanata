@@ -1,0 +1,5 @@
+{
+  "access_token": "TEST_ONLY_ACCESS_TOKEN_NOT_SECRET_0001",
+  "refresh_token": "TEST_ONLY_ROTATED_REFRESH_TOKEN_NOT_SECRET_0001",
+  "expires_in": 3600
+}

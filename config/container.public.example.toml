@@ -1,0 +1,106 @@
+# Private + public container template: use with compose.kanata.public.yml.
+# kanata-api hostname -> owner-managed Cloudflare tunnel -> public listener on
+# the internal kanata_public_origin network. Nothing is host-published.
+[listeners.client]
+bind = "172.30.0.2"
+port = 8080
+
+# Reached only by cloudflared; missing/invalid keys get 403 on every path.
+[listeners.public]
+bind = "172.29.0.2"
+port = 8081
+
+[listeners.admin]
+bind = "127.0.0.1"
+port = 9090
+
+[publication]
+# Host tailnet IPv4 for the private route; must match the edge's EDGE_TAILNET_IPV4.
+tailnet_addresses = ["100.64.0.10"]
+# Exact alias/operation pairs reachable publicly. Empty by default; Codex is
+# always rejected. Example: { model_alias = "qwen3-0.6b", operation = "chat" }
+public_routes = []
+
+[codex_auth]
+store = "file"
+state_dir = "/var/lib/kanata/codex"
+
+[[adapters]]
+id = "ollama-mac"
+kind = "ollama"
+# Needs compose.kanata.host-ollama.yml on macOS/OrbStack.
+base_url = "http://host.orb.internal:11434/v1"
+trust_zone = "local"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = true
+function_tools = false
+
+[[adapters]]
+id = "codex"
+kind = "codex"
+base_url = "https://chatgpt.com/backend-api/codex"
+trust_zone = "external"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = true
+function_tools = true
+# Request reasoning_effort (low/medium/high) overrides the alias default.
+reasoning_control = true
+
+[[routes]]
+id = "ollama-qwen3-0-6b"
+model_alias = "qwen3-0.6b"
+operation = "chat"
+adapter_id = "ollama-mac"
+upstream_id = "qwen3:0.6b"
+requires_streaming_chat = true
+requires_function_tools = false
+
+[[routes]]
+id = "codex-gpt-6-sol"
+model_alias = "gpt-6-sol"
+operation = "chat"
+adapter_id = "codex"
+upstream_id = "gpt-6-sol"
+requires_streaming_chat = true
+requires_function_tools = true
+
+[[application_keys]]
+id = "owner"
+# Placeholder digest; scripts/rotate-owner-key.sh writes the real one.
+secret_ref = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+owner = true
+permissions = [
+  { model_alias = "qwen3-0.6b", operation = "chat" },
+  { model_alias = "gpt-6-sol", operation = "chat" },
+]
+
+# Keys for other people: non-owner, scoped to public-eligible models only.
+# A key works publicly only for aliases in both its permissions and public_routes.
+# Generate with `kanata key new --id alice --chat qwen3-0.6b`; paste its block:
+# [[application_keys]]
+# id = "alice"
+# secret_ref = "sha256:<64 hex from kanata key new>"
+# permissions = [{ model_alias = "qwen3-0.6b", operation = "chat" }]
+
+# Container logs (docker compose logs kanata). level: trace|debug|info|warn|error;
+# format: text|json. debug adds sanitized provider error messages.
+[logging]
+level = "info"
+format = "text"
+
+[limits]
+max_queue = 32
+max_in_flight = 8
+max_body_bytes = 1048576
+max_audio_bytes = 26214400
+max_extension_bytes = 8192
+
+[timeouts]
+queue_ms = 1000
+connect_ms = 5000
+headers_ms = 120000
+first_byte_ms = 120000
+idle_ms = 120000
+overall_ms = 900000

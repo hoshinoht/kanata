@@ -1,0 +1,14 @@
+{
+  "id": "chatcmpl_vllm_fixture_2",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "served-checkpoint",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "fixture response"},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 19}
+}

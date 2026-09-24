@@ -1,0 +1,14 @@
+data: {"type":"response.created","response":{"id":"TEST_ONLY_RESPONSE_ID_NOT_SECRET_0001","created_at":1700000000,"model":"fixture-codex-model"}}
+
+data: {"type":"response.output_text.delta","delta":"TEST_ONLY_TEXT_NOT_SECRET_0001"}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"TEST_ONLY_FUNCTION_CALL_ID_NOT_SECRET_0001","call_id":"TEST_ONLY_CALL_ID_NOT_SECRET_0001","name":"lookup","arguments":""}}
+
+data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"query\":"}
+
+data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"query\":\"TEST_ONLY_QUERY_NOT_SECRET_0001\"}"}
+
+data: {"type":"response.completed","response":{"id":"TEST_ONLY_RESPONSE_ID_NOT_SECRET_0001","created_at":1700000000,"model":"fixture-codex-model","output":[{"type":"message","content":[{"type":"output_text","text":"TEST_ONLY_TEXT_NOT_SECRET_0001"}]},{"type":"function_call","id":"TEST_ONLY_FUNCTION_CALL_ID_NOT_SECRET_0001","call_id":"TEST_ONLY_CALL_ID_NOT_SECRET_0001","name":"lookup","arguments":"{\"query\":\"TEST_ONLY_QUERY_NOT_SECRET_0001\"}"}],"usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7}}}
+
+data: [DONE]
+

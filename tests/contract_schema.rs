@@ -6,10 +6,11 @@ use std::task::{Context, Poll, Waker};
 use futures_core::Stream;
 use kanata::adapter::{Adapter, AdapterFuture, AdapterOutput};
 use kanata::core::{
-    Capabilities, CapabilityError, ErrorKind, ExtensionError, ExtensionKey, Extensions,
-    GatewayError, MAX_EXTENSION_BYTES, MAX_EXTENSION_ENTRIES, ModelAlias, NormalizedEvent,
-    Operation, Request, RequestContext, RequestValidationError, Response, RouteError,
-    RouteIdentity, RoutedRequest, RoutedRequestError, ToolChoice, TranscriptionResponse, TrustZone,
+    AudioValidationError, Capabilities, CapabilityError, ChatContent, ErrorKind, ExtensionError,
+    ExtensionKey, Extensions, GatewayError, InputAudioFormat, MAX_EXTENSION_BYTES,
+    MAX_EXTENSION_ENTRIES, ModelAlias, NormalizedEvent, Operation, Request, RequestContext,
+    RequestValidationError, Response, RouteError, RouteIdentity, RoutedRequest, RoutedRequestError,
+    ToolChoice, TranscriptionResponse, TrustZone, ValidatedAudio,
 };
 
 fn fixture(name: &str) -> &'static str {
@@ -142,6 +143,38 @@ fn canonical_ir_rejects_unknown_fields_and_supports_tool_choice() {
 }
 
 #[test]
+fn canonical_chat_options_round_trip_and_enforce_bounds() {
+    let base = r#"{"operation":"chat","model":"chat-demo","messages":[],"options":"#;
+    let options = r#"{"response_format":{"type":"json_schema","json_schema":{"name":"n","schema":{"type":"object"},"strict":true}},"sampling":{"temperature":0.5,"top_p":1.0,"seed":-3},"max_output_tokens":16,"reasoning_effort":"minimal"}"#;
+    let request: Request =
+        serde_json::from_str(&format!("{base}{options}}}")).expect("options parse");
+    let Request::Chat(chat) = &request else {
+        panic!("chat request");
+    };
+    assert_eq!(chat.options.max_output_tokens, Some(16));
+    assert_eq!(
+        serde_json::from_value::<Request>(serde_json::to_value(&request).expect("serializes"))
+            .expect("round trips"),
+        request
+    );
+
+    for invalid in [
+        r#"{"sampling":{"temperature":2.5}}"#,
+        r#"{"sampling":{"top_p":0.0}}"#,
+        r#"{"max_output_tokens":0}"#,
+        r#"{"reasoning_effort":"extreme"}"#,
+        r#"{"response_format":{"type":"json_schema","json_schema":{"name":"n","schema":[]}}}"#,
+        r#"{"response_format":{"type":"json_object","extra":1}}"#,
+        r#"{"unsupported":true}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<Request>(&format!("{base}{invalid}}}")).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
 fn transcription_file_deserialization_validates_owned_metadata_and_bytes() {
     for file in [
         r#"{"file_name":" ","media_type":"audio/wav","bytes":[1]}"#,
@@ -155,6 +188,38 @@ fn transcription_file_deserialization_validates_owned_metadata_and_bytes() {
         );
         assert!(serde_json::from_str::<Request>(&request).is_err());
     }
+}
+
+#[test]
+fn input_audio_ir_validates_typed_nonempty_bytes_and_redacts_debug() {
+    let audio = ValidatedAudio::new(InputAudioFormat::Wav, b"AUDIO_SECRET".to_vec())
+        .expect("bounded audio");
+    assert_eq!(audio.format(), InputAudioFormat::Wav);
+    assert_eq!(audio.bytes(), b"AUDIO_SECRET");
+    let debug = format!("{audio:?}");
+    assert!(debug.contains("byte_len: 12"));
+    assert!(!debug.contains("AUDIO_SECRET"));
+
+    let content = ChatContent::InputAudio { audio };
+    let serialized = serde_json::to_value(&content).expect("audio content serializes");
+    assert_eq!(
+        serde_json::from_value::<ChatContent>(serialized).expect("validated audio round trips"),
+        content
+    );
+    for invalid in [
+        r#"{"format":"flac","bytes":[1]}"#,
+        r#"{"format":"mp3","bytes":[]}"#,
+    ] {
+        assert!(serde_json::from_str::<ValidatedAudio>(invalid).is_err());
+    }
+    assert_eq!(
+        ValidatedAudio::with_max_bytes(InputAudioFormat::Mp3, vec![1, 2], 1),
+        Err(AudioValidationError::TooLarge)
+    );
+    assert_eq!(
+        ValidatedAudio::with_max_bytes(InputAudioFormat::Mp3, Vec::new(), 1),
+        Err(AudioValidationError::EmptyBytes)
+    );
 }
 
 #[test]

@@ -1,0 +1,118 @@
+# Private container template: copy to config/config.toml (git-ignored) and
+# replace the tailnet address. Reached only by your reverse proxy on
+# kanata_private_ingress; Kanata has no host ports.
+[listeners.client]
+bind = "172.30.0.2"
+port = 8080
+
+[listeners.admin]
+bind = "127.0.0.1"
+port = 9090
+
+[publication]
+# Host tailnet IPv4; must match the edge's EDGE_TAILNET_IPV4.
+tailnet_addresses = ["100.64.0.10"]
+
+[codex_auth]
+store = "file"
+# Dedicated Codex volume; log in with `kanata auth codex login` inside the container.
+state_dir = "/var/lib/kanata/codex"
+
+[[adapters]]
+id = "ollama-mac"
+kind = "ollama"
+# Needs compose.kanata.host-ollama.yml on macOS/OrbStack.
+base_url = "http://host.orb.internal:11434/v1"
+trust_zone = "local"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = true
+function_tools = false
+
+[[adapters]]
+id = "codex"
+kind = "codex"
+base_url = "https://chatgpt.com/backend-api/codex"
+trust_zone = "external"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = true
+function_tools = true
+# Request reasoning_effort (low/medium/high) overrides the alias default.
+reasoning_control = true
+
+# Aliases may not contain ':' except a Codex effort suffix, so dash the Ollama tag.
+[[routes]]
+id = "ollama-qwen3-0-6b"
+model_alias = "qwen3-0.6b"
+operation = "chat"
+adapter_id = "ollama-mac"
+upstream_id = "qwen3:0.6b"
+requires_streaming_chat = true
+requires_function_tools = false
+
+# Codex: the unsuffixed alias uses the default (medium) effort; add :low/:high
+# variants per model. Available models depend on the ChatGPT plan.
+[[routes]]
+id = "codex-gpt-6-sol"
+model_alias = "gpt-6-sol"
+operation = "chat"
+adapter_id = "codex"
+upstream_id = "gpt-6-sol"
+requires_streaming_chat = true
+requires_function_tools = true
+
+[[routes]]
+id = "codex-gpt-6-sol-low"
+model_alias = "gpt-6-sol:low"
+operation = "chat"
+adapter_id = "codex"
+upstream_id = "gpt-6-sol"
+codex_reasoning_effort = "low"
+requires_streaming_chat = true
+requires_function_tools = true
+
+[[routes]]
+id = "codex-gpt-6-sol-high"
+model_alias = "gpt-6-sol:high"
+operation = "chat"
+adapter_id = "codex"
+upstream_id = "gpt-6-sol"
+codex_reasoning_effort = "high"
+requires_streaming_chat = true
+requires_function_tools = true
+
+# The only key allowed Codex scopes. Stored as a digest; no key file is mounted.
+[[application_keys]]
+id = "owner"
+# Placeholder digest; scripts/rotate-owner-key.sh writes the real one.
+secret_ref = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+owner = true
+permissions = [
+  { model_alias = "qwen3-0.6b", operation = "chat" },
+  { model_alias = "gpt-6-sol", operation = "chat" },
+  { model_alias = "gpt-6-sol:low", operation = "chat" },
+  { model_alias = "gpt-6-sol:high", operation = "chat" },
+]
+
+# Container logs (docker compose logs kanata). level: trace|debug|info|warn|error;
+# format: text|json. debug adds sanitized provider error messages.
+[logging]
+level = "info"
+format = "text"
+
+[limits]
+max_queue = 32
+max_in_flight = 8
+max_body_bytes = 1048576
+max_audio_bytes = 26214400
+max_extension_bytes = 8192
+
+# Long enough for high-effort Codex turns.
+[timeouts]
+queue_ms = 1000
+connect_ms = 5000
+headers_ms = 120000
+first_byte_ms = 120000
+idle_ms = 120000
+overall_ms = 900000

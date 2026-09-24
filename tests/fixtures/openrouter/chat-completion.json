@@ -1,0 +1,59 @@
+{
+  "id": "or-fixture-completion",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "openai/gpt-4o-mini",
+  "system_fingerprint": "fp-fixture",
+  "openrouter_metadata": {
+    "attempt": 1,
+    "endpoints": {
+      "available": [
+        {
+          "model": "openai/gpt-4o-mini",
+          "provider": "Fixture",
+          "selected": true
+        }
+      ],
+      "total": 1
+    },
+    "generation_time": 12,
+    "is_byok": false,
+    "region": "fixture",
+    "requested": "openai/gpt-4o-mini",
+    "strategy": "direct",
+    "summary": "available=1, selected=Fixture"
+  },
+  "service_tier": "default",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "fixture response"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 11,
+    "completion_tokens": 7,
+    "total_tokens": 18,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "cost": 0.0012,
+    "cost_details": {
+      "upstream_inference_completions_cost": 0.0004,
+      "upstream_inference_cost": null,
+      "upstream_inference_prompt_cost": 0.0008
+    },
+    "is_byok": false,
+    "prompt_tokens_details": {
+      "cached_tokens": 2
+    },
+    "server_tool_use_details": {
+      "tool_calls_executed": 0,
+      "tool_calls_requested": 0
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "model": "private-chat",
+  "messages": [{"role": "user", "content": "Look things up"}],
+  "tools": [{
+    "type": "function",
+    "function": {"name": "lookup", "parameters": {"type": "object"}}
+  }],
+  "stream": true,
+  "stream_options": {"include_usage": true}
+}

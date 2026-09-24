@@ -1,0 +1,1 @@
+data: {"id":"gen-fixture-malformed","object":"chat.completion.chunk","created":1700000000,"model":"openai/gpt-4o-mini","unreviewed_provider_field":"fixture-private-marker","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}

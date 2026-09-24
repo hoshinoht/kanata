@@ -1,0 +1,3 @@
+event: response.in_progress
+data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"TEST_ONLY_RESPONSE_ID_NOT_SECRET_0001","created_at":1700000000,"model":"fixture-codex-model","status":"in_progress","output":[]}}
+

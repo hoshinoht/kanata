@@ -1,0 +1,14 @@
+{
+  "id": "chatcmpl_vllm_fixture_3",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "served-checkpoint",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "fixture response"},
+      "finish_reason": "stop"
+    }
+  ],
+  "unexpected": {"marker": "ignored fields are rejected"}
+}

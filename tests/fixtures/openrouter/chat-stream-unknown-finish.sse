@@ -1,0 +1,5 @@
+data: {"id":"gen-fixture-finish","object":"chat.completion.chunk","created":1700000000,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-finish","object":"chat.completion.chunk","created":1700000000,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":"visible"},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-finish","object":"chat.completion.chunk","created":1700000000,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"unrecognized","native_finish_reason":"custom"}]}

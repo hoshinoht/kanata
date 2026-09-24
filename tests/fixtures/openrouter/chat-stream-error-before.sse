@@ -1,0 +1,1 @@
+data: {"id":"gen-fixture-error-before","object":"chat.completion.chunk","created":1700000000,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":""},"finish_reason":"error","native_finish_reason":null}],"error":{"code":"server_error","message":"fixture-error-marker"}}

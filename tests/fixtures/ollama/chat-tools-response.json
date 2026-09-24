@@ -1,0 +1,24 @@
+{
+  "id": "chatcmpl_fixture_tools",
+  "object": "chat.completion",
+  "created": 1700000001,
+  "model": "ollama-concrete-tool-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_fixture_1",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": "{\"q\":\"fixture\"}"}
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {"prompt_tokens": 13, "completion_tokens": 4, "total_tokens": 17}
+}

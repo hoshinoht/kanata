@@ -1,0 +1,19 @@
+{
+  "model": "llama3.2:latest",
+  "messages": [{"role": "user", "content": "Say hello"}],
+  "tool_choice": "auto",
+  "stream": false,
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "greeting",
+      "schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+      "strict": true
+    }
+  },
+  "temperature": 0.25,
+  "top_p": 0.5,
+  "seed": 42,
+  "max_tokens": 128,
+  "reasoning_effort": "none"
+}

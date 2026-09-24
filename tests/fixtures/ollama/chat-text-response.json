@@ -1,0 +1,14 @@
+{
+  "id": "chatcmpl_fixture_concrete_model",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "ollama-concrete-7b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "fixture text response"},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
+}

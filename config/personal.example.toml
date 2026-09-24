@@ -1,0 +1,218 @@
+# Native (non-container) template for running `kanata serve` directly on a host.
+# For the Docker deployment use container.example.toml instead.
+# Replace .invalid hosts, model IDs, the sample tailnet address and the Codex state_dir.
+# vLLM audio behavior has fixture evidence only. Codex model availability depends on the ChatGPT plan.
+[listeners.client]
+bind = "127.0.0.1"
+port = 8080
+
+[listeners.admin]
+bind = "127.0.0.1"
+port = 9090
+
+[publication]
+tailnet_addresses = ["100.64.0.10"]
+
+[codex_auth]
+store = "keyring"
+state_dir = "/replace/with/owner-writable/absolute/path/kanata-codex"
+
+[[adapters]]
+id = "ollama-local"
+kind = "ollama"
+base_url = "http://127.0.0.1:11434/v1"
+trust_zone = "local"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = true
+function_tools = false
+
+[[adapters]]
+id = "vllm-text-a"
+kind = "vllm"
+base_url = "http://vllm-text-a.invalid:8000/v1"
+trust_zone = "private_network"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = false
+function_tools = false
+
+[[adapters]]
+id = "vllm-text-b"
+kind = "vllm"
+base_url = "http://vllm-text-b.invalid:8000/v1"
+trust_zone = "private_network"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = false
+function_tools = false
+
+# One private vLLM endpoint can serve audio chat and the audio-chat ASR bridge.
+[[adapters]]
+id = "vllm-audio-chat"
+kind = "vllm"
+base_url = "http://vllm-audio.invalid:8001/v1"
+trust_zone = "private_network"
+transcription_mode = "audio_chat"
+[adapters.capabilities]
+operations = ["chat", "transcription"]
+streaming_chat = false
+function_tools = false
+input_audio = true
+
+# A separate ASR-model endpoint uses vLLM's native transcription API.
+[[adapters]]
+id = "vllm-native-asr"
+kind = "vllm"
+base_url = "http://vllm-asr.invalid:8002/v1"
+trust_zone = "private_network"
+transcription_mode = "native_asr"
+[adapters.capabilities]
+operations = ["transcription"]
+streaming_chat = false
+function_tools = false
+
+# Codex configuration is schema-only; no credential is referenced here.
+[[adapters]]
+id = "codex-private"
+kind = "codex"
+base_url = "https://chatgpt.invalid/backend-api/codex"
+trust_zone = "external"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = true
+function_tools = true
+
+[[routes]]
+id = "ollama-small"
+model_alias = "local-chat"
+operation = "chat"
+adapter_id = "ollama-local"
+upstream_id = "qwen3:0.6b"
+requires_streaming_chat = true
+requires_function_tools = false
+
+# This model uses the local Ollama server as a signed-in cloud proxy.
+[[routes]]
+id = "ollama-cloud"
+model_alias = "ollama-cloud"
+operation = "chat"
+adapter_id = "ollama-local"
+upstream_id = "gpt-oss:120b-cloud"
+requires_streaming_chat = true
+requires_function_tools = false
+
+[[routes]]
+id = "vllm-chat-a"
+model_alias = "private-chat-a"
+operation = "chat"
+adapter_id = "vllm-text-a"
+upstream_id = "replace-with-first-vllm-model-id"
+requires_streaming_chat = false
+requires_function_tools = false
+
+[[routes]]
+id = "vllm-chat-b"
+model_alias = "private-chat-b"
+operation = "chat"
+adapter_id = "vllm-text-b"
+upstream_id = "replace-with-second-vllm-model-id"
+requires_streaming_chat = false
+requires_function_tools = false
+
+[[routes]]
+id = "vllm-audio-chat"
+model_alias = "private-audio-chat"
+operation = "chat"
+adapter_id = "vllm-audio-chat"
+upstream_id = "replace-with-audio-vllm-model-id"
+requires_streaming_chat = false
+requires_function_tools = false
+allows_input_audio = true
+
+[[routes]]
+id = "vllm-audio-transcription"
+model_alias = "private-audio-transcribe"
+operation = "transcription"
+adapter_id = "vllm-audio-chat"
+upstream_id = "replace-with-audio-vllm-model-id"
+requires_streaming_chat = false
+requires_function_tools = false
+
+[[routes]]
+id = "vllm-native-transcription"
+model_alias = "private-native-asr"
+operation = "transcription"
+adapter_id = "vllm-native-asr"
+upstream_id = "replace-with-asr-vllm-model-id"
+requires_streaming_chat = false
+requires_function_tools = false
+
+[[routes]]
+id = "codex-chat"
+model_alias = "codex-chat"
+operation = "chat"
+adapter_id = "codex-private"
+upstream_id = "gpt-5-codex"
+requires_streaming_chat = true
+requires_function_tools = true
+
+# These aliases demonstrate static model/effort selection only.
+[[routes]]
+id = "codex-gpt-6-sol"
+model_alias = "gpt-6-sol"
+operation = "chat"
+adapter_id = "codex-private"
+upstream_id = "gpt-6-sol"
+requires_streaming_chat = true
+requires_function_tools = true
+
+[[routes]]
+id = "codex-gpt-6-luna-low"
+model_alias = "gpt-6-luna:low"
+operation = "chat"
+adapter_id = "codex-private"
+upstream_id = "gpt-6-luna"
+codex_reasoning_effort = "low"
+requires_streaming_chat = true
+requires_function_tools = true
+
+# Provide separate high-entropy values for the owner and restricted external key.
+[[application_keys]]
+id = "personal-client"
+secret_ref = "env:KANATA_CLIENT_KEY"
+owner = true
+permissions = [
+  { model_alias = "local-chat", operation = "chat" },
+  { model_alias = "ollama-cloud", operation = "chat" },
+  { model_alias = "private-chat-a", operation = "chat" },
+  { model_alias = "private-chat-b", operation = "chat" },
+  { model_alias = "private-audio-chat", operation = "chat" },
+  { model_alias = "private-audio-transcribe", operation = "transcription" },
+  { model_alias = "private-native-asr", operation = "transcription" },
+  { model_alias = "codex-chat", operation = "chat" },
+  { model_alias = "gpt-6-sol", operation = "chat" },
+  { model_alias = "gpt-6-luna:low", operation = "chat" },
+]
+
+[[application_keys]]
+id = "external-client"
+secret_ref = "env:KANATA_EXTERNAL_CLIENT_KEY"
+permissions = [
+  { model_alias = "private-chat-a", operation = "chat" },
+]
+
+[limits]
+max_queue = 32
+max_in_flight = 8
+max_body_bytes = 1048576
+max_audio_bytes = 26214400
+max_extension_bytes = 8192
+
+[timeouts]
+queue_ms = 1000
+connect_ms = 5000
+headers_ms = 10000
+first_byte_ms = 15000
+idle_ms = 30000
+overall_ms = 60000

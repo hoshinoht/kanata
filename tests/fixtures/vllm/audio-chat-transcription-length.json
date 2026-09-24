@@ -1,0 +1,16 @@
+{
+  "id": "chatcmpl_vllm_audio_transcription_length_1",
+  "object": "chat.completion",
+  "created": 1700000002,
+  "model": "served-transcriber",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "TRANSCRIPTION_LENGTH_SECRET"
+      },
+      "finish_reason": "length"
+    }
+  ]
+}

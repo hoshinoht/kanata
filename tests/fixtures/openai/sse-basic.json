@@ -1,0 +1,5 @@
+{
+  "model": "private-chat",
+  "messages": [{"role": "user", "content": "Say hello"}],
+  "stream": true
+}

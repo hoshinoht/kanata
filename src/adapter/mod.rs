@@ -5,6 +5,15 @@ use futures_core::Stream;
 
 use crate::core::{Capabilities, GatewayError, NormalizedEvent, Response, RoutedRequest};
 
+pub mod codex;
+pub(crate) mod diagnostics;
+pub mod ollama;
+pub mod openrouter;
+pub mod vllm;
+
+#[allow(dead_code)]
+pub(crate) mod transport;
+
 pub type AdapterFuture =
     Pin<Box<dyn Future<Output = Result<AdapterOutput, GatewayError>> + Send + 'static>>;
 pub type EventStream =

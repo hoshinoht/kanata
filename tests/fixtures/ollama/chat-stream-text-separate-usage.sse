@@ -1,0 +1,11 @@
+data: {"id":"stream_fixture_usage","object":"chat.completion.chunk","model":"ollama-concrete-stream","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"stream_fixture_usage","object":"chat.completion.chunk","model":"ollama-concrete-stream","choices":[{"index":0,"delta":{"content":"separate usage"},"finish_reason":null}]}
+
+data: {"id":"stream_fixture_usage","object":"chat.completion.chunk","model":"ollama-concrete-stream","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"stream_fixture_usage","object":"chat.completion.chunk","model":"ollama-concrete-stream","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
+
+data: [DONE]
+
+: trailing comment

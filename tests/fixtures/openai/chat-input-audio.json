@@ -1,0 +1,11 @@
+{
+  "model": "private-chat",
+  "messages": [
+    {"role": "user", "content": [
+      {"type": "text", "text": "before the recording"},
+      {"type": "input_audio", "input_audio": {"data": "AQIDBA==", "format": "wav"}},
+      {"type": "text", "text": "after the recording"},
+      {"type": "input_audio", "input_audio": {"data": "BQY=", "format": "mp3"}}
+    ]}
+  ]
+}

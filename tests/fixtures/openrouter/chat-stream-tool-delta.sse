@@ -1,0 +1,1 @@
+data: {"id":"gen-fixture-tool","object":"chat.completion.chunk","created":1700000000,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-fixture","type":"function","function":{"name":"fixture","arguments":"{}"}}]},"finish_reason":null}]}

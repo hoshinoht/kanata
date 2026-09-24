@@ -18,9 +18,15 @@ fn assert_no_provider_terms(path: &Path) {
             }
             continue;
         }
+        if entry_path
+            .extension()
+            .is_none_or(|extension| extension != "rs")
+        {
+            continue;
+        }
         if matches!(
             entry_path.file_name().and_then(|name| name.to_str()),
-            Some("main.rs" | "config.rs")
+            Some("main.rs" | "config.rs" | "cli.rs")
         ) {
             continue;
         }

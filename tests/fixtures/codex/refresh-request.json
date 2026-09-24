@@ -1,0 +1,12 @@
+{
+  "method": "POST",
+  "url": "https://auth.openai.com/oauth/token",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+    "grant_type": "refresh_token",
+    "refresh_token": "TEST_ONLY_REFRESH_TOKEN_NOT_SECRET_0001"
+  }
+}

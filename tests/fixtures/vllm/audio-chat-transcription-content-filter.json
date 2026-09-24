@@ -1,0 +1,16 @@
+{
+  "id": "chatcmpl_vllm_audio_transcription_filter_1",
+  "object": "chat.completion",
+  "created": 1700000003,
+  "model": "served-transcriber",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "TRANSCRIPTION_FILTER_SECRET"
+      },
+      "finish_reason": "content_filter"
+    }
+  ]
+}

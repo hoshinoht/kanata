@@ -1,0 +1,51 @@
+{
+  "method": "POST",
+  "url": "https://chatgpt.com/backend-api/codex/responses",
+  "headers": {
+    "Authorization": "Bearer TEST_ONLY_ACCESS_TOKEN_NOT_SECRET_0001",
+    "ChatGPT-Account-ID": "TEST_ONLY_ACCOUNT_ID_NOT_SECRET_0001",
+    "Content-Type": "application/json",
+    "Accept": "text/event-stream"
+  },
+  "body": {
+    "model": "fixture-codex-model",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "TEST_ONLY_PROMPT_NOT_SECRET_0001"
+          }
+        ]
+      }
+    ],
+    "reasoning": {
+      "effort": "medium"
+    },
+    "store": false,
+    "stream": true,
+    "tools": [
+      {
+        "type": "function",
+        "name": "lookup",
+        "description": "TEST_ONLY_TOOL_DESCRIPTION_NOT_SECRET_0001",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": ["query"],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "tool_choice": {
+      "type": "function",
+      "name": "lookup"
+    }
+  }
+}

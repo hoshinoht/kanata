@@ -137,6 +137,7 @@ impl std::error::Error for ExtensionKeyError {}
 pub const MAX_EXTENSION_ENTRIES: usize = 16;
 pub const MAX_EXTENSION_BYTES: usize = 8 * 1024;
 pub const MAX_EXTENSION_DEPTH: usize = 4;
+pub const MAX_INPUT_AUDIO_BYTES: usize = 25 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExtensionError {
@@ -263,6 +264,8 @@ pub enum RouteError {
 pub enum RequestValidationError {
     RequiredToolChoiceWithoutTools,
     UndeclaredToolChoice { name: String },
+    InputAudioRoleMismatch,
+    InputAudioTooLarge,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -298,7 +301,7 @@ impl RoutedRequest {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChatRequest {
     pub model: ModelAlias,
@@ -309,8 +312,389 @@ pub struct ChatRequest {
     pub tool_choice: ToolChoice,
     #[serde(default)]
     pub stream: bool,
+    #[serde(default, skip_serializing_if = "ChatOptions::is_empty")]
+    pub options: ChatOptions,
     #[serde(default)]
     pub extensions: Extensions,
+}
+
+impl<'de> Deserialize<'de> for ChatRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawChatRequest {
+            model: ModelAlias,
+            messages: Vec<ChatMessage>,
+            #[serde(default)]
+            tools: Vec<FunctionTool>,
+            #[serde(default)]
+            tool_choice: ToolChoice,
+            #[serde(default)]
+            stream: bool,
+            #[serde(default)]
+            options: ChatOptions,
+            #[serde(default)]
+            extensions: Extensions,
+        }
+
+        let raw = RawChatRequest::deserialize(deserializer)?;
+        let chat = Self {
+            model: raw.model,
+            messages: raw.messages,
+            tools: raw.tools,
+            tool_choice: raw.tool_choice,
+            stream: raw.stream,
+            options: raw.options,
+            extensions: raw.extensions,
+        };
+        chat.validate_audio()
+            .map_err(|_| D::Error::custom("invalid chat audio content"))?;
+        Ok(chat)
+    }
+}
+
+pub const MAX_RESPONSE_SCHEMA_BYTES: usize = 64 * 1024;
+pub const MAX_RESPONSE_SCHEMA_DEPTH: usize = 32;
+pub const MAX_RESPONSE_SCHEMA_NAME_BYTES: usize = 64;
+pub const MAX_RESPONSE_SCHEMA_DESCRIPTION_BYTES: usize = 1024;
+pub const MAX_OUTPUT_TOKENS: u32 = 1_048_576;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidChatOption;
+
+impl fmt::Display for InvalidChatOption {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("chat option is outside the contract bounds")
+    }
+}
+
+impl std::error::Error for InvalidChatOption {}
+
+/// Provider-neutral generation options; adapters encode only what their capabilities declare.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct ChatOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
+    #[serde(default, skip_serializing_if = "SamplingOptions::is_empty")]
+    pub sampling: SamplingOptions,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    /// Wire field that carried `max_output_tokens`, for error attribution only.
+    #[serde(skip)]
+    pub max_output_tokens_param: MaxTokensParam,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+/// Wire field name used for the output token limit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MaxTokensParam {
+    #[default]
+    MaxTokens,
+    MaxCompletionTokens,
+}
+
+impl MaxTokensParam {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MaxTokens => "max_tokens",
+            Self::MaxCompletionTokens => "max_completion_tokens",
+        }
+    }
+}
+
+impl ChatOptions {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn validate_max_output_tokens(value: u64) -> Result<u32, InvalidChatOption> {
+        u32::try_from(value)
+            .ok()
+            .filter(|value| (1..=MAX_OUTPUT_TOKENS).contains(value))
+            .ok_or(InvalidChatOption)
+    }
+
+    /// Structured output only when the format constrains the reply; `text` is the default.
+    pub fn uses_structured_output(&self) -> bool {
+        self.response_format
+            .as_ref()
+            .is_some_and(|format| !matches!(format, ResponseFormat::Text))
+    }
+
+    /// First sampling-class parameter present, named as on the wire.
+    pub fn sampling_param(&self) -> Option<&'static str> {
+        if self.sampling.temperature.is_some() {
+            Some("temperature")
+        } else if self.sampling.top_p.is_some() {
+            Some("top_p")
+        } else if self.sampling.seed.is_some() {
+            Some("seed")
+        } else if self.max_output_tokens.is_some() {
+            Some(self.max_output_tokens_param.as_str())
+        } else {
+            None
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ChatOptions {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawChatOptions {
+            #[serde(default)]
+            response_format: Option<ResponseFormat>,
+            #[serde(default)]
+            sampling: SamplingOptions,
+            #[serde(default)]
+            max_output_tokens: Option<u64>,
+            #[serde(default)]
+            reasoning_effort: Option<ReasoningEffort>,
+        }
+
+        let raw = RawChatOptions::deserialize(deserializer)?;
+        let max_output_tokens = raw
+            .max_output_tokens
+            .map(Self::validate_max_output_tokens)
+            .transpose()
+            .map_err(D::Error::custom)?;
+        Ok(Self {
+            response_format: raw.response_format,
+            sampling: raw.sampling,
+            max_output_tokens,
+            max_output_tokens_param: MaxTokensParam::default(),
+            reasoning_effort: raw.reasoning_effort,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SamplingOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<Temperature>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<TopP>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
+}
+
+impl SamplingOptions {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Finite temperature in `[0, 2]`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct Temperature(f64);
+
+// Finite by construction, so reflexive equality holds.
+impl Eq for Temperature {}
+
+impl Temperature {
+    pub fn new(value: f64) -> Result<Self, InvalidChatOption> {
+        (value.is_finite() && (0.0..=2.0).contains(&value))
+            .then_some(Self(value))
+            .ok_or(InvalidChatOption)
+    }
+
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for Temperature {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(f64::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
+/// Finite nucleus-sampling mass in `(0, 1]`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct TopP(f64);
+
+// Finite by construction, so reflexive equality holds.
+impl Eq for TopP {}
+
+impl TopP {
+    pub fn new(value: f64) -> Result<Self, InvalidChatOption> {
+        (value.is_finite() && value > 0.0 && value <= 1.0)
+            .then_some(Self(value))
+            .ok_or(InvalidChatOption)
+    }
+
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for TopP {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(f64::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl ReasoningEffort {
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "none" => Self::None,
+            "minimal" => Self::Minimal,
+            "low" => Self::Low,
+            "medium" => Self::Medium,
+            "high" => Self::High,
+            "xhigh" => Self::Xhigh,
+            "max" => Self::Max,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+/// Serializes in the public wire `response_format` shape.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseFormat {
+    Text,
+    JsonObject,
+    JsonSchema { json_schema: JsonSchemaFormat },
+}
+
+impl ResponseFormat {
+    /// Strict parse: unknown keys and nulls are rejected at every level.
+    pub fn from_value(value: Value) -> Result<Self, InvalidChatOption> {
+        let Value::Object(mut object) = value else {
+            return Err(InvalidChatOption);
+        };
+        let kind = object.remove("type").ok_or(InvalidChatOption)?;
+        let format = match kind.as_str() {
+            Some("text") => Self::Text,
+            Some("json_object") => Self::JsonObject,
+            Some("json_schema") => {
+                let Some(Value::Object(schema)) = object.remove("json_schema") else {
+                    return Err(InvalidChatOption);
+                };
+                Self::JsonSchema {
+                    json_schema: JsonSchemaFormat::from_object(schema)?,
+                }
+            }
+            _ => return Err(InvalidChatOption),
+        };
+        object.is_empty().then_some(format).ok_or(InvalidChatOption)
+    }
+}
+
+impl<'de> Deserialize<'de> for ResponseFormat {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::from_value(Value::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct JsonSchemaFormat {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    schema: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strict: Option<bool>,
+}
+
+impl JsonSchemaFormat {
+    pub fn new(
+        name: String,
+        description: Option<String>,
+        schema: Value,
+        strict: Option<bool>,
+    ) -> Result<Self, InvalidChatOption> {
+        let valid_name = !name.is_empty()
+            && name.len() <= MAX_RESPONSE_SCHEMA_NAME_BYTES
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
+        let valid_description = description
+            .as_ref()
+            .is_none_or(|value| value.len() <= MAX_RESPONSE_SCHEMA_DESCRIPTION_BYTES);
+        if !valid_name
+            || !valid_description
+            || !schema.is_object()
+            || extension_depth(&schema) > MAX_RESPONSE_SCHEMA_DEPTH
+            || serde_json::to_vec(&schema)
+                .expect("JSON values serialize")
+                .len()
+                > MAX_RESPONSE_SCHEMA_BYTES
+        {
+            return Err(InvalidChatOption);
+        }
+        Ok(Self {
+            name,
+            description,
+            schema,
+            strict,
+        })
+    }
+
+    fn from_object(mut object: serde_json::Map<String, Value>) -> Result<Self, InvalidChatOption> {
+        let Some(Value::String(name)) = object.remove("name") else {
+            return Err(InvalidChatOption);
+        };
+        let schema = object.remove("schema").ok_or(InvalidChatOption)?;
+        let strict = match object.remove("strict") {
+            None => None,
+            Some(Value::Bool(strict)) => Some(strict),
+            Some(_) => return Err(InvalidChatOption),
+        };
+        let description = match object.remove("description") {
+            None => None,
+            Some(Value::String(description)) => Some(description),
+            Some(_) => return Err(InvalidChatOption),
+        };
+        if !object.is_empty() {
+            return Err(InvalidChatOption);
+        }
+        Self::new(name, description, schema, strict)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -349,6 +733,93 @@ pub enum ChatContent {
     Text { text: String },
     ToolCall { call: ToolCall },
     ToolResult { call_id: String, content: String },
+    InputAudio { audio: ValidatedAudio },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputAudioFormat {
+    Wav,
+    Mp3,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValidatedAudio {
+    format: InputAudioFormat,
+    bytes: Vec<u8>,
+}
+
+impl fmt::Debug for ValidatedAudio {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ValidatedAudio")
+            .field("format", &self.format)
+            .field("byte_len", &self.bytes.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AudioValidationError {
+    EmptyBytes,
+    TooLarge,
+}
+
+impl fmt::Display for AudioValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::EmptyBytes => "audio bytes are empty",
+            Self::TooLarge => "audio bytes exceed the contract limit",
+        })
+    }
+}
+
+impl std::error::Error for AudioValidationError {}
+
+impl ValidatedAudio {
+    pub fn new(format: InputAudioFormat, bytes: Vec<u8>) -> Result<Self, AudioValidationError> {
+        Self::with_max_bytes(format, bytes, MAX_INPUT_AUDIO_BYTES)
+    }
+
+    pub fn with_max_bytes(
+        format: InputAudioFormat,
+        bytes: Vec<u8>,
+        max_bytes: usize,
+    ) -> Result<Self, AudioValidationError> {
+        if bytes.is_empty() {
+            return Err(AudioValidationError::EmptyBytes);
+        }
+        if bytes.len() > max_bytes.min(MAX_INPUT_AUDIO_BYTES) {
+            return Err(AudioValidationError::TooLarge);
+        }
+        Ok(Self { format, bytes })
+    }
+
+    pub fn format(&self) -> InputAudioFormat {
+        self.format
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl<'de> Deserialize<'de> for ValidatedAudio {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawAudio {
+            format: InputAudioFormat,
+            bytes: Vec<u8>,
+        }
+
+        let raw = RawAudio::deserialize(deserializer)?;
+        Self::new(raw.format, raw.bytes).map_err(D::Error::custom)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -507,6 +978,7 @@ impl Request {
         let Self::Chat(chat) = self else {
             return Ok(());
         };
+        chat.validate_audio()?;
         match &chat.tool_choice {
             ToolChoice::Required if chat.tools.is_empty() => {
                 Err(RequestValidationError::RequiredToolChoiceWithoutTools)
@@ -516,6 +988,29 @@ impl Request {
             }
             _ => Ok(()),
         }
+    }
+}
+
+impl ChatRequest {
+    fn validate_audio(&self) -> Result<(), RequestValidationError> {
+        let mut total_bytes = 0_usize;
+        for message in &self.messages {
+            for content in &message.content {
+                let ChatContent::InputAudio { audio } = content else {
+                    continue;
+                };
+                if message.role != ChatRole::User {
+                    return Err(RequestValidationError::InputAudioRoleMismatch);
+                }
+                total_bytes = total_bytes
+                    .checked_add(audio.bytes().len())
+                    .ok_or(RequestValidationError::InputAudioTooLarge)?;
+                if total_bytes > MAX_INPUT_AUDIO_BYTES {
+                    return Err(RequestValidationError::InputAudioTooLarge);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -589,19 +1084,31 @@ pub enum NormalizedEvent {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Capabilities {
     pub operations: BTreeSet<Operation>,
     pub streaming_chat: bool,
     pub function_tools: bool,
+    #[serde(default)]
+    pub input_audio: bool,
+    #[serde(default)]
+    pub audio_streaming_chat: bool,
+    #[serde(default)]
+    pub audio_function_tools: bool,
+    #[serde(default)]
+    pub structured_output: bool,
+    /// Covers temperature, top_p, seed and max output tokens.
+    #[serde(default)]
+    pub sampling_controls: bool,
+    #[serde(default)]
+    pub reasoning_control: bool,
 }
 
 impl Capabilities {
     pub fn new(operations: impl IntoIterator<Item = Operation>) -> Self {
         Self {
             operations: operations.into_iter().collect(),
-            streaming_chat: false,
-            function_tools: false,
+            ..Self::default()
         }
     }
 
@@ -611,6 +1118,31 @@ impl Capabilities {
             return Err(CapabilityError::UnsupportedOperation { operation });
         }
         if let Request::Chat(chat) = request {
+            let has_audio = chat.messages.iter().any(|message| {
+                message
+                    .content
+                    .iter()
+                    .any(|content| matches!(content, ChatContent::InputAudio { .. }))
+            });
+            let has_audio_tools = !chat.tools.is_empty()
+                || !matches!(chat.tool_choice, ToolChoice::None | ToolChoice::Auto)
+                || chat.messages.iter().any(|message| {
+                    message.content.iter().any(|content| {
+                        matches!(
+                            content,
+                            ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. }
+                        )
+                    })
+                });
+            if has_audio && !self.input_audio {
+                return Err(CapabilityError::InputAudioUnavailable);
+            }
+            if has_audio && chat.stream && !self.audio_streaming_chat {
+                return Err(CapabilityError::AudioStreamingUnavailable);
+            }
+            if has_audio && has_audio_tools && !self.audio_function_tools {
+                return Err(CapabilityError::AudioFunctionToolsUnavailable);
+            }
             if chat.stream && !self.streaming_chat {
                 return Err(CapabilityError::StreamingUnavailable);
             }
@@ -622,6 +1154,21 @@ impl Capabilities {
             {
                 return Err(CapabilityError::FunctionToolsUnavailable);
             }
+            if chat.options.uses_structured_output() && !self.structured_output {
+                return Err(CapabilityError::ChatOptionUnavailable {
+                    param: "response_format",
+                });
+            }
+            if let Some(param) = chat.options.sampling_param()
+                && !self.sampling_controls
+            {
+                return Err(CapabilityError::ChatOptionUnavailable { param });
+            }
+            if chat.options.reasoning_effort.is_some() && !self.reasoning_control {
+                return Err(CapabilityError::ChatOptionUnavailable {
+                    param: "reasoning_effort",
+                });
+            }
         }
         Ok(())
     }
@@ -632,6 +1179,20 @@ pub enum CapabilityError {
     UnsupportedOperation { operation: Operation },
     StreamingUnavailable,
     FunctionToolsUnavailable,
+    InputAudioUnavailable,
+    AudioStreamingUnavailable,
+    AudioFunctionToolsUnavailable,
+    ChatOptionUnavailable { param: &'static str },
+}
+
+impl CapabilityError {
+    /// Wire parameter responsible for the rejection, when one is identifiable.
+    pub fn param(&self) -> Option<&'static str> {
+        match self {
+            Self::ChatOptionUnavailable { param } => Some(param),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -1,0 +1,131 @@
+# Offline schema/test fixture, not a runtime-bindable provider configuration.
+# Runtime templates live in config/ (see config/README.md).
+[listeners.client]
+bind = "0.0.0.0"
+port = 8080
+
+[listeners.admin]
+bind = "127.0.0.1"
+port = 9090
+
+[publication]
+tailnet_addresses = ["100.64.0.10", "fd7a:115c:a1e0::10"]
+
+# Offline schema fixture only; check does not access the selected store.
+[codex_auth]
+store = "keyring"
+state_dir = "/replace/with/owner-writable/absolute/path/kanata-codex"
+
+[[adapters]]
+id = "ollama-local"
+kind = "ollama"
+base_url = "http://ollama.invalid:11434"
+trust_zone = "local"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = true
+function_tools = true
+
+[[adapters]]
+id = "vllm-private"
+kind = "vllm"
+base_url = "http://vllm.invalid:8000"
+trust_zone = "private_network"
+transcription_mode = "native_asr"
+[adapters.capabilities]
+operations = ["chat", "transcription"]
+streaming_chat = true
+function_tools = true
+
+[[adapters]]
+id = "openrouter-remote"
+kind = "openrouter"
+base_url = "https://openrouter.invalid/api/v1"
+trust_zone = "external"
+secret_ref = "env:KANATA_OPENROUTER_TOKEN"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = true
+function_tools = false
+
+[[adapters]]
+id = "codex-private"
+kind = "codex"
+base_url = "https://chatgpt.invalid/backend-api/codex"
+trust_zone = "external"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = true
+function_tools = true
+
+[[routes]]
+id = "ollama-chat"
+model_alias = "local-chat"
+operation = "chat"
+adapter_id = "ollama-local"
+upstream_id = "llama3.2:latest"
+requires_streaming_chat = true
+requires_function_tools = true
+
+[[routes]]
+id = "vllm-chat"
+model_alias = "private-chat"
+operation = "chat"
+adapter_id = "vllm-private"
+upstream_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+requires_streaming_chat = true
+requires_function_tools = true
+
+[[routes]]
+id = "vllm-transcription"
+model_alias = "private-transcribe"
+operation = "transcription"
+adapter_id = "vllm-private"
+upstream_id = "whisper-1"
+requires_streaming_chat = false
+requires_function_tools = false
+
+[[routes]]
+id = "openrouter-chat"
+model_alias = "remote-chat"
+operation = "chat"
+adapter_id = "openrouter-remote"
+upstream_id = "openai/gpt-4.1-mini"
+requires_streaming_chat = true
+requires_function_tools = false
+
+[[routes]]
+id = "codex-chat"
+model_alias = "codex-chat"
+operation = "chat"
+adapter_id = "codex-private"
+upstream_id = "gpt-5-codex"
+requires_streaming_chat = true
+requires_function_tools = true
+
+[[application_keys]]
+id = "personal-client"
+secret_ref = "env:KANATA_CLIENT_KEY"
+owner = true
+permissions = [
+  { model_alias = "local-chat", operation = "chat" },
+  { model_alias = "private-chat", operation = "chat" },
+  { model_alias = "private-transcribe", operation = "transcription" },
+  { model_alias = "remote-chat", operation = "chat" },
+  { model_alias = "codex-chat", operation = "chat" },
+]
+
+[limits]
+max_queue = 32
+max_in_flight = 8
+max_body_bytes = 1048576
+max_audio_bytes = 26214400
+max_extension_bytes = 8192
+
+[timeouts]
+queue_ms = 1000
+connect_ms = 5000
+headers_ms = 10000
+first_byte_ms = 15000
+idle_ms = 30000
+overall_ms = 60000

@@ -1,0 +1,29 @@
+{
+  "model": "private-chat",
+  "messages": [
+    {"role": "user", "content": "look this up"},
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_lookup_1",
+          "type": "function",
+          "function": {"name": "lookup", "arguments": "{\"q\":\"kanata\"}"}
+        }
+      ]
+    },
+    {"role": "tool", "tool_call_id": "call_lookup_1", "content": "result"}
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "lookup",
+        "description": null,
+        "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
+      }
+    }
+  ],
+  "tool_choice": {"type": "function", "function": {"name": "lookup"}}
+}

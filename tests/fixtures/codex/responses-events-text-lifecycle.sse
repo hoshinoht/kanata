@@ -1,0 +1,19 @@
+data: {"type":"response.created","sequence_number":0,"response":{"id":"TEST_ONLY_RESPONSE_ID_NOT_SECRET_0002","created_at":1700000001,"model":"fixture-codex-model"}}
+
+data: {"type":"response.output_item.added","output_index":0,"sequence_number":1,"item":{"type":"message","id":"TEST_ONLY_TEXT_ITEM_ID_NOT_SECRET_0001","role":"assistant","content":[],"status":"in_progress","phase":"final_answer"}}
+
+data: {"type":"response.content_part.added","item_id":"TEST_ONLY_TEXT_ITEM_ID_NOT_SECRET_0001",
+data: "output_index":0,"content_index":0,"sequence_number":2,"part":{"type":"output_text","text":"","annotations":[],"logprobs":[]}}
+
+data: {"type":"response.output_text.delta","item_id":"TEST_ONLY_TEXT_ITEM_ID_NOT_SECRET_0001","output_index":0,"content_index":0,"sequence_number":3,"delta":"TEST_ONLY_LIFECYCLE_TEXT_NOT_SECRET_0001"}
+
+data: {"type":"response.output_text.done","item_id":"TEST_ONLY_TEXT_ITEM_ID_NOT_SECRET_0001","output_index":0,"content_index":0,"sequence_number":4,"text":"TEST_ONLY_LIFECYCLE_TEXT_NOT_SECRET_0001"}
+
+data: {"type":"response.content_part.done","item_id":"TEST_ONLY_TEXT_ITEM_ID_NOT_SECRET_0001","output_index":0,"content_index":0,"sequence_number":5,"part":{"type":"output_text","text":"TEST_ONLY_LIFECYCLE_TEXT_NOT_SECRET_0001","annotations":[],"logprobs":[]}}
+
+data: {"type":"response.output_item.done","output_index":0,"sequence_number":6,"item":{"type":"message","id":"TEST_ONLY_TEXT_ITEM_ID_NOT_SECRET_0001","role":"assistant","content":[{"type":"output_text","text":"TEST_ONLY_LIFECYCLE_TEXT_NOT_SECRET_0001","annotations":[],"logprobs":[]}],"status":"completed","phase":"final_answer"}}
+
+data: {"type":"response.completed","sequence_number":7,"response":{"id":"TEST_ONLY_RESPONSE_ID_NOT_SECRET_0002","created_at":1700000001,"model":"fixture-codex-model","output":[{"type":"message","id":"TEST_ONLY_TEXT_ITEM_ID_NOT_SECRET_0001","role":"assistant","content":[{"type":"output_text","text":"TEST_ONLY_LIFECYCLE_TEXT_NOT_SECRET_0001","annotations":[],"logprobs":[]}],"status":"completed","phase":"final_answer"}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}
+
+data: [DONE]
+
