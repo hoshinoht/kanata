@@ -1,15 +1,20 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::core::{
-    ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, GatewayError, InputAudioFormat,
-    ResponseFormat, TranscriptionRequest,
+    ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, FunctionTool, GatewayError,
+    InputAudioFormat, ResponseFormat, ToolChoice, TranscriptionRequest,
 };
 
 #[derive(Serialize)]
 pub(super) struct ChatPayload {
     model: String,
     messages: Vec<MessagePayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ToolPayload>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<ToolChoicePayload>,
     stream: bool,
     provider: ProviderOptions,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,7 +39,58 @@ struct ReasoningOptions {
 #[derive(Serialize)]
 struct MessagePayload {
     role: &'static str,
-    content: MessageContent,
+    // Absent only on an assistant turn that carries just tool calls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<MessageContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<ToolCallPayload>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ToolPayload {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: FunctionPayload,
+}
+
+#[derive(Serialize)]
+struct FunctionPayload {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    parameters: Value,
+}
+
+#[derive(Serialize)]
+struct ToolCallPayload {
+    id: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: CallFunctionPayload,
+}
+
+#[derive(Serialize)]
+struct CallFunctionPayload {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ToolChoicePayload {
+    Simple(&'static str),
+    Named {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        function: NamedFunctionPayload,
+    },
+}
+
+#[derive(Serialize)]
+struct NamedFunctionPayload {
+    name: String,
 }
 
 #[derive(Serialize)]
@@ -84,9 +140,15 @@ pub(super) fn encode(
         .iter()
         .map(encode_message)
         .collect::<Result<Vec<_>, _>>()?;
+    let tools = (!chat.tools.is_empty()).then(|| chat.tools.iter().map(encode_tool).collect());
+    // Omitted for the default so tool-free payloads stay unchanged.
+    let tool_choice = (tools.is_some() || !matches!(chat.tool_choice, ToolChoice::Auto))
+        .then(|| encode_tool_choice(&chat.tool_choice));
     Ok(ChatPayload {
         model: upstream_model.to_owned(),
         messages,
+        tools,
+        tool_choice,
         stream,
         provider: ProviderOptions {
             allow_fallbacks: false,
@@ -115,8 +177,11 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
         ChatRole::Developer => "developer",
         ChatRole::User => "user",
         ChatRole::Assistant => "assistant",
-        ChatRole::Tool => return Err(unsupported_operation()),
+        ChatRole::Tool => return encode_tool_result(message),
     };
+    if message.role == ChatRole::Assistant {
+        return encode_assistant(message);
+    }
 
     let has_audio = message
         .content
@@ -147,7 +212,9 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(MessagePayload {
             role,
-            content: MessageContent::Parts(parts),
+            content: Some(MessageContent::Parts(parts)),
+            tool_calls: None,
+            tool_call_id: None,
         });
     }
 
@@ -167,8 +234,76 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
 
     Ok(MessagePayload {
         role,
-        content: MessageContent::Text(content),
+        content: Some(MessageContent::Text(content)),
+        tool_calls: None,
+        tool_call_id: None,
     })
+}
+
+/// Assistant history: text (empty segments skipped) plus any tool calls.
+fn encode_assistant(message: &ChatMessage) -> Result<MessagePayload, GatewayError> {
+    let mut text = String::new();
+    let mut calls = Vec::new();
+    for segment in &message.content {
+        match segment {
+            ChatContent::Text { text: value } => text.push_str(value),
+            ChatContent::ToolCall { call } => calls.push(ToolCallPayload {
+                id: call.id.clone(),
+                kind: "function",
+                function: CallFunctionPayload {
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                },
+            }),
+            ChatContent::InputAudio { .. } | ChatContent::ToolResult { .. } => {
+                return Err(unsupported_operation());
+            }
+        }
+    }
+    if text.is_empty() && calls.is_empty() {
+        return Err(invalid_request());
+    }
+    Ok(MessagePayload {
+        role: "assistant",
+        content: (!text.is_empty()).then_some(MessageContent::Text(text)),
+        tool_calls: (!calls.is_empty()).then_some(calls),
+        tool_call_id: None,
+    })
+}
+
+fn encode_tool_result(message: &ChatMessage) -> Result<MessagePayload, GatewayError> {
+    let [ChatContent::ToolResult { call_id, content }] = message.content.as_slice() else {
+        return Err(invalid_request());
+    };
+    Ok(MessagePayload {
+        role: "tool",
+        content: Some(MessageContent::Text(content.clone())),
+        tool_calls: None,
+        tool_call_id: Some(call_id.clone()),
+    })
+}
+
+fn encode_tool(tool: &FunctionTool) -> ToolPayload {
+    ToolPayload {
+        kind: "function",
+        function: FunctionPayload {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+            parameters: tool.parameters.clone(),
+        },
+    }
+}
+
+fn encode_tool_choice(choice: &ToolChoice) -> ToolChoicePayload {
+    match choice {
+        ToolChoice::None => ToolChoicePayload::Simple("none"),
+        ToolChoice::Auto => ToolChoicePayload::Simple("auto"),
+        ToolChoice::Required => ToolChoicePayload::Simple("required"),
+        ToolChoice::Function { name } => ToolChoicePayload::Named {
+            kind: "function",
+            function: NamedFunctionPayload { name: name.clone() },
+        },
+    }
 }
 
 fn chat_audio_format(format: InputAudioFormat) -> &'static str {

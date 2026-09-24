@@ -90,8 +90,9 @@ impl OpenRouterAdapter {
             || adapter.trust_zone() != TrustZone::External
             || adapter.secret_ref().is_none()
             || configured.operations.is_empty()
-            || configured.function_tools
-            || configured.audio_function_tools
+            || (configured.function_tools && !configured.operations.contains(&Operation::Chat))
+            || (configured.audio_function_tools
+                && !(configured.input_audio && configured.function_tools))
             || (configured.input_audio && !configured.operations.contains(&Operation::Chat))
             || (configured.audio_streaming_chat
                 && !(configured.input_audio && configured.streaming_chat))
@@ -130,8 +131,10 @@ impl OpenRouterAdapter {
 
         let mut capabilities = Capabilities::new(configured.operations.iter().copied());
         capabilities.streaming_chat = configured.streaming_chat;
+        capabilities.function_tools = configured.function_tools;
         capabilities.input_audio = configured.input_audio;
         capabilities.audio_streaming_chat = configured.audio_streaming_chat;
+        capabilities.audio_function_tools = configured.audio_function_tools;
         capabilities.structured_output = configured.structured_output;
         capabilities.sampling_controls = configured.sampling_controls;
         capabilities.reasoning_control = configured.reasoning_control;

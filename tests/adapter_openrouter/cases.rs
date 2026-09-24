@@ -56,7 +56,7 @@ fn constructor_declares_configured_text_streaming_without_other_features() {
 }
 
 #[test]
-fn constructor_rejects_function_tools() {
+fn constructor_accepts_function_tools() {
     let config = config_with(
         "https://openrouter.invalid/api/v1",
         "chat",
@@ -65,9 +65,9 @@ fn constructor_rejects_function_tools() {
         true,
         false,
     );
-    assert!(
-        OpenRouterAdapter::from_config(&config, ADAPTER_ID, ROUTE_ID, &SyntheticResolver).is_err()
-    );
+    let adapter = OpenRouterAdapter::from_config(&config, ADAPTER_ID, ROUTE_ID, &SyntheticResolver)
+        .unwrap_or_else(|_| panic!("tools adapter"));
+    assert!(adapter.capabilities().function_tools);
 }
 
 #[test]

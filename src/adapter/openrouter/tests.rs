@@ -794,3 +794,83 @@ fn transcription_encodes_base64_json_and_decodes_text_only() {
     assert!(super::response::decode_transcription(br#"{"text":"  "}"#).is_err());
     assert!(super::response::decode_transcription(br#"{"text":"x","extra":1}"#).is_err());
 }
+
+#[test]
+fn tool_call_completion_decodes() {
+    const TOOL: &str =
+        include_str!("../../../tests/fixtures/openrouter/chat-completion-tool-call.json");
+    let chat =
+        super::response::decode(TOOL.as_bytes(), ModelAlias("voxtral".into())).expect("tool call");
+    assert_eq!(chat.finish_reason, FinishReason::ToolCalls);
+    assert!(matches!(
+        chat.message.content.as_slice(),
+        [ChatContent::ToolCall { call }]
+            if call.id == "call-fixture" && call.name == "get_weather"
+                && call.arguments == r#"{"city": "Singapore"}"#
+    ));
+}
+
+#[test]
+fn tools_and_tool_history_encode() {
+    use crate::core::{FunctionTool, ToolCall};
+    let chat = ChatRequest {
+        model: ModelAlias(PUBLIC_MODEL.into()),
+        messages: vec![
+            ChatMessage {
+                role: ChatRole::User,
+                content: vec![ChatContent::Text {
+                    text: "weather?".into(),
+                }],
+            },
+            ChatMessage {
+                role: ChatRole::Assistant,
+                content: vec![
+                    ChatContent::Text {
+                        text: String::new(),
+                    },
+                    ChatContent::ToolCall {
+                        call: ToolCall {
+                            id: "call-1".into(),
+                            name: "get_weather".into(),
+                            arguments: "{}".into(),
+                        },
+                    },
+                ],
+            },
+            ChatMessage {
+                role: ChatRole::Tool,
+                content: vec![ChatContent::ToolResult {
+                    call_id: "call-1".into(),
+                    content: "sunny".into(),
+                }],
+            },
+        ],
+        tools: vec![FunctionTool {
+            name: "get_weather".into(),
+            description: None,
+            parameters: json!({"type": "object"}),
+        }],
+        tool_choice: ToolChoice::Function {
+            name: "get_weather".into(),
+        },
+        stream: true,
+        options: Default::default(),
+        extensions: Extensions::default(),
+    };
+    let payload = super::request::encode(&chat, UPSTREAM_MODEL, true).expect("encodes");
+    assert_eq!(
+        serde_json::to_value(payload).expect("serializes"),
+        json!({
+            "model": UPSTREAM_MODEL,
+            "messages": [
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}]},
+                {"role": "tool", "content": "sunny", "tool_call_id": "call-1"}
+            ],
+            "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}],
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "stream": true,
+            "provider": {"allow_fallbacks": false}
+        })
+    );
+}
