@@ -400,6 +400,7 @@ pub struct ValidatedRoute {
     allows_audio_streaming_chat: bool,
     allows_audio_function_tools: bool,
     context_tokens: Option<u32>,
+    enable_thinking: Option<bool>,
 }
 impl ValidatedRoute {
     pub fn identity(&self) -> &RouteIdentity {
@@ -432,6 +433,10 @@ impl ValidatedRoute {
     /// Declared upstream context window; `None` means the provider's own.
     pub fn context_tokens(&self) -> Option<u32> {
         self.context_tokens
+    }
+    /// vLLM chat-template thinking switch; `None` leaves the template default.
+    pub fn enable_thinking(&self) -> Option<bool> {
+        self.enable_thinking
     }
 }
 
@@ -767,6 +772,8 @@ struct RawRoute {
     allows_audio_function_tools: bool,
     #[serde(default)]
     context_tokens: Option<u32>,
+    #[serde(default)]
+    enable_thinking: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -858,11 +865,22 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
                 &format!("{path}.secret_ref"),
                 false,
             )?)
-        } else if adapter.kind == ProviderKind::Openrouter {
+        } else if adapter.kind == ProviderKind::Openrouter
+            || (adapter.kind == ProviderKind::Vllm && adapter.trust_zone == TrustZone::External)
+        {
             return Err(ConfigError::new(format!("{path}.secret_ref"), "required"));
         } else {
             None
         };
+        if adapter.kind == ProviderKind::Vllm
+            && secret_ref.is_some()
+            && base_url.scheme() != "https"
+        {
+            return Err(ConfigError::new(
+                format!("{path}.base_url"),
+                "https_required",
+            ));
+        }
         validate_provider_zone(&adapter, &path)?;
         let extension_allowlist = validate_extension_allowlist(
             adapter.extension_allowlist,
@@ -1192,6 +1210,22 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
                 ));
             }
         }
+        if route.enable_thinking.is_some() {
+            let uses_chat_template = route.operation == Operation::Chat
+                || adapter.transcription_mode == Some(VllmTranscriptionMode::AudioChat);
+            if adapter.kind != ProviderKind::Vllm {
+                return Err(ConfigError::new(
+                    format!("{path}.enable_thinking"),
+                    "vllm_only",
+                ));
+            }
+            if !uses_chat_template {
+                return Err(ConfigError::new(
+                    format!("{path}.enable_thinking"),
+                    "requires_chat_template",
+                ));
+            }
+        }
         let extension_allowlist = validate_extension_allowlist(
             route.extension_allowlist,
             &format!("{path}.extension_allowlist"),
@@ -1211,6 +1245,7 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
             allows_audio_streaming_chat: route.allows_audio_streaming_chat,
             allows_audio_function_tools: route.allows_audio_function_tools,
             context_tokens: route.context_tokens,
+            enable_thinking: route.enable_thinking,
         });
     }
     if routes.is_empty() {
@@ -1520,7 +1555,8 @@ fn validate_url(adapter: &RawAdapter, path: &str) -> Result<Url, ConfigError> {
 fn validate_provider_zone(adapter: &RawAdapter, path: &str) -> Result<(), ConfigError> {
     let valid = match adapter.kind {
         ProviderKind::Openrouter | ProviderKind::Codex => adapter.trust_zone == TrustZone::External,
-        ProviderKind::Ollama | ProviderKind::Vllm | ProviderKind::AppleFm => matches!(
+        ProviderKind::Vllm => true,
+        ProviderKind::Ollama | ProviderKind::AppleFm => matches!(
             adapter.trust_zone,
             TrustZone::Local | TrustZone::PrivateNetwork
         ),

@@ -10,6 +10,17 @@ use crate::{
 pub(super) struct RouteBinding {
     identity: RouteIdentity,
     allows_input_audio: bool,
+    enable_thinking: Option<bool>,
+}
+
+impl RouteBinding {
+    pub(super) fn route_id(&self) -> &str {
+        &self.identity.route_id
+    }
+
+    pub(super) fn enable_thinking(&self) -> Option<bool> {
+        self.enable_thinking
+    }
 }
 
 pub(super) fn bind_route(
@@ -36,6 +47,7 @@ pub(super) fn bind_route(
     Ok(RouteBinding {
         identity: route.identity().clone(),
         allows_input_audio: route.allows_input_audio(),
+        enable_thinking: route.enable_thinking(),
     })
 }
 

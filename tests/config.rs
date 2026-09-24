@@ -333,6 +333,60 @@ fn vllm_transcription_mode_is_explicit_and_operation_scoped() {
 }
 
 #[test]
+fn external_vllm_requires_a_secret_over_https_and_thinking_is_vllm_only() {
+    let private = "base_url = \"http://vllm.invalid:8000\"\ntrust_zone = \"private_network\"";
+    let external = check(example().replace(
+        private,
+        "base_url = \"https://vllm.invalid/v1\"\ntrust_zone = \"external\"",
+    ));
+    assert_eq!(
+        external.unwrap_err(),
+        "config error at adapters[1].secret_ref: required"
+    );
+    check(example().replace(
+        private,
+        "base_url = \"https://vllm.invalid/v1\"\ntrust_zone = \"external\"\nsecret_ref = \"env:KANATA_VLLM_KEY\"",
+    ))
+    .expect("external vLLM with a key validates");
+    let plaintext = check(example().replace(
+        private,
+        "base_url = \"http://vllm.invalid:8000\"\ntrust_zone = \"private_network\"\nsecret_ref = \"env:KANATA_VLLM_KEY\"",
+    ));
+    assert_eq!(
+        plaintext.unwrap_err(),
+        "config error at adapters[1].base_url: https_required"
+    );
+
+    let thinking = example().replace(
+        "upstream_id = \"meta-llama/Meta-Llama-3.1-8B-Instruct\"",
+        "upstream_id = \"meta-llama/Meta-Llama-3.1-8B-Instruct\"\nenable_thinking = false",
+    );
+    let config = check(thinking).expect("vLLM chat route accepts enable_thinking");
+    let route = config
+        .routes()
+        .iter()
+        .find(|route| route.identity().route_id == "vllm-chat")
+        .expect("vllm route");
+    assert_eq!(route.enable_thinking(), Some(false));
+    let native_asr = check(example().replace(
+        "upstream_id = \"whisper-1\"",
+        "upstream_id = \"whisper-1\"\nenable_thinking = false",
+    ));
+    assert_eq!(
+        native_asr.unwrap_err(),
+        "config error at routes[2].enable_thinking: requires_chat_template"
+    );
+    let other_kind = check(example().replace(
+        "upstream_id = \"openai/gpt-4.1-mini\"",
+        "upstream_id = \"openai/gpt-4.1-mini\"\nenable_thinking = false",
+    ));
+    assert_eq!(
+        other_kind.unwrap_err(),
+        "config error at routes[3].enable_thinking: vllm_only"
+    );
+}
+
+#[test]
 fn audio_capability_flags_require_their_text_and_audio_prerequisites() {
     let streaming = check(example().replace(
         "function_tools = true\n\n[[adapters]]\nid = \"openrouter-remote\"",

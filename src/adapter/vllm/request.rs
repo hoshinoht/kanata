@@ -28,6 +28,13 @@ pub(super) struct ChatPayload {
     seed: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<ResponseFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chat_template_kwargs: Option<ChatTemplateKwargs>,
+}
+
+#[derive(Serialize)]
+struct ChatTemplateKwargs {
+    enable_thinking: bool,
 }
 
 #[derive(Serialize)]
@@ -73,6 +80,7 @@ struct InputAudioPayload {
 pub(super) fn encode(
     chat: &ChatRequest,
     upstream_model: &str,
+    enable_thinking: Option<bool>,
 ) -> Result<ChatPayload, GatewayError> {
     if upstream_model.trim().is_empty() {
         return Err(invalid_request());
@@ -99,13 +107,19 @@ pub(super) fn encode(
             .response_format
             .clone()
             .filter(|format| !matches!(format, ResponseFormat::Text)),
+        chat_template_kwargs: template_kwargs(enable_thinking),
     })
+}
+
+fn template_kwargs(enable_thinking: Option<bool>) -> Option<ChatTemplateKwargs> {
+    enable_thinking.map(|enable_thinking| ChatTemplateKwargs { enable_thinking })
 }
 
 pub(super) fn encode_transcription(
     transcription: &TranscriptionRequest,
     upstream_model: &str,
     max_audio_bytes: usize,
+    enable_thinking: Option<bool>,
 ) -> Result<ChatPayload, GatewayError> {
     if upstream_model.trim().is_empty()
         || transcription.file.bytes().len() > max_audio_bytes
@@ -137,6 +151,7 @@ pub(super) fn encode_transcription(
         top_p: None,
         seed: None,
         response_format: None,
+        chat_template_kwargs: template_kwargs(enable_thinking),
     })
 }
 
@@ -321,11 +336,37 @@ mod tests {
             extensions: Default::default(),
         };
         let payload =
-            super::encode(&chat, "meta-llama/Meta-Llama-3.1-8B-Instruct").expect("encodes");
+            super::encode(&chat, "meta-llama/Meta-Llama-3.1-8B-Instruct", None).expect("encodes");
         let expected: Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/vllm/chat-options-request.json"
         ))
         .expect("fixture json");
         assert_eq!(serde_json::to_value(payload).expect("serializes"), expected);
+    }
+
+    #[test]
+    fn route_thinking_switch_sets_chat_template_kwargs() {
+        let chat = ChatRequest {
+            model: ModelAlias("omni".into()),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: vec![ChatContent::Text { text: "hi".into() }],
+            }],
+            tools: Vec::new(),
+            tool_choice: ToolChoice::Auto,
+            stream: false,
+            options: ChatOptions::default(),
+            extensions: Default::default(),
+        };
+        let off =
+            serde_json::to_value(super::encode(&chat, "OmniLion", Some(false)).expect("encodes"))
+                .expect("serializes");
+        assert_eq!(
+            off["chat_template_kwargs"],
+            serde_json::json!({"enable_thinking": false})
+        );
+        let unset = serde_json::to_value(super::encode(&chat, "OmniLion", None).expect("encodes"))
+            .expect("serializes");
+        assert!(unset.get("chat_template_kwargs").is_none());
     }
 }

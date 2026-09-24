@@ -216,8 +216,13 @@ fn build_serve_adapters(
                     .map_err(|_| ())?,
             ),
             ProviderKind::Vllm => std::sync::Arc::new(
-                VllmAdapter::from_config(config, configured.id(), &route.identity().route_id)
-                    .map_err(|_| ())?,
+                VllmAdapter::from_config_with_secrets(
+                    config,
+                    configured.id(),
+                    &route.identity().route_id,
+                    resolver,
+                )
+                .map_err(|_| ())?,
             ),
             ProviderKind::Openrouter => std::sync::Arc::new(
                 OpenRouterAdapter::from_config(

@@ -12,6 +12,7 @@ use crate::adapter::diagnostics::UpstreamLabel;
 
 use crate::{
     adapter::{Adapter, AdapterFuture, AdapterOutput},
+    auth::{SecretResolver, canonical_bearer_token},
     config::{
         ProviderKind, ValidatedAdapter, ValidatedConfig, ValidatedLimits, ValidatedRoute,
         ValidatedTimeouts, VllmTranscriptionMode,
@@ -23,7 +24,7 @@ use crate::{
 };
 
 use super::transport::{
-    Accept, COMPLETE_RESPONSE_BYTES, Endpoint, MultipartFile, MultipartRequest,
+    Accept, COMPLETE_RESPONSE_BYTES, CredentialHeader, Endpoint, MultipartFile, MultipartRequest,
     ResponseContentType, Transport, TransportRequest,
 };
 
@@ -38,6 +39,7 @@ pub struct VllmAdapter {
     max_audio_chat_body_bytes: usize,
     transcription_mode: Option<VllmTranscriptionMode>,
     route_bindings: Option<Vec<validation::RouteBinding>>,
+    bearer_token: Option<String>,
     transport: Arc<Transport>,
 }
 
@@ -51,6 +53,7 @@ impl fmt::Debug for VllmAdapter {
             .field("max_body_bytes", &self.max_body_bytes)
             .field("max_audio_chat_body_bytes", &self.max_audio_chat_body_bytes)
             .field("route_bound", &self.route_bindings.is_some())
+            .field("authenticated", &self.bearer_token.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -70,13 +73,14 @@ impl VllmAdapter {
         {
             return Err(internal_error());
         }
-        Self::build(adapter, timeouts, limits)
+        Self::build(adapter, timeouts, limits, None)
     }
 
     fn build(
         adapter: &ValidatedAdapter,
         timeouts: &ValidatedTimeouts,
         limits: &ValidatedLimits,
+        bearer_token: Option<String>,
     ) -> Result<Self, GatewayError> {
         let configured = adapter.capabilities();
         let supports_chat = configured.operations.contains(&Operation::Chat);
@@ -92,12 +96,13 @@ impl VllmAdapter {
             }
             _ => false,
         };
+        let zone_allowed = match adapter.trust_zone() {
+            TrustZone::Local | TrustZone::PrivateNetwork => true,
+            TrustZone::External => bearer_token.is_some(),
+        };
         if adapter.kind() != ProviderKind::Vllm
-            || !matches!(
-                adapter.trust_zone(),
-                TrustZone::Local | TrustZone::PrivateNetwork
-            )
-            || adapter.secret_ref().is_some()
+            || !zone_allowed
+            || adapter.secret_ref().is_some() != bearer_token.is_some()
             || !supported_operations
             || configured.streaming_chat
             || configured.function_tools
@@ -127,6 +132,7 @@ impl VllmAdapter {
             max_audio_chat_body_bytes,
             transcription_mode,
             route_bindings: None,
+            bearer_token,
             transport: Arc::new(Transport::new(adapter, timeouts)?),
         })
     }
@@ -137,7 +143,7 @@ impl VllmAdapter {
         timeouts: &ValidatedTimeouts,
         limits: &ValidatedLimits,
     ) -> Result<Self, GatewayError> {
-        let mut adapter = Self::build(adapter, timeouts, limits)?;
+        let mut adapter = Self::build(adapter, timeouts, limits, None)?;
         let route_binding = validation::bind_route(&adapter.id, &adapter.capabilities, route)?;
         adapter.route_bindings = Some(vec![route_binding]);
         Ok(adapter)
@@ -147,6 +153,37 @@ impl VllmAdapter {
         config: &ValidatedConfig,
         adapter_id: &str,
         route_id: &str,
+    ) -> Result<Self, GatewayError> {
+        Self::build_from_config(config, adapter_id, route_id, None)
+    }
+
+    /// Builds from config, resolving the adapter's `secret_ref` into a bearer token.
+    pub fn from_config_with_secrets(
+        config: &ValidatedConfig,
+        adapter_id: &str,
+        route_id: &str,
+        resolver: &impl SecretResolver,
+    ) -> Result<Self, GatewayError> {
+        let configured_adapter = config
+            .adapters()
+            .iter()
+            .find(|adapter| adapter.id() == adapter_id)
+            .ok_or_else(internal_error)?;
+        let bearer_token = match configured_adapter.secret_ref() {
+            Some(secret_ref) => {
+                let secret = resolver.resolve(secret_ref).map_err(|_| internal_error())?;
+                Some(canonical_bearer_token(secret_ref, secret).map_err(|_| internal_error())?)
+            }
+            None => None,
+        };
+        Self::build_from_config(config, adapter_id, route_id, bearer_token)
+    }
+
+    fn build_from_config(
+        config: &ValidatedConfig,
+        adapter_id: &str,
+        route_id: &str,
+        bearer_token: Option<String>,
     ) -> Result<Self, GatewayError> {
         let configured_adapter = config
             .adapters()
@@ -162,7 +199,12 @@ impl VllmAdapter {
             return Err(internal_error());
         }
 
-        let mut adapter = Self::build(configured_adapter, config.timeouts(), config.limits())?;
+        let mut adapter = Self::build(
+            configured_adapter,
+            config.timeouts(),
+            config.limits(),
+            bearer_token,
+        )?;
         let route_bindings = config
             .routes()
             .iter()
@@ -180,9 +222,24 @@ impl VllmAdapter {
         &self.id
     }
 
+    fn credential(&self) -> Option<CredentialHeader> {
+        self.bearer_token
+            .as_ref()
+            .map(|token| CredentialHeader::authorization(format!("Bearer {token}")))
+    }
+
+    fn enable_thinking(&self, route_id: &str) -> Option<bool> {
+        self.route_bindings
+            .as_deref()?
+            .iter()
+            .find(|binding| binding.route_id() == route_id)?
+            .enable_thinking()
+    }
+
     async fn post_completion(
         transport: Arc<Transport>,
         payload: request::ChatPayload,
+        credential: Option<CredentialHeader>,
         request_budget: usize,
         label: UpstreamLabel,
     ) -> Result<Vec<u8>, GatewayError> {
@@ -191,7 +248,7 @@ impl VllmAdapter {
             Method::POST,
             endpoint,
             &payload,
-            None,
+            credential,
             Some(Accept::Json),
             request_budget,
             COMPLETE_RESPONSE_BYTES,
@@ -203,6 +260,7 @@ impl VllmAdapter {
         transcription: &crate::core::TranscriptionRequest,
         upstream_model: &str,
         max_audio_bytes: usize,
+        credential: Option<CredentialHeader>,
     ) -> Result<TransportRequest, GatewayError> {
         let mut fields = vec![("model".to_owned(), upstream_model.to_owned())];
         if let Some(language) = &transcription.language {
@@ -226,7 +284,7 @@ impl VllmAdapter {
             Method::POST,
             Endpoint::new(&["audio", "transcriptions"])?,
             multipart,
-            None,
+            credential,
             Some(Accept::Json),
             request_budget,
             COMPLETE_RESPONSE_BYTES,
@@ -287,6 +345,8 @@ impl Adapter for VllmAdapter {
         let (context, request) = routed.into_parts();
         let transport = self.transport.clone();
         let label = UpstreamLabel::new(&self.id, "vllm");
+        let credential = self.credential();
+        let enable_thinking = self.enable_thinking(&context.route.route_id);
         match request {
             Request::Chat(chat) => {
                 let public_model = context.route.selector.model_alias.clone();
@@ -300,13 +360,20 @@ impl Adapter for VllmAdapter {
                 } else {
                     self.max_body_bytes
                 };
-                let payload = match request::encode(&chat, &context.route.upstream_id) {
-                    Ok(payload) => payload,
-                    Err(error) => return Box::pin(async move { Err(error) }),
-                };
+                let payload =
+                    match request::encode(&chat, &context.route.upstream_id, enable_thinking) {
+                        Ok(payload) => payload,
+                        Err(error) => return Box::pin(async move { Err(error) }),
+                    };
                 Box::pin(async move {
-                    let body =
-                        Self::post_completion(transport, payload, request_budget, label).await?;
+                    let body = Self::post_completion(
+                        transport,
+                        payload,
+                        credential,
+                        request_budget,
+                        label,
+                    )
+                    .await?;
                     let response = response::decode(&body, public_model)?;
                     Ok(AdapterOutput::Complete(Response::Chat(response)))
                 })
@@ -317,14 +384,21 @@ impl Adapter for VllmAdapter {
                         &transcription,
                         &context.route.upstream_id,
                         self.max_audio_bytes,
+                        enable_thinking,
                     ) {
                         Ok(payload) => payload,
                         Err(error) => return Box::pin(async move { Err(error) }),
                     };
                     let request_budget = self.max_audio_chat_body_bytes;
                     Box::pin(async move {
-                        let body = Self::post_completion(transport, payload, request_budget, label)
-                            .await?;
+                        let body = Self::post_completion(
+                            transport,
+                            payload,
+                            credential,
+                            request_budget,
+                            label,
+                        )
+                        .await?;
                         let response = response::decode_transcription(&body)?;
                         Ok(AdapterOutput::Complete(Response::Transcription(response)))
                     })
@@ -334,6 +408,7 @@ impl Adapter for VllmAdapter {
                         &transcription,
                         &context.route.upstream_id,
                         self.max_audio_bytes,
+                        credential,
                     ) {
                         Ok(request) => request,
                         Err(error) => return Box::pin(async move { Err(error) }),

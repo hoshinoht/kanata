@@ -66,6 +66,8 @@ pub fn config_for(address: &str, options: ConfigOptions) -> ValidatedConfig {
         .transcription_mode
         .map(|mode| format!("transcription_mode = \"{mode}\"\n"))
         .unwrap_or_default();
+    // Credentials are only sent over HTTPS.
+    let scheme = if options.secret_ref { "https" } else { "http" };
     let secret_ref_line = if options.secret_ref {
         "secret_ref = \"env:VLLM_KEY\"\n"
     } else {
@@ -155,7 +157,7 @@ tailnet_addresses = ["100.64.0.1"]
 [[adapters]]
 id = "vllm-fixture"
 kind = "vllm"
-base_url = "http://{address}/v1"
+base_url = "{scheme}://{address}/v1"
 trust_zone = "local"
 {transcription_mode_line}{secret_ref_line}[adapters.capabilities]
 operations = {operations}
