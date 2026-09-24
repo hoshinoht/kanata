@@ -2,6 +2,7 @@
 - Each `tests/<suite>.rs` is one integration test binary; run it with `cargo test --test <suite>`.
 - Larger suites keep a thin entry file that pulls in a same-named directory with `#[path = "<suite>/cases.rs"] mod cases;` plus suite-local `support.rs`. Examples: `admission`, `chat_contract`, `models_contract`, `sse_contract`, `error_contract`, `cancellation`, `shutdown`, `timeouts`, `metrics`, `redaction`, `adapter_vllm`, `adapter_openrouter`, `adapter_ollama`. Some split further (`transcription_contract` → `transcription/`, `extensions_contract` → `extensions/`).
 - Small suites are single files (`config`, `routing`, `auth`, `listeners`, `smoke`, `serve_smoke`, `codex_*`, `adapter_codex`, `access_log`).
+- Key lifecycle: `key_reload` (hot reload, expiry, revocation, public-plane narrowing), `key_usage` (usage state files), `key_cli` (host `kanata key` binary, concurrent writers, file permissions).
 - `architecture_boundaries.rs` enforces the provider-name ban described in `src/AGENTS.md`.
 
 ## Shared helpers

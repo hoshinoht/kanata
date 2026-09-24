@@ -6,7 +6,7 @@
 - `errors.rs`: every error response (see below).
 
 ## Handler conventions
-- Handler order, as in `chat.rs`: drain check → `RequestDeadline` → body read (bounded) → wire parse → route resolve and `auth.authorize` → capability and extension checks → `RoutedRequest` → `state.admission().acquire(route, auth.key_identity())` → `adapter.execute` → `permit.record_outcome(..)` → respond.
+- Handler order, as in `chat.rs`: drain check → `RequestDeadline` → body read (bounded) → wire parse → route resolve and `auth.authorize` → capability and extension checks → `RoutedRequest` → `state.admission().acquire(route, auth.key_limits())` → `adapter.execute` → `permit.record_outcome(..)` → respond.
 - Wrap each await that can stall (body read, admission, execute) in `deadline.run(..)`.
 - Build errors only through `errors.rs`: `gateway_error_observed` for `GatewayError`, `admission_rejected_observed` for admission refusals (adds `Retry-After`), `invalid`/`invalid_param`/`body_too_large` for 4xx, `server_draining_observed` while draining. `*_observed` variants record the outcome on the telemetry `Observer`; use them whenever an observer exists.
 - Status and code for a `GatewayError` come from `ErrorKind::mapping()` in `core/contracts.rs`. New client-visible codes also belong in `docs/guides/public-api-quickstart.md`'s error table.

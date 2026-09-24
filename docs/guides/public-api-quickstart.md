@@ -107,6 +107,7 @@ console.log(reply.choices[0].message.content);
 | HTTP | `error.code` | Meaning / what to do |
 | --- | --- | --- |
 | 400 | `invalid_request` | Malformed JSON or an unsupported field. Check `param` |
+| 401 | `key_expired` | Your key has expired. Ask the owner for a new one |
 | 403 | `permission_denied` | Missing, invalid or revoked key, or a model your key may not use publicly |
 | 404 | `not_found` | Wrong path. Use `/v1/models` or `/v1/chat/completions` |
 | 408 | `request_cancelled` | The request was cancelled, for example because the client disconnected |

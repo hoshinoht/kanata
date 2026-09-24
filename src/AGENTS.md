@@ -1,9 +1,10 @@
 ## Module map
 - `main.rs`: parses args, starts a tokio runtime for `auth`/`serve`, prints CLI results.
-- `cli.rs`: command parsing, `check`, `key new`, Codex auth commands, and `build_serve_adapters` (the one place that matches `ProviderKind` to concrete adapters).
+- `cli.rs`: command parsing, `check`, `routes`, dispatch to `keys::cli`, Codex auth commands, and `build_serve_adapters` (the one place that matches `ProviderKind` to concrete adapters).
 - `serve.rs`: `serve` lifecycle: load config, `for_plane`, logging, build server and adapters, bind, `serve_until`.
 - `config.rs`: TOML config schema, validation and `ValidatedConfig` (see below).
 - `core/contracts.rs`: provider-neutral IR: selectors, `RoutedRequest`, chat/transcription request and response types, `NormalizedEvent`, `ErrorKind` and its `mapping()` to HTTP status/code/type.
+- `keys/`: key lifecycle. `time.rs` UTC timestamps; `file.rs` `keys.toml` schema, 0600/permission checks, 1000-record cap; `reload.rs` hot reload (~2 s poll, invalid file keeps the old set); `usage.rs` `usage-<plane>.json` recorder and reader; `store.rs` locked atomic writes and `audit.jsonl`; `cli.rs` host-only `kanata key` commands (no network path).
 - `auth/`: secret resolution, bearer-key authentication, per-key route authorization.
 - `routing/mod.rs`: `Registry` of exact `(model_alias, operation)` routes. `routing/admission.rs`: per-route queues, optional adapter and key limits, token bucket, `Retry-After`. `routing/breaker.rs`: per-adapter circuit breaker.
 - `server/mod.rs`: `TwoPlaneServer` assembly, client/public/admin routers, auth extractor, `/v1/models`, admin `/live` `/ready` `/metrics`, test entry points `client_oneshot`/`public_oneshot`/`admin_oneshot`. `server/runtime.rs`: listeners, connection caps, header read timeout, drain. `server/shutdown.rs`: connection sets.

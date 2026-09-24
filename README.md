@@ -56,7 +56,8 @@
 - **Tools pass through:** tool declarations, calls and results are forwarded. Kanata never executes tools.
 
 ### 🔐 Keys and exposure
-- **`kanata key new`:** issues keys. The server stores only their digests.
+- **Host key CLI:** `kanata key new|list|show|edit|rm|rotate|migrate` manages keys in `keys.toml` on the host (no network or admin endpoint). Keys are shown once and stored only as SHA-256 digests; every key has an expiry (1–60 days or `unlimited`). Changes apply within about 2 s, without a restart.
+- **Usage and audit:** the server records per-key request counts and last use; the CLI appends every change to `keys/audit.jsonl` (never secrets).
 - **Owner key:** only one key may be the owner. Any key may be given Codex scopes, but Codex is never served publicly, and with the public profile the public container never loads the owner key or any key with Codex scopes, so use a separate key for public routes.
 - **Public listener:** its allowlist is empty by default. Missing or invalid keys get 403 on **every** path, and it never serves Codex.
 
@@ -110,9 +111,11 @@ scripts/kanata.sh build
 cp config/container.example.toml config/config.toml   # edit tailnet address, adapters, routes
 cp .env.example .env                                   # file paths + Compose file list only
 
-# 3. Create the owner key (key stays on the host, digest goes into the config), then start
+# 3. Install the host CLI, create the owner key (key stays on the host, digest goes into config/keys/keys.toml), then start
+cargo install --locked --path .
 mkdir -p ~/.config/kanata && chmod 700 ~/.config/kanata
-scripts/kanata.sh owner-key rotate --no-restart
+kanata key new --config config/config.toml --id owner --owner --chat <alias> --expires 30 \
+  --key-out ~/.config/kanata/owner-client-key
 scripts/kanata.sh up
 scripts/kanata.sh logs
 ```
@@ -124,8 +127,10 @@ scripts/kanata.sh logs
 | Put your reverse proxy on `kanata_private_ingress` → `172.30.0.2:8080` | [deploy/docker](deploy/docker/README.md) |
 | Expose chosen models publicly through a Cloudflare tunnel | [deploy/cloudflared](deploy/cloudflared/README.md) |
 | Sign in to Codex | `scripts/kanata.sh codex login` |
-| Issue a key for someone else | `scripts/kanata.sh key new alice ~/.config/kanata/keys/alice.key --chat <alias>` |
-| Rotate the owner key | `scripts/kanata.sh owner-key rotate` |
+| Issue a key for someone else | `kanata key new --config config/config.toml --id alice --chat <alias> --expires 30` |
+| List, inspect, change or revoke keys | `kanata key list`, `key show`, `key edit`, `key rm` (each with `--config`); see `kanata key` |
+| Which routes are public | `kanata routes --config config/config.toml` |
+| Rotate the owner key | `kanata key rotate --owner --config config/config.toml --expires 30 --key-out ~/.config/kanata/owner-client-key` |
 | Everything else (`status`, `restart`, `check`, `down`, …) | `scripts/kanata.sh help` |
 | Config fields and templates | [config/README.md](config/README.md) |
 
@@ -180,7 +185,8 @@ Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you
 
 - **Host isolation:** Docker bridges alone don't isolate containers from each other or from the host, so use a host firewall.
 - **Cloudflare Access** on the public route is optional defence in depth, never a replacement for keys.
-- **Suspected compromise:** run `scripts/kanata.sh owner-key rotate`. It rotates the owner key immediately and prints what else to rotate: other keys, the Codex sign-in, the tunnel token, and proxy DNS tokens.
+- **Key management is host-only:** `kanata key` edits `keys.toml` directly (0600, one writer at a time) and has no network path. The server rejects a group- or world-writable keys file and keeps the previous keys when a reload fails. Expired keys get `401 key_expired`; revoked keys are treated exactly like unknown keys.
+- **Suspected compromise:** run `kanata key rotate --owner --config <config> --expires <days> --key-out <file>` (takes effect within about 2 s), revoke other keys with `kanata key rm`, then rotate the Codex sign-in, the tunnel token, and proxy DNS tokens.
 
 ## Development
 
@@ -204,7 +210,8 @@ cargo run -q -- check --config config/container.example.toml
 | `src/telemetry` | Access logs, diagnostics, metrics |
 | `config/` | Templates (your `config.toml` is git-ignored) |
 | `compose.kanata*.yml`, `Dockerfile` | Container and Compose profiles |
-| `scripts/` | Codex login, client keys, owner-key rotation |
+| `src/keys` | Host key CLI, `keys.toml`, reload, usage state, audit log |
+| `scripts/` | Compose lifecycle, Codex login, local model helpers |
 | `tests/` | Integration tests and sanitized fixtures (`tests/fixtures/config/example.toml` is a schema fixture; never serve it) |
 
 </details>
