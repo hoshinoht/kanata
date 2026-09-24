@@ -1,11 +1,12 @@
 use axum::{
     Json,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde_json::{Value, json};
 
 use crate::core::{ErrorKind, GatewayError};
+use crate::routing::admission::AdmissionError;
 use crate::server::{ClientState, error_response};
 use crate::telemetry::{Observer, observe_draining, observe_error};
 
@@ -127,6 +128,56 @@ pub(super) fn server_draining() -> Response {
 pub(super) fn server_draining_observed(observer: Option<&Observer>) -> Response {
     observe_draining(observer);
     server_draining()
+}
+
+/// Gateway-side admission refusal; carries `Retry-After`.
+pub(super) fn admission_rejected_observed(
+    error: AdmissionError,
+    retry_after_secs: u64,
+    observer: Option<&Observer>,
+) -> Response {
+    let (status, message, error_type, code) = match error {
+        AdmissionError::QueueFull => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Gateway queue is full",
+            "rate_limit_error",
+            "gateway_queue_full",
+        ),
+        AdmissionError::QueueTimeout => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Gateway is busy",
+            "api_error",
+            "gateway_busy",
+        ),
+        AdmissionError::KeyBusy => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many concurrent requests for this key",
+            "rate_limit_error",
+            "gateway_key_busy",
+        ),
+        AdmissionError::KeyRateLimited { .. } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Request rate limit exceeded for this key",
+            "rate_limit_error",
+            "gateway_key_rate_limited",
+        ),
+        AdmissionError::CircuitOpen { .. } => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Upstream unavailable",
+            "api_error",
+            "upstream_unavailable",
+        ),
+        AdmissionError::Closed => return server_draining_observed(observer),
+        AdmissionError::UnknownRoute => {
+            return gateway_error_observed(error.gateway_error(), observer);
+        }
+    };
+    observe_error(observer, error.gateway_error());
+    let mut response = error_response(status, message, error_type, code);
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from(retry_after_secs));
+    response
 }
 
 pub(super) fn upstream_failure() -> Response {

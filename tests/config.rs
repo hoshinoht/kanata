@@ -1215,3 +1215,62 @@ permissions = [
         "config error at listeners.public: required_for_public_plane"
     );
 }
+
+#[test]
+fn optional_capacity_limits_validate_bounds() {
+    let adapter = "transcription_mode = \"native_asr\"\n";
+    let key = "owner = true\n";
+    let config = check(
+        example()
+            .replacen(
+                adapter,
+                &format!("{adapter}max_in_flight = 2\ncircuit_breaker = {{ enabled = false }}\n"),
+                1,
+            )
+            .replacen(
+                key,
+                &format!(
+                    "{key}max_in_flight = 1\nrate_limit = {{ requests = 4, per_ms = 300000 }}\n"
+                ),
+                1,
+            ),
+    )
+    .expect("limits validate");
+    let vllm = &config.adapters()[1];
+    assert_eq!(vllm.max_in_flight(), Some(2));
+    assert!(!vllm.circuit_breaker().enabled);
+    assert_eq!(
+        vllm.circuit_breaker().failures,
+        5,
+        "unset fields keep defaults"
+    );
+    assert!(
+        config.adapters()[0].circuit_breaker().enabled,
+        "on by default"
+    );
+    assert_eq!(config.application_keys()[0].max_in_flight(), Some(1));
+
+    for (find, insert, error) in [
+        (
+            adapter,
+            "max_in_flight = 0\n",
+            "adapters[1].max_in_flight: zero",
+        ),
+        (
+            adapter,
+            "circuit_breaker = { failures = 0 }\n",
+            "adapters[1].circuit_breaker.failures: zero",
+        ),
+        (
+            key,
+            "rate_limit = { requests = 1, per_ms = 0 }\n",
+            "application_keys[0].rate_limit.per_ms: zero",
+        ),
+    ] {
+        let contents = example().replacen(find, &format!("{find}{insert}"), 1);
+        assert_eq!(
+            check(contents).unwrap_err(),
+            format!("config error at {error}")
+        );
+    }
+}

@@ -111,8 +111,11 @@ console.log(reply.choices[0].message.content);
 | 404 | `not_found` | Wrong path. Use `/v1/models` or `/v1/chat/completions` |
 | 408 | `request_cancelled` | The request was cancelled, for example because the client disconnected |
 | 413 | `invalid_request` | Request body larger than 1 MiB |
-| 429 | `rate_limit_exceeded` | Too busy. Wait a few seconds and retry with backoff |
-| 502 / 503 | `upstream_failure` / `upstream_unavailable` | The model backend is down or restarting. Try again later |
+| 429 | `gateway_queue_full` | The gateway queue for this model is full. Retry after the `Retry-After` seconds |
+| 429 | `gateway_key_busy` / `gateway_key_rate_limited` | Your key has too many requests running, or sent too many recently. Retry after the `Retry-After` seconds |
+| 429 | `rate_limit_exceeded` | The model backend is rate-limiting. Wait and retry with backoff |
+| 502 / 503 | `upstream_failure` / `upstream_unavailable` | The model backend is down or restarting. Try again later (after `Retry-After` seconds if present) |
+| 503 | `gateway_busy` | No slot freed up in time. Retry after the `Retry-After` seconds |
 | 504 | `upstream_timeout` | The model took too long |
 | 5xx page from Cloudflare | — | The gateway itself is offline, for example because the host is asleep or restarting |
 

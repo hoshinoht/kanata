@@ -263,13 +263,8 @@ impl TwoPlaneServer {
         }
         let registry = Arc::new(Registry::from_validated(config));
         let admission = Arc::new(
-            Admission::from_registry(
-                &registry,
-                config.limits().max_queue(),
-                config.limits().max_in_flight(),
-                config.timeouts().queue_ms(),
-            )
-            .map_err(|_| ServerBuildError::AdmissionLimits)?,
+            Admission::from_config(&registry, config)
+                .map_err(|_| ServerBuildError::AdmissionLimits)?,
         );
         let telemetry = Arc::new(crate::telemetry::Telemetry::new());
         let client_state = ClientState {
@@ -345,6 +340,10 @@ pub(crate) struct Authenticated {
 }
 
 impl Authenticated {
+    pub(crate) fn key_identity(&self) -> &str {
+        self.context.key_identity()
+    }
+
     #[allow(dead_code)]
     pub(crate) fn authorize(&self, selector: &RouteSelector) -> Result<(), ForbiddenResponse> {
         self.context
@@ -492,15 +491,32 @@ async fn list_models(auth: Authenticated, State(state): State<ClientState>) -> R
             .or_default()
             .push(route);
     }
+    // Capacity settings are published to private clients only.
+    let publish_admission = state.listener() == crate::telemetry::Listener::Private;
+    let limits = state.admission().limits();
     let data: Vec<_> = aliases
         .into_iter()
         .map(|(alias, routes)| {
+            let mut kanata = model_capabilities(&routes);
+            if publish_admission {
+                let adapter = routes
+                    .iter()
+                    .find(|route| route.identity.selector.operation == crate::core::Operation::Chat)
+                    .or(routes.first())
+                    .and_then(|route| state.admission().adapter_max_in_flight(&route.adapter_id));
+                kanata["admission"] = json!({
+                    "max_in_flight": limits.max_in_flight,
+                    "max_queue": limits.max_queue,
+                    "queue_ms": limits.queue_ms,
+                    "adapter_max_in_flight": adapter,
+                });
+            }
             json!({
                 "id": alias,
                 "object": "model",
                 "created": 0,
                 "owned_by": "kanata",
-                "kanata": model_capabilities(&routes),
+                "kanata": kanata,
             })
         })
         .collect();
@@ -589,10 +605,17 @@ async fn metrics(State(state): State<AdminState>) -> Response {
             axum::http::header::CONTENT_TYPE,
             "text/plain; version=0.0.4",
         )],
-        state.telemetry.render(
-            true,
-            state.readiness.is_ready() && !state.admission.is_closed(),
-        ),
+        {
+            let mut body = state.telemetry.render(
+                true,
+                state.readiness.is_ready() && !state.admission.is_closed(),
+            );
+            body.push_str(&format!(
+                "# TYPE kanata_circuit_breakers_open gauge\nkanata_circuit_breakers_open {}\n",
+                state.admission.open_breakers()
+            ));
+            body
+        },
     )
         .into_response()
 }

@@ -13,6 +13,8 @@ use crate::core::{
 };
 
 pub const MAX_TIMEOUT_MS: u64 = 604_800_000;
+/// Upper bound for configured concurrency and request counts.
+pub const MAX_CONCURRENCY_LIMIT: u64 = 1_000_000;
 pub const MAX_CONFIG_AUDIO_BYTES: u64 = MAX_INPUT_AUDIO_BYTES as u64;
 
 #[derive(Clone, Debug)]
@@ -293,6 +295,8 @@ pub struct ValidatedAdapter {
     transcription_mode: Option<VllmTranscriptionMode>,
     extension_allowlist: BTreeSet<ExtensionKey>,
     capabilities: Capabilities,
+    max_in_flight: Option<u64>,
+    circuit_breaker: CircuitBreakerPolicy,
 }
 impl ValidatedAdapter {
     pub fn id(&self) -> &str {
@@ -319,6 +323,38 @@ impl ValidatedAdapter {
     pub fn capabilities(&self) -> &Capabilities {
         &self.capabilities
     }
+    /// Concurrency cap shared by every route on this adapter; `None` means uncapped.
+    pub fn max_in_flight(&self) -> Option<u64> {
+        self.max_in_flight
+    }
+    pub fn circuit_breaker(&self) -> CircuitBreakerPolicy {
+        self.circuit_breaker
+    }
+}
+
+/// Fail-fast policy for an adapter whose backend keeps failing at the transport level.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CircuitBreakerPolicy {
+    pub enabled: bool,
+    pub failures: u32,
+    pub cooldown_ms: u64,
+}
+
+impl Default for CircuitBreakerPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            failures: 5,
+            cooldown_ms: 30_000,
+        }
+    }
+}
+
+/// Token bucket: at most `requests` per `per_ms`, refilled continuously.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KeyRateLimit {
+    pub requests: u64,
+    pub per_ms: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -405,6 +441,8 @@ pub struct ValidatedApplicationKey {
     owner: bool,
     secret_ref: SecretReference,
     permissions: Vec<RouteSelector>,
+    max_in_flight: Option<u64>,
+    rate_limit: Option<KeyRateLimit>,
 }
 impl ValidatedApplicationKey {
     pub fn id(&self) -> &str {
@@ -418,6 +456,12 @@ impl ValidatedApplicationKey {
     }
     pub fn permissions(&self) -> &[RouteSelector] {
         &self.permissions
+    }
+    pub fn max_in_flight(&self) -> Option<u64> {
+        self.max_in_flight
+    }
+    pub fn rate_limit(&self) -> Option<KeyRateLimit> {
+        self.rate_limit
     }
 }
 
@@ -664,6 +708,21 @@ struct RawAdapter {
     #[serde(default)]
     extension_allowlist: Vec<String>,
     capabilities: RawCapabilities,
+    #[serde(default)]
+    max_in_flight: Option<u64>,
+    #[serde(default)]
+    circuit_breaker: Option<RawCircuitBreaker>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCircuitBreaker {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    failures: Option<u32>,
+    #[serde(default)]
+    cooldown_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -718,6 +777,17 @@ struct RawApplicationKey {
     #[serde(default)]
     owner: bool,
     permissions: Vec<RawPermission>,
+    #[serde(default)]
+    max_in_flight: Option<u64>,
+    #[serde(default)]
+    rate_limit: Option<RawRateLimit>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRateLimit {
+    requests: u64,
+    per_ms: u64,
 }
 
 #[derive(Deserialize)]
@@ -930,6 +1000,8 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
                 ));
             }
         }
+        let max_in_flight = validate_optional_limit(adapter.max_in_flight, &path)?;
+        let circuit_breaker = validate_circuit_breaker(adapter.circuit_breaker, &path)?;
         adapters.push(ValidatedAdapter {
             id: adapter.id,
             kind: adapter.kind,
@@ -949,6 +1021,8 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
                 sampling_controls: adapter.capabilities.sampling_controls,
                 reasoning_control: adapter.capabilities.reasoning_control,
             },
+            max_in_flight,
+            circuit_breaker,
         });
     }
     if adapters.is_empty() {
@@ -1513,9 +1587,16 @@ fn validate_application_keys(
                 ));
             }
         }
+        let max_in_flight = validate_optional_limit(key.max_in_flight, &path)?;
+        let rate_limit = key
+            .rate_limit
+            .map(|limit| validate_rate_limit(limit, &path))
+            .transpose()?;
         validated.push(ValidatedApplicationKey {
             id: key.id,
             owner: key.owner,
+            max_in_flight,
+            rate_limit,
             secret_ref,
             permissions: key
                 .permissions
@@ -1572,6 +1653,83 @@ fn validate_extension_allowlist(
         }
     }
     Ok(validated)
+}
+
+/// Optional concurrency cap: unset means uncapped, zero is rejected.
+fn validate_optional_limit(value: Option<u64>, path: &str) -> Result<Option<u64>, ConfigError> {
+    match value {
+        Some(0) => Err(ConfigError::new(format!("{path}.max_in_flight"), "zero")),
+        Some(value) if value > MAX_CONCURRENCY_LIMIT => Err(ConfigError::new(
+            format!("{path}.max_in_flight"),
+            "limit_too_large",
+        )),
+        value => Ok(value),
+    }
+}
+
+fn validate_circuit_breaker(
+    raw: Option<RawCircuitBreaker>,
+    path: &str,
+) -> Result<CircuitBreakerPolicy, ConfigError> {
+    let defaults = CircuitBreakerPolicy::default();
+    let Some(raw) = raw else {
+        return Ok(defaults);
+    };
+    let policy = CircuitBreakerPolicy {
+        enabled: raw.enabled.unwrap_or(defaults.enabled),
+        failures: raw.failures.unwrap_or(defaults.failures),
+        cooldown_ms: raw.cooldown_ms.unwrap_or(defaults.cooldown_ms),
+    };
+    if policy.failures == 0 {
+        return Err(ConfigError::new(
+            format!("{path}.circuit_breaker.failures"),
+            "zero",
+        ));
+    }
+    if policy.cooldown_ms == 0 {
+        return Err(ConfigError::new(
+            format!("{path}.circuit_breaker.cooldown_ms"),
+            "zero",
+        ));
+    }
+    if policy.cooldown_ms > MAX_TIMEOUT_MS {
+        return Err(ConfigError::new(
+            format!("{path}.circuit_breaker.cooldown_ms"),
+            "timeout_too_large",
+        ));
+    }
+    Ok(policy)
+}
+
+fn validate_rate_limit(raw: RawRateLimit, path: &str) -> Result<KeyRateLimit, ConfigError> {
+    if raw.requests == 0 {
+        return Err(ConfigError::new(
+            format!("{path}.rate_limit.requests"),
+            "zero",
+        ));
+    }
+    if raw.requests > MAX_CONCURRENCY_LIMIT {
+        return Err(ConfigError::new(
+            format!("{path}.rate_limit.requests"),
+            "limit_too_large",
+        ));
+    }
+    if raw.per_ms == 0 {
+        return Err(ConfigError::new(
+            format!("{path}.rate_limit.per_ms"),
+            "zero",
+        ));
+    }
+    if raw.per_ms > MAX_TIMEOUT_MS {
+        return Err(ConfigError::new(
+            format!("{path}.rate_limit.per_ms"),
+            "timeout_too_large",
+        ));
+    }
+    Ok(KeyRateLimit {
+        requests: raw.requests,
+        per_ms: raw.per_ms,
+    })
 }
 
 fn validate_bounds(

@@ -40,7 +40,21 @@ impl SecretResolver for Resolver {
 }
 
 pub fn config(max_queue: u64, max_in_flight: u64, queue_ms: u64) -> ValidatedConfig {
+    config_with(max_queue, max_in_flight, queue_ms, &[])
+}
+
+/// Like `config`, with extra `(find, replace)` edits applied to the fixture first.
+pub fn config_with(
+    max_queue: u64,
+    max_in_flight: u64,
+    queue_ms: u64,
+    edits: &[(&str, &str)],
+) -> ValidatedConfig {
     let mut contents = include_str!("../../tests/fixtures/config/example.toml").to_owned();
+    for (find, replace) in edits {
+        assert!(contents.contains(find), "fixture contains {find:?}");
+        contents = contents.replacen(find, replace, 1);
+    }
     contents = contents.replace("max_queue = 32", &format!("max_queue = {max_queue}"));
     contents = contents.replace(
         "max_in_flight = 8",
@@ -385,4 +399,45 @@ pub fn completed() -> Event {
             total_tokens: 2,
         }),
     })
+}
+
+/// Adapter whose every call fails with `kind`; returns the dispatch counter.
+pub fn failing_adapter(
+    id: impl Into<String>,
+    capabilities: Capabilities,
+    kind: kanata::core::ErrorKind,
+) -> (Arc<dyn Adapter>, Arc<AtomicUsize>) {
+    let dispatches = Arc::new(AtomicUsize::new(0));
+    (
+        Arc::new(FailingAdapter {
+            id: id.into(),
+            capabilities,
+            kind,
+            dispatches: dispatches.clone(),
+        }),
+        dispatches,
+    )
+}
+
+struct FailingAdapter {
+    id: String,
+    capabilities: Capabilities,
+    kind: kanata::core::ErrorKind,
+    dispatches: Arc<AtomicUsize>,
+}
+
+impl Adapter for FailingAdapter {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn capabilities(&self) -> &Capabilities {
+        &self.capabilities
+    }
+
+    fn execute(&self, _: RoutedRequest) -> AdapterFuture {
+        self.dispatches.fetch_add(1, Ordering::SeqCst);
+        let kind = self.kind;
+        Box::pin(async move { Err(GatewayError { kind }) })
+    }
 }

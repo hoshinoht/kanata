@@ -1,4 +1,5 @@
 pub(crate) mod admission;
+pub(crate) mod breaker;
 
 use std::collections::{BTreeMap, BTreeSet};
 

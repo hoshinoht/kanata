@@ -10,15 +10,15 @@ use crate::core::{
     ChatContent, ChatRequest, Operation, Request as CoreRequest, RequestContext,
     Response as CoreResponse, RoutedRequest,
 };
-use crate::routing::admission::AdmissionError;
 use crate::server::{Authenticated, ClientState};
 
 use super::{
     check_supported,
     deadline::RequestDeadline,
     errors::{
-        body_too_large, forbidden, gateway_error_observed, invalid, invalid_param, request_id,
-        server_draining_observed, unavailable, upstream_failure_observed,
+        admission_rejected_observed, body_too_large, forbidden, gateway_error_observed, invalid,
+        invalid_param, request_id, server_draining_observed, unavailable,
+        upstream_failure_observed,
     },
     serialization,
     sse::{StreamLifetime, stream_response},
@@ -146,20 +146,28 @@ async fn dispatch_chat(
         Ok(value) => value,
         Err(_) => return invalid(),
     };
-    let permit = match deadline.run(|| state.admission().acquire(route)).await {
+    let mut permit = match deadline
+        .run(|| state.admission().acquire(route, auth.key_identity()))
+        .await
+    {
         Ok(Ok(permit)) => permit,
-        Ok(Err(AdmissionError::Closed)) => {
-            return server_draining_observed(observer.as_ref());
-        }
         Ok(Err(error)) => {
-            return gateway_error_observed(error.gateway_error(), observer.as_ref());
+            return admission_rejected_observed(
+                error,
+                state.admission().retry_after_secs(error),
+                observer.as_ref(),
+            );
         }
         Err(error) => return gateway_error_observed(error, observer.as_ref()),
     };
     if let Some(observer) = observer.as_ref() {
         observer.annotate_adapter(&route.adapter_id, &provider_label(route));
     }
-    match deadline.run(move || adapter.execute(routed)).await {
+    let result = deadline.run(move || adapter.execute(routed)).await;
+    if let Ok(outcome) = &result {
+        permit.record_outcome(outcome);
+    }
+    match result {
         Ok(Ok(AdapterOutput::Complete(CoreResponse::Chat(response)))) if !stream => {
             serialization::chat_response(response, &response_model, observer.as_ref())
         }
