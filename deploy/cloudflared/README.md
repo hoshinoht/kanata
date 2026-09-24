@@ -10,6 +10,7 @@ The examples use `api.example.com`; replace it with your own hostname. Pick a **
 - A valid key sees and calls only models that are both in `publication.public_routes` **and** in that key's permissions. Everything else gets 403. Unknown paths get 404.
 - Codex can never be public, even with the owner key. `kanata check` rejects Codex entries in `public_routes`.
 - Cloudflare Access is optional extra protection; it never replaces bearer keys.
+- Responses and `/v1/models` show only the alias, never the upstream model id. To keep the model private, give public routes an opaque alias (e.g. `kanata-mini`) with its own `[[routes]]` entry. The model may still name itself when asked.
 
 ## One-time setup (Cloudflare dashboard)
 
@@ -48,7 +49,7 @@ The `cloudflared` sidecar is digest-pinned, runs as non-root with a read-only fi
 Issue one key per person. The config stores only the key's SHA-256 digest:
 
 ```sh
-scripts/new-client-key.sh alice ~/.config/kanata/keys/alice.key --chat qwen3-0.6b
+scripts/kanata.sh key new alice ~/.config/kanata/keys/alice.key --chat qwen3-0.6b
 # or, with a Rust toolchain:
 cargo run -q -- key new --id alice --chat qwen3-0.6b --key-out ~/.config/kanata/keys/alice.key
 ```

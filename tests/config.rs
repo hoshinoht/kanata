@@ -986,6 +986,32 @@ fn codex_effort_aliases_are_exact_scoped_and_field_validated() {
         "config error at routes[0].codex_reasoning_effort: codex_only"
     );
 
+    let context = |value: &str| {
+        check(personal_contents.replace(
+            "upstream_id = \"qwen3:0.6b\"\nrequires_streaming_chat",
+            &format!(
+                "upstream_id = \"qwen3:0.6b\"\ncontext_tokens = {value}\nrequires_streaming_chat"
+            ),
+        ))
+    };
+    assert!(context("16384").is_ok());
+    for value in ["255", "16777217"] {
+        assert_eq!(
+            context(value).unwrap_err(),
+            "config error at routes[0].context_tokens: out_of_range"
+        );
+    }
+    let transcription_context = check(personal_contents.replacen(
+        "operation = \"transcription\"\n",
+        "operation = \"transcription\"\ncontext_tokens = 8192\n",
+        1,
+    ));
+    assert!(
+        transcription_context
+            .unwrap_err()
+            .ends_with(".context_tokens: chat_only")
+    );
+
     let transcription_effort = check(personal_contents.replace(
         "model_alias = \"gpt-6-luna:low\"\noperation = \"chat\"",
         "model_alias = \"gpt-6-luna:low\"\noperation = \"transcription\"",
@@ -1083,4 +1109,30 @@ fn logging_section_is_optional_defaulted_and_strict() {
         let error = check(format!("{}\n[logging]\n{section}\n", example())).unwrap_err();
         assert_eq!(error, expected);
     }
+}
+
+#[test]
+fn apple_fm_adapters_are_local_chat_without_tools() {
+    let apple = example().replacen("kind = \"ollama\"", "kind = \"apple_fm\"", 1);
+    assert_eq!(
+        check(apple.clone()).unwrap_err(),
+        "config error at adapters[0].capabilities.function_tools: unsupported_by_adapter_kind"
+    );
+    let without_tools = apple
+        .replacen("function_tools = true\n", "function_tools = false\n", 1)
+        .replacen(
+            "requires_function_tools = true",
+            "requires_function_tools = false",
+            1,
+        );
+    assert!(check(without_tools.clone()).is_ok());
+    assert_eq!(
+        check(
+            without_tools
+                .replacen("trust_zone = \"local\"", "trust_zone = \"external\"", 1)
+                .replace("http://ollama.invalid", "https://ollama.invalid")
+        )
+        .unwrap_err(),
+        "config error at adapters[0].trust_zone: provider_zone_mismatch"
+    );
 }

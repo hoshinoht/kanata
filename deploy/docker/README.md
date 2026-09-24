@@ -17,14 +17,15 @@ Kanata makes its outbound calls to model backends over the separate `backend_egr
 | `compose.kanata.yml` | Base service: private listener, egress network, Codex volume, read-only config mount |
 | `compose.kanata.host-ollama.yml` | Opt-in `host.orb.internal` mapping so Kanata can reach Ollama running on the Docker host (e.g. macOS for Metal) |
 | `compose.kanata.public.yml` | Opt-in public listener network plus the `cloudflared` sidecar |
+| `compose.kanata.openrouter.yml` | Opt-in OpenRouter API key as a Compose secret at `/run/secrets/openrouter-api-key`, from `KANATA_OPENROUTER_KEY_FILE` |
 | `.env` (git-ignored; from `.env.example`) | `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`, and paths to the config, the host-side owner key and the tunnel token. Paths only, never secrets |
 
 ## Config and secrets
 
 - `KANATA_CONFIG_FILE` is mounted read-only at `/etc/kanata/config.toml`. Start from `config/container.example.toml`.
-- **Client keys** are stored in the config only as `sha256:` digests, so no key file is mounted. The owner key's plaintext stays on the host at `KANATA_OWNER_KEY_FILE`. `scripts/rotate-owner-key.sh` creates or rotates it and updates its digest.
+- **Client keys** are stored in the config only as `sha256:` digests, so no key file is mounted. The owner key's plaintext stays on the host at `KANATA_OWNER_KEY_FILE`. `scripts/kanata.sh owner-key rotate` creates or rotates it and updates its digest.
 - **File permissions:** bind mounts and Compose file secrets keep their host ownership and mode. Make the config file, and the tunnel token if used, readable by the container user, e.g. `0444` inside a `0700` directory.
-- **Codex credentials** live only in the dedicated `codex_state` volume. Log in with `scripts/codex-login.sh`. No host home directory, keychain or Docker socket is mounted.
+- **Codex credentials** live only in the dedicated `codex_state` volume. Log in with `scripts/kanata.sh codex login`. No host home directory, keychain or Docker socket is mounted.
 
 ## Private route (reverse proxy)
 
@@ -57,8 +58,8 @@ kanata.example.com {
 Start Kanata first; it creates the network the proxy joins.
 
 ```sh
-docker compose up -d
-docker compose logs -f kanata
+scripts/kanata.sh up     # validates the config first
+scripts/kanata.sh logs
 ```
 
 Before `docker compose down`, stop or detach the proxy: a network can't be removed while another container is attached to it.

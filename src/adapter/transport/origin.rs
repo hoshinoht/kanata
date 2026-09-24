@@ -1,5 +1,5 @@
 use crate::{
-    config::ValidatedAdapter,
+    config::{ProviderKind, ValidatedAdapter},
     core::{GatewayError, TrustZone},
 };
 
@@ -9,6 +9,8 @@ use super::{request::Endpoint, types};
 pub(super) struct Origin {
     scheme: &'static str,
     authority: String,
+    /// `Host` header when it must differ from `authority`.
+    host_header: Option<String>,
     path_prefix: String,
     permits_credentials: bool,
 }
@@ -21,6 +23,7 @@ impl Origin {
         Ok(Self {
             scheme: "https",
             authority: hostname.to_owned(),
+            host_header: None,
             path_prefix: String::new(),
             permits_credentials: true,
         })
@@ -45,6 +48,7 @@ impl Origin {
         Self {
             scheme,
             authority,
+            host_header: None,
             path_prefix: "/provider".into(),
             permits_credentials,
         }
@@ -72,14 +76,18 @@ impl Origin {
         } else {
             host.to_owned()
         };
-        let authority = host
-            + &url
-                .port()
-                .map(|port| format!(":{port}"))
-                .unwrap_or_default();
+        let port = url
+            .port()
+            .map(|port| format!(":{port}"))
+            .unwrap_or_default();
+        // fm serve rejects non-loopback Host headers (cross-site protection).
+        let host_header =
+            (adapter.kind() == ProviderKind::AppleFm).then(|| format!("localhost{port}"));
+        let authority = host + &port;
         Ok(Self {
             scheme,
             authority,
+            host_header,
             path_prefix: url.path().trim_end_matches('/').to_owned(),
             permits_credentials: scheme == "https",
         })
@@ -97,8 +105,8 @@ impl Origin {
             .map_err(|_| types::internal_error())
     }
 
-    pub(super) fn authority(&self) -> &str {
-        &self.authority
+    pub(super) fn host_header(&self) -> &str {
+        self.host_header.as_deref().unwrap_or(&self.authority)
     }
 
     pub(super) fn permits_credentials(&self) -> bool {

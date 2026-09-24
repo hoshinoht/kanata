@@ -234,6 +234,8 @@ fn validate_named_file(directory: &File, name: &CStr, mode: u32) -> Result<(), S
     validate_stat(&stat, mode)
 }
 
+// st_mode is u16 on macOS and u32 on Linux.
+#[allow(clippy::unnecessary_cast)]
 fn validate_stat(stat: &rustix::fs::Stat, expected_mode: u32) -> Result<(), StoreError> {
     let file_type = FileType::from_raw_mode(stat.st_mode);
     if !file_type.is_file()

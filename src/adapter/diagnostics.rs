@@ -40,6 +40,18 @@ impl UpstreamLabel {
         self.log(Some(status), None, &error, "upstream error response");
     }
 
+    /// Like `status`, but always reads the body and returns the sanitized error.
+    pub(crate) async fn status_error(&self, status: u16, body: &mut ResponseBody) -> ProviderError {
+        let bytes = read_prefix(body).await;
+        let error = serde_json::from_slice::<Value>(&bytes)
+            .map(|value| ProviderError::from_json(&value))
+            .unwrap_or_default();
+        if tracing::enabled!(target: TARGET, tracing::Level::WARN) {
+            self.log(Some(status), None, &error, "upstream error response");
+        }
+        error
+    }
+
     pub(crate) fn content_type(&self, status: u16, media_type: Option<&str>) {
         tracing::warn!(
             target: TARGET,

@@ -98,7 +98,7 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
             },
         });
     }
-    if content.is_empty() {
+    if content.is_empty() && finish_reason != FinishReason::Length {
         return Err(upstream_failure());
     }
     let has_tool_calls = content

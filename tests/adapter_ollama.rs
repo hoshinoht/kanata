@@ -1,3 +1,5 @@
+#[path = "adapter_ollama/apple_fm.rs"]
+mod apple_fm;
 #[path = "adapter_ollama/cases.rs"]
 mod cases;
 #[path = "adapter_ollama/options.rs"]

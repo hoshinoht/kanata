@@ -7,11 +7,12 @@ use std::{
 use futures_core::Stream;
 
 use crate::{
+    adapter::diagnostics::ProviderError,
     adapter::transport::ResponseBody,
-    core::{ErrorKind, GatewayError, ModelAlias, NormalizedEvent},
+    core::{ErrorKind, FinishReason, GatewayError, ModelAlias, NormalizedEvent},
 };
 
-use super::{sse::SseFramer, stream_state::StreamState};
+use super::{apple_fm, sse::SseFramer, stream_state::StreamState};
 
 pub(super) struct OllamaStream {
     body: Option<ResponseBody>,
@@ -19,16 +20,23 @@ pub(super) struct OllamaStream {
     state: StreamState,
     pending: VecDeque<NormalizedEvent>,
     terminal: bool,
+    apple_fm: bool,
 }
 
 impl OllamaStream {
-    pub(super) fn new(body: ResponseBody, public_model: ModelAlias) -> Self {
+    pub(super) fn new(body: ResponseBody, public_model: ModelAlias, apple_fm: bool) -> Self {
         Self {
             body: Some(body),
-            framer: SseFramer::new(),
+            // fm serve sends `event: error`; other named events still fail below.
+            framer: if apple_fm {
+                SseFramer::new_with_named_events()
+            } else {
+                SseFramer::new()
+            },
             state: StreamState::new(public_model),
             pending: VecDeque::new(),
             terminal: false,
+            apple_fm,
         }
     }
 
@@ -43,6 +51,26 @@ impl OllamaStream {
         let mut events = Vec::new();
         for record in records {
             if self.terminal {
+                return Err(upstream_failure());
+            }
+            if self.apple_fm && record.event.as_deref() == Some("error") {
+                // fm serve reports a guardrail refusal as a mid-stream error event.
+                let error = serde_json::from_str::<serde_json::Value>(&record.data)
+                    .map(|value| ProviderError::from_json(&value))
+                    .unwrap_or_default();
+                if apple_fm::classify(500, &error) != Some(apple_fm::Failure::Guardrail) {
+                    return Err(upstream_failure());
+                }
+                events.extend(self.state.interrupt(FinishReason::ContentFilter)?);
+                self.body.take();
+                self.terminal = true;
+                break;
+            }
+            if record
+                .event
+                .as_deref()
+                .is_some_and(|event| event != "message")
+            {
                 return Err(upstream_failure());
             }
             if record.data == "[DONE]" {

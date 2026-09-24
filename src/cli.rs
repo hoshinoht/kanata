@@ -196,7 +196,7 @@ fn build_serve_adapters(
             continue;
         };
         let adapter: std::sync::Arc<dyn Adapter> = match configured.kind() {
-            ProviderKind::Ollama => std::sync::Arc::new(
+            ProviderKind::Ollama | ProviderKind::AppleFm => std::sync::Arc::new(
                 OllamaAdapter::new(configured, config.timeouts(), config.limits())
                     .map_err(|_| ())?,
             ),

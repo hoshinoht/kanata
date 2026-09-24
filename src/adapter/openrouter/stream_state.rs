@@ -46,10 +46,10 @@ impl StreamState {
     }
 
     pub(super) fn done(&mut self) -> Result<NormalizedEvent, GatewayError> {
-        if self.done || !self.has_text {
+        let finish = self.finish.as_ref().ok_or_else(upstream_failure)?;
+        if self.done || (!self.has_text && finish.reason != FinishReason::Length) {
             return Err(upstream_failure());
         }
-        let finish = self.finish.as_ref().ok_or_else(upstream_failure)?;
         let usage = self.usage.take().ok_or_else(upstream_failure)?;
         self.done = true;
         Ok(NormalizedEvent::ChatCompleted {
@@ -104,6 +104,9 @@ impl StreamState {
             meaningful = true;
             self.start(&mut events);
         }
+        if choice.delta.reasoning.is_some() || choice.delta.reasoning_details.is_some() {
+            meaningful = true;
+        }
         if let Some(text) = choice.delta.content.filter(|text| !text.is_empty()) {
             meaningful = true;
             self.has_text = true;
@@ -114,7 +117,11 @@ impl StreamState {
             meaningful = true;
             let reason = parse_finish_reason(&value)?;
             if !self.has_text {
-                return Err(upstream_failure());
+                // A length stop may carry no visible output.
+                if reason != FinishReason::Length {
+                    return Err(upstream_failure());
+                }
+                self.start(&mut events);
             }
             self.finish = Some(FinishState {
                 value,

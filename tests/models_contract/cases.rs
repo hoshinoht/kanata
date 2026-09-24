@@ -239,6 +239,10 @@ async fn models_report_kanata_capabilities_per_alias() {
             "backend-api/codex\"\ntrust_zone = \"external\"\n[adapters.capabilities]\n",
             "backend-api/codex\"\ntrust_zone = \"external\"\n[adapters.capabilities]\nreasoning_control = true\n",
         ),
+        (
+            "upstream_id = \"llama3.2:latest\"\n",
+            "upstream_id = \"llama3.2:latest\"\ncontext_tokens = 16384\n",
+        ),
     ]);
     let specs = ["ollama-local", "codex-private"]
         .into_iter()
@@ -258,7 +262,8 @@ async fn models_report_kanata_capabilities_per_alias() {
         serde_json::json!({
             "operations": ["chat"], "structured_output": true, "sampling_controls": true,
             "reasoning_control": true, "function_tools": true, "streaming": true,
-            "input_audio": false, "trust_zone": "local", "reasoning_efforts": null
+            "input_audio": false, "trust_zone": "local", "reasoning_efforts": null,
+            "context_tokens": 16384
         })
     );
     assert_eq!(
@@ -267,7 +272,7 @@ async fn models_report_kanata_capabilities_per_alias() {
             "operations": ["chat"], "structured_output": false, "sampling_controls": false,
             "reasoning_control": true, "function_tools": true, "streaming": true,
             "input_audio": false, "trust_zone": "external",
-            "reasoning_efforts": ["low", "medium", "high"]
+            "reasoning_efforts": ["low", "medium", "high"], "context_tokens": null
         })
     );
 }

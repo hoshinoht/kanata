@@ -132,6 +132,60 @@ async fn stream_completion_requires_visible_text_or_a_tool_call() {
 }
 
 #[tokio::test]
+async fn stream_length_stop_without_visible_text_completes_empty() {
+    let body = format!(
+        "{}{}data: [DONE]\n\n",
+        sse_record(choice_chunk(
+            json!({"role":"assistant","reasoning_content":"hidden"}),
+            None
+        )),
+        sse_record(choice_chunk(json!({}), Some("length")))
+    );
+    let mock = MockServer::once(ResponseSpec::event_stream(&body, body.len())).await;
+    let config = config_for(&mock.address, true, true);
+    let adapter = adapter(&config);
+    let events = stream_outcome(
+        adapter
+            .execute(routed(&config, text_request_with_stream(true)))
+            .await,
+    )
+    .await
+    .unwrap_or_else(|(events, kind)| panic!("length stop failed: {kind:?} {events:?}"));
+    assert!(matches!(
+        events.as_slice(),
+        [
+            NormalizedEvent::ChatStarted { .. },
+            NormalizedEvent::ChatCompleted {
+                finish_reason: FinishReason::Length,
+                ..
+            }
+        ]
+    ));
+}
+
+#[tokio::test]
+async fn plain_ollama_rejects_named_error_events() {
+    let body = format!(
+        "{}event: error\ndata: {{\"error\":{{\"message\":\"The model's safety guardrails were triggered.\"}}}}\n\n",
+        sse_record(choice_chunk(
+            json!({"role":"assistant","content":"hi"}),
+            None
+        )),
+    );
+    let mock = MockServer::once(ResponseSpec::event_stream(&body, body.len())).await;
+    let config = config_for(&mock.address, true, true);
+    let adapter = adapter(&config);
+    let (_, kind) = stream_outcome(
+        adapter
+            .execute(routed(&config, text_request_with_stream(true)))
+            .await,
+    )
+    .await
+    .expect_err("named error event accepted");
+    assert_eq!(kind, ErrorKind::UpstreamFailure);
+}
+
+#[tokio::test]
 async fn first_tool_indices_must_be_contiguous_in_declaration_order() {
     for (first_index, first_id, second_index, second_id) in [
         (1, "call_first", 0, "call_second"),

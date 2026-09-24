@@ -146,6 +146,22 @@ async fn context_trust_mismatch_is_rejected_before_dispatch() {
 }
 
 #[tokio::test]
+async fn length_stop_without_content_is_an_empty_reply() {
+    let body = r#"{"id":"id","object":"chat.completion","created":1700000000,"model":"served-checkpoint","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"hidden"},"finish_reason":"length"}]}"#;
+    let mut mock = MockServer::json(body).await;
+    let config = config_for(&mock.address);
+    let adapter = adapter(&config);
+    let Ok(AdapterOutput::Complete(kanata::core::Response::Chat(response))) =
+        adapter.execute(routed(&config, text_request())).await
+    else {
+        panic!("length stop was not a chat response")
+    };
+    assert_eq!(response.finish_reason, kanata::core::FinishReason::Length);
+    assert!(response.message.content.is_empty());
+    mock.finish().await;
+}
+
+#[tokio::test]
 async fn malformed_or_unexpected_success_payloads_are_redacted_failures() {
     let cases = [
         INVALID_USAGE_RESPONSE,

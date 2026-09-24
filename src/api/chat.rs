@@ -198,5 +198,5 @@ fn has_json_content_type(headers: &HeaderMap) -> bool {
 
 /// Lowercased config kind name; kept generic so this layer names no concrete provider.
 pub(super) fn provider_label(route: &crate::routing::RouteEntry) -> String {
-    format!("{:?}", route.provider_kind).to_ascii_lowercase()
+    route.provider_kind.label().to_owned()
 }
