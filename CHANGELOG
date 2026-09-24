@@ -1,5 +1,46 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.0.0-beta.1] - 2026-09-24
+
+First beta. Kanata runs as a single-host gateway with a private and an optional public client listener.
+
+### Added
+
+- `kanata serve` runs in one process with a private client listener, an optional public client listener and a loopback admin listener (`/ready`, `/metrics`), plus bounded admission, phased timeouts, cancellation and graceful drain.
+- OpenAI-compatible `GET /v1/models`, `POST /v1/chat/completions` (JSON and SSE) and `POST /v1/audio/transcriptions` (multipart). Routes are exact `(model alias, operation)` pairs, so one alias can serve several operations.
+- Adapters:
+  - Ollama: chat and tools.
+  - vLLM: text chat, inline-audio chat, native ASR, and transcription through audio chat.
+  - OpenRouter: chat.
+  - Codex: via a ChatGPT device-code sign-in (`kanata auth codex login|status|logout`); Codex effort aliases such as `gpt-6-sol:high`.
+- Typed, bounded chat options: `response_format` (`json_object` / `json_schema`), `temperature`, `top_p`, `seed`, `max_tokens` / `max_completion_tokens` and `reasoning_effort`. Adapters declare `structured_output`, `sampling_controls` and `reasoning_control`. Unsupported options return 400 naming the parameter. On Codex routes, a request `reasoning_effort` overrides the alias effort.
+- `kanata key new` issues `kanata_sk_` client keys. The config stores keys as `secret_ref = "sha256:<hex>"`.
+- Container logs, configured in `[logging]` (`level`, `format` = text|json):
+  - one access line per request, with request id, listener, status, error code, duration, key id, routed model and, on the public listener, the Cloudflare client IP;
+  - lifecycle lines at startup and shutdown;
+  - upstream-failure diagnostics, with provider messages at debug level only;
+  - per-key and per-model counters on admin `/metrics`.
+- Docker deployment: a hardened distroless image and Compose profiles with **no host ports**. The private listener sits on the internal `kanata_private_ingress` network for a reverse proxy to join. Opt-in `compose.kanata.public.yml` adds a pinned, confined `cloudflared` sidecar; opt-in `compose.kanata.host-ollama.yml` reaches Ollama on the Docker host.
+- Scripts: `scripts/codex-login.sh`, `scripts/new-client-key.sh` (no Rust toolchain needed), and `scripts/rotate-owner-key.sh` (create or rotate the owner key, including after a compromise).
+- Docs: deployment guides for Docker and Cloudflare tunnels, a config reference and templates, and a tester API quickstart.
+- Every `/v1/models` entry now includes a `kanata` object listing what that alias supports: operations, `structured_output`, `sampling_controls`, `reasoning_control`, `function_tools`, `streaming`, `input_audio`, `trust_zone`, and the accepted `reasoning_efforts`.
+- Upstream requests identify as `User-Agent: kanata/<version>`.
+- The Codex stream parser tolerates the live backend's extra event fields and event types, a missing `Content-Type`, and large single-line events. It still requires a completed response and a consistent response id and output items.
+
+### Security
+
+- Client keys, including the owner key, are stored in config only as SHA-256 digests. No key file is mounted into the container.
+- Only one owner key may hold Codex scopes. The public listener's allowlist is empty by default and never serves Codex. On the public listener, missing or invalid keys get 403 on every path.
+- Logs never contain keys, headers, prompts, bodies or schemas. Provider error messages appear only at debug level, sanitized and truncated.
+
+### Known limitations
+
+- Docker networks alone do not isolate containers from each other or from the host; use a host firewall.
+- The public and private listeners share one process with the Codex credentials.
+- Codex uses ChatGPT's private backend, which may change without notice.
+
 ## [0.1.0] - 2026-09-17
 
 ### Added
