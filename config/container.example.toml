@@ -24,6 +24,10 @@ kind = "ollama"
 # Needs compose.kanata.host-ollama.yml on macOS/OrbStack.
 base_url = "http://host.orb.internal:11434/v1"
 trust_zone = "local"
+# Optional cap shared by every route on this adapter, e.g. 1 for a single local GPU.
+# max_in_flight = 1
+# On by default: after 5 connection failures in a row, fail fast for 30 s, then probe.
+# circuit_breaker = { enabled = true, failures = 5, cooldown_ms = 30000 }
 [adapters.capabilities]
 operations = ["chat"]
 streaming_chat = true
@@ -109,7 +113,7 @@ codex_reasoning_effort = "high"
 requires_streaming_chat = true
 requires_function_tools = true
 
-# The only key allowed Codex scopes. Stored as a digest; no key file is mounted.
+# Owner key. Stored as a digest; no key file is mounted.
 [[application_keys]]
 id = "owner"
 # Placeholder digest; `scripts/kanata.sh owner-key rotate` writes the real one.

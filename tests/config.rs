@@ -85,7 +85,7 @@ fn personal_template_keeps_multiple_vllm_endpoints_constructible_offline() {
 }
 
 #[test]
-fn codex_permissions_require_one_explicit_owner_key() {
+fn codex_scopes_allow_any_key_with_one_owner() {
     let personal = personal_example();
     let renamed_owner =
         check(personal.replace("id = \"personal-client\"", "id = \"renamed-owner\""))
@@ -97,12 +97,7 @@ fn codex_permissions_require_one_explicit_owner_key() {
         "id = \"external-client\"\nsecret_ref = \"file:/run/secrets/EXTERNAL_SECRET_MARKER\"\npermissions = [\n  { model_alias = \"gpt-6-luna:low\", operation = \"chat\" },\n]",
     );
     assert_ne!(non_owner_codex, personal);
-    let error = check(non_owner_codex).unwrap_err();
-    assert_eq!(
-        error,
-        "config error at application_keys[1].permissions[0]: codex_owner_only"
-    );
-    assert!(!error.contains("EXTERNAL_SECRET_MARKER"));
+    check(non_owner_codex).expect("non-owner keys may hold Codex scopes");
 
     let duplicate_owners = personal.replace(
         "id = \"external-client\"\n",
@@ -1147,6 +1142,14 @@ fn planes_split_listeners_routes_keys_and_codex() {
 id = "tester"
 secret_ref = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 permissions = [{ model_alias = "qwen3-0.6b", operation = "chat" }]
+
+[[application_keys]]
+id = "private-codex"
+secret_ref = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+permissions = [
+  { model_alias = "qwen3-0.6b", operation = "chat" },
+  { model_alias = "gpt-6-sol", operation = "chat" },
+]
 "#;
     let config = check(
         template.replace(
@@ -1178,7 +1181,7 @@ permissions = [{ model_alias = "qwen3-0.6b", operation = "chat" }]
         .map(|route| route.identity().selector.model_alias.0.as_str())
         .collect();
     assert_eq!(aliases, ["qwen3-0.6b"]);
-    // The owner key never enters the public process; other keys keep only public scopes.
+    // Codex-capable keys (owner or not) never enter the public process; others keep only public scopes.
     let ids: Vec<_> = public
         .application_keys()
         .iter()
@@ -1211,4 +1214,63 @@ permissions = [{ model_alias = "qwen3-0.6b", operation = "chat" }]
             .to_string(),
         "config error at listeners.public: required_for_public_plane"
     );
+}
+
+#[test]
+fn optional_capacity_limits_validate_bounds() {
+    let adapter = "transcription_mode = \"native_asr\"\n";
+    let key = "owner = true\n";
+    let config = check(
+        example()
+            .replacen(
+                adapter,
+                &format!("{adapter}max_in_flight = 2\ncircuit_breaker = {{ enabled = false }}\n"),
+                1,
+            )
+            .replacen(
+                key,
+                &format!(
+                    "{key}max_in_flight = 1\nrate_limit = {{ requests = 4, per_ms = 300000 }}\n"
+                ),
+                1,
+            ),
+    )
+    .expect("limits validate");
+    let vllm = &config.adapters()[1];
+    assert_eq!(vllm.max_in_flight(), Some(2));
+    assert!(!vllm.circuit_breaker().enabled);
+    assert_eq!(
+        vllm.circuit_breaker().failures,
+        5,
+        "unset fields keep defaults"
+    );
+    assert!(
+        config.adapters()[0].circuit_breaker().enabled,
+        "on by default"
+    );
+    assert_eq!(config.application_keys()[0].max_in_flight(), Some(1));
+
+    for (find, insert, error) in [
+        (
+            adapter,
+            "max_in_flight = 0\n",
+            "adapters[1].max_in_flight: zero",
+        ),
+        (
+            adapter,
+            "circuit_breaker = { failures = 0 }\n",
+            "adapters[1].circuit_breaker.failures: zero",
+        ),
+        (
+            key,
+            "rate_limit = { requests = 1, per_ms = 0 }\n",
+            "application_keys[0].rate_limit.per_ms: zero",
+        ),
+    ] {
+        let contents = example().replacen(find, &format!("{find}{insert}"), 1);
+        assert_eq!(
+            check(contents).unwrap_err(),
+            format!("config error at {error}")
+        );
+    }
 }

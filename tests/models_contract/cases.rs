@@ -263,7 +263,11 @@ async fn models_report_kanata_capabilities_per_alias() {
             "operations": ["chat"], "structured_output": true, "sampling_controls": true,
             "reasoning_control": true, "function_tools": true, "streaming": true,
             "input_audio": false, "trust_zone": "local", "reasoning_efforts": null,
-            "context_tokens": 16384
+            "context_tokens": 16384,
+            "admission": {
+                "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000,
+                "adapter_max_in_flight": null
+            }
         })
     );
     assert_eq!(
@@ -272,7 +276,11 @@ async fn models_report_kanata_capabilities_per_alias() {
             "operations": ["chat"], "structured_output": false, "sampling_controls": false,
             "reasoning_control": true, "function_tools": true, "streaming": true,
             "input_audio": false, "trust_zone": "external",
-            "reasoning_efforts": ["low", "medium", "high"], "context_tokens": null
+            "reasoning_efforts": ["low", "medium", "high"], "context_tokens": null,
+            "admission": {
+                "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000,
+                "adapter_max_in_flight": null
+            }
         })
     );
 }
@@ -315,7 +323,7 @@ async fn models_merge_operations_for_one_alias() {
 }
 
 #[tokio::test]
-async fn public_models_carry_same_kanata_object() {
+async fn public_models_carry_same_kanata_object_without_admission() {
     let config = config_with_public_routes(&[("private-chat", "chat")]);
     let (server, _) = server_with(
         &config,
@@ -340,8 +348,13 @@ async fn public_models_carry_same_kanata_object() {
     )
     .await;
     assert_eq!(ids(&public), ["private-chat"]);
-    assert_eq!(
-        entry(&public, "private-chat")["kanata"],
-        entry(&private, "private-chat")["kanata"]
+    let mut private_kanata = entry(&private, "private-chat")["kanata"].clone();
+    assert!(
+        private_kanata
+            .as_object_mut()
+            .expect("kanata object")
+            .remove("admission")
+            .is_some()
     );
+    assert_eq!(entry(&public, "private-chat")["kanata"], private_kanata);
 }

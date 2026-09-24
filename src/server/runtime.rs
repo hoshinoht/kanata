@@ -5,7 +5,10 @@ use std::{
 
 use axum::{Router, body::Body};
 use hyper::{body::Incoming, server::conn::http1};
-use hyper_util::{rt::TokioIo, service::TowerToHyperService};
+use hyper_util::{
+    rt::{TokioIo, TokioTimer},
+    service::TowerToHyperService,
+};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{OwnedSemaphorePermit, Semaphore, watch},
@@ -19,6 +22,8 @@ pub const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
 
 const CLIENT_CONNECTION_LIMIT: usize = 256;
 const ADMIN_CONNECTION_LIMIT: usize = 32;
+/// Time a client has to send a complete request head, including on idle keep-alive connections.
+pub const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 type ConnectionService =
     BoxCloneSyncService<http::Request<Incoming>, http::Response<Body>, Infallible>;
 
@@ -32,6 +37,7 @@ pub struct BoundTwoPlaneServer {
     admin: Router,
     admission: Arc<Admission>,
     readiness: Readiness,
+    header_read_timeout: Duration,
 }
 
 impl TwoPlaneServer {
@@ -95,6 +101,7 @@ impl TwoPlaneServer {
             admin: self.admin,
             admission: self.admission,
             readiness: self.readiness,
+            header_read_timeout: DEFAULT_HEADER_READ_TIMEOUT,
         })
     }
 }
@@ -110,6 +117,12 @@ impl BoundTwoPlaneServer {
 
     pub fn admin_addr(&self) -> SocketAddr {
         self.plan.admin_addr()
+    }
+
+    /// Overrides how long a client may take to send a request head.
+    pub fn with_header_read_timeout(mut self, timeout: Duration) -> Self {
+        self.header_read_timeout = timeout;
+        self
     }
 
     pub async fn serve_until<S>(self, shutdown: S, grace: Duration) -> io::Result<()>
@@ -140,6 +153,7 @@ struct Runtime {
     admin: Router,
     admission: Arc<Admission>,
     readiness: Readiness,
+    header_read_timeout: Duration,
     client_slots: Arc<Semaphore>,
     admin_slots: Arc<Semaphore>,
     drain_tx: watch::Sender<bool>,
@@ -159,6 +173,7 @@ impl Runtime {
             admin: bound.admin,
             admission: bound.admission,
             readiness: bound.readiness,
+            header_read_timeout: bound.header_read_timeout,
             client_slots: Arc::new(Semaphore::new(CLIENT_CONNECTION_LIMIT)),
             admin_slots: Arc::new(Semaphore::new(ADMIN_CONNECTION_LIMIT)),
             drain_tx,
@@ -276,9 +291,10 @@ impl Runtime {
     fn spawn_client(&mut self, socket: TcpStream, permit: OwnedSemaphorePermit) {
         let service = router_connection_service(self.client.clone());
         let drain = self.drain_rx.clone();
+        let header_timeout = self.header_read_timeout;
         self.connections.client.spawn(async move {
             let _permit = permit;
-            serve_connection(socket, service, drain, true).await;
+            serve_connection(socket, service, drain, true, header_timeout).await;
         });
     }
 
@@ -288,27 +304,30 @@ impl Runtime {
         };
         let service = public_connection_service(public);
         let drain = self.drain_rx.clone();
+        let header_timeout = self.header_read_timeout;
         self.connections.client.spawn(async move {
             let _permit = permit;
-            serve_connection(socket, service, drain, true).await;
+            serve_connection(socket, service, drain, true, header_timeout).await;
         });
     }
 
     fn spawn_admin(&mut self, socket: TcpStream, permit: OwnedSemaphorePermit) {
         let service = router_connection_service(self.admin.clone());
         let drain = self.drain_rx.clone();
+        let header_timeout = self.header_read_timeout;
         self.connections.admin.spawn(async move {
             let _permit = permit;
-            serve_connection(socket, service, drain, true).await;
+            serve_connection(socket, service, drain, true, header_timeout).await;
         });
     }
 
     fn spawn_client_rejection(&mut self, socket: TcpStream, permit: OwnedSemaphorePermit) {
         let service = router_connection_service(self.client.clone());
         let drain = self.drain_rx.clone();
+        let header_timeout = self.header_read_timeout;
         self.connections.client_rejections.spawn(async move {
             let _permit = permit;
-            serve_connection(socket, service, drain, false).await;
+            serve_connection(socket, service, drain, false, header_timeout).await;
         });
     }
 
@@ -318,18 +337,20 @@ impl Runtime {
         };
         let service = public_connection_service(public);
         let drain = self.drain_rx.clone();
+        let header_timeout = self.header_read_timeout;
         self.connections.client_rejections.spawn(async move {
             let _permit = permit;
-            serve_connection(socket, service, drain, false).await;
+            serve_connection(socket, service, drain, false, header_timeout).await;
         });
     }
 
     fn spawn_admin_rejection(&mut self, socket: TcpStream, permit: OwnedSemaphorePermit) {
         let service = router_connection_service(self.admin.clone());
         let drain = self.drain_rx.clone();
+        let header_timeout = self.header_read_timeout;
         self.connections.admin.spawn(async move {
             let _permit = permit;
-            serve_connection(socket, service, drain, false).await;
+            serve_connection(socket, service, drain, false, header_timeout).await;
         });
     }
 }
@@ -363,10 +384,13 @@ async fn serve_connection(
     service: ConnectionService,
     mut drain: watch::Receiver<bool>,
     keep_alive: bool,
+    header_timeout: Duration,
 ) {
     let service = TowerToHyperService::new(service);
     let mut connection = Box::pin(
         http1::Builder::new()
+            .timer(TokioTimer::new())
+            .header_read_timeout(header_timeout)
             .keep_alive(keep_alive)
             .serve_connection(TokioIo::new(socket), service),
     );
