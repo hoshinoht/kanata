@@ -42,6 +42,7 @@ impl Running {
 
 struct FixedAdapter {
     capabilities: Capabilities,
+    delay: Duration,
 }
 
 impl Adapter for FixedAdapter {
@@ -55,7 +56,9 @@ impl Adapter for FixedAdapter {
 
     fn execute(&self, request: RoutedRequest) -> AdapterFuture {
         let model = request.request().model_alias().clone();
+        let delay = self.delay;
         Box::pin(async move {
+            tokio::time::sleep(delay).await;
             Ok(AdapterOutput::Complete(CoreResponse::Chat(ChatResponse {
                 model,
                 message: ChatMessage {
@@ -83,6 +86,10 @@ struct RawResponse {
 }
 
 async fn start() -> Running {
+    start_with(None, Duration::ZERO).await
+}
+
+async fn start_with(header_read_timeout: Option<Duration>, delay: Duration) -> Running {
     let client_listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("client listener");
@@ -103,12 +110,18 @@ async fn start() -> Running {
         &config,
         &Resolver,
         Readiness::new(true),
-        vec![Arc::new(FixedAdapter { capabilities })],
+        vec![Arc::new(FixedAdapter {
+            capabilities,
+            delay,
+        })],
     )
     .expect("server builds");
-    let bound = server
+    let mut bound = server
         .with_bound_listeners(client_listener, admin_listener)
         .expect("validated listener pair");
+    if let Some(timeout) = header_read_timeout {
+        bound = bound.with_header_read_timeout(timeout);
+    }
     let (stop, shutdown) = oneshot::channel();
     let task = tokio::spawn(async move {
         bound
@@ -235,5 +248,37 @@ async fn real_http1_known_length_and_empty_responses_finish_successfully() {
     assert!(metrics.contains("kanata_requests_inflight{endpoint=\"chat\"} 0"));
     assert!(metrics.contains("kanata_requests_inflight{endpoint=\"other\"} 0"));
 
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn incomplete_request_head_is_closed_after_header_timeout() {
+    let server = start_with(Some(Duration::from_millis(300)), Duration::ZERO).await;
+    let mut stream = TcpStream::connect(server.client_addr)
+        .await
+        .expect("connect");
+    stream
+        .write_all(b"POST /v1/chat/completions HTTP/1.1\r\nhost: kanata\r\n")
+        .await
+        .expect("partial head");
+
+    let started = std::time::Instant::now();
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut response))
+        .await
+        .expect("server closes a stalled connection")
+        .ok();
+    assert!(started.elapsed() >= Duration::from_millis(250));
+    assert!(response.is_empty() || response.starts_with(b"HTTP/1.1 408"));
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn header_timeout_does_not_cut_a_slow_response() {
+    let server = start_with(Some(Duration::from_millis(200)), Duration::from_millis(600)).await;
+    let response = request(server.client_addr, chat_request(Some("Bearer test-key"))).await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&response.body).contains("socket-ok"));
     server.stop().await;
 }
