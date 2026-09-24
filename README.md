@@ -20,7 +20,7 @@
 > Model execution, batching, tokenization, GPU scheduling and model loading belong to runtimes such as Ollama, vLLM and hosted providers. Kanata owns the application-facing boundary: keys, routing, validation, limits and a safe public edge.
 
 > [!NOTE]
-> **Beta (`1.0.0-beta.2`).** Kanata targets single-host personal deployments. Interfaces may still change before 1.0.
+> **Beta (`1.0.0-beta.3`).** Kanata targets single-host personal deployments. Interfaces may still change before 1.0.
 
 ## At a glance
 
@@ -57,7 +57,7 @@
 
 ### 🔐 Keys and exposure
 - **`kanata key new`:** issues keys. The server stores only their digests.
-- **Owner key:** only one key may be the owner, and only it can use Codex.
+- **Owner key:** only one key may be the owner, and only it can use Codex. With the public profile, the owner key is never loaded by the public container, so use a separate key for public routes.
 - **Public listener:** its allowlist is empty by default. Missing or invalid keys get 403 on **every** path, and it never serves Codex.
 
 ### 📈 Operations
@@ -78,18 +78,22 @@ flowchart LR
   X -->|HTTPS| CF[Cloudflare tunnel<br/>cloudflared sidecar]
   RP --> KP
   CF --> KU
-  subgraph Kanata["Kanata (one process)"]
+  subgraph Private["kanata (--plane private)"]
     KP[Private listener]
-    KU[Public listener<br/>allowlist only]
     CORE[auth · routing · limits · telemetry]
     KP --> CORE
-    KU --> CORE
+  end
+  subgraph Public["kanata-public (--plane public)"]
+    KU[Public listener<br/>allowlist only]
+    PCORE[public routes and keys only<br/>no Codex]
+    KU --> PCORE
   end
   CORE --> O[Ollama]
   CORE --> V[vLLM]
   CORE --> R[OpenRouter]
   CORE --> A[Apple FM]
   CORE --> C[Codex]
+  PCORE --> O
 ```
 
 Both listeners sit on internal Docker networks; the container publishes no host ports. See [the contract notes](docs/architecture/kanata-mvp.md) for core types and boundaries.
@@ -168,7 +172,7 @@ Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you
 > Keys are bearer credentials: whoever holds one gets its scopes. Only one key may be `owner = true`, and only it may hold Codex scopes.
 
 > [!WARNING]
-> **One process, two listeners.** The public and private listeners share one process, which also holds the Codex credentials. A compromise through the public listener could expose them. Expose publicly only what you'd accept that risk for.
+> **Separate processes, shared host.** With the public profile, the public listener runs in its own `kanata-public` container (`kanata serve --plane public`) that loads only public routes, their adapters and public keys: no Codex adapter, credentials or volume. It still shares the host, the Docker daemon and backends such as Ollama, and Docker bridges alone don't isolate containers from each other. Running both listeners in one process (`--plane all`, the default outside Compose) puts the Codex credentials in the public process again.
 
 > [!CAUTION]
 > **Codex** uses ChatGPT's private backend with *your* sign-in; it may change without notice. OpenAI's [Terms of Use](https://openai.com/policies/terms-of-use/) forbid sharing account access, so never expose Codex to other people.

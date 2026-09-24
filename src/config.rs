@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -55,6 +55,83 @@ impl ValidatedConfig {
     }
     pub fn logging(&self) -> &ValidatedLogging {
         &self.logging
+    }
+
+    /// Narrows the config to what one `kanata serve --plane` process needs.
+    pub fn for_plane(&self, plane: Plane) -> Result<Self, ConfigError> {
+        let mut config = self.clone();
+        match plane {
+            Plane::All => {}
+            Plane::Private => {
+                config.listeners.public = None;
+                config.publication.public_routes.clear();
+            }
+            Plane::Public => {
+                if config.listeners.public.is_none() {
+                    return Err(ConfigError::new(
+                        "listeners.public",
+                        "required_for_public_plane",
+                    ));
+                }
+                let public = config.publication.public_routes.clone();
+                // Container loopback only: the public process serves no private clients.
+                config.listeners.client.bind = IpAddr::V4(Ipv4Addr::LOCALHOST);
+                config
+                    .routes
+                    .retain(|route| public.contains(&route.identity.selector));
+                let adapter_ids: BTreeSet<String> = config
+                    .routes
+                    .iter()
+                    .map(|route| route.adapter_id.clone())
+                    .collect();
+                config
+                    .adapters
+                    .retain(|adapter| adapter_ids.contains(&adapter.id));
+                config.codex_auth = None;
+                config.application_keys = config
+                    .application_keys
+                    .into_iter()
+                    // The owner key can reach Codex, so it never enters the public process.
+                    .filter(|key| !key.owner)
+                    .filter_map(|mut key| {
+                        key.permissions.retain(|selector| public.contains(selector));
+                        (!key.permissions.is_empty()).then_some(key)
+                    })
+                    .collect();
+            }
+        }
+        Ok(config)
+    }
+}
+
+/// Which listeners one `kanata serve` process runs.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Plane {
+    /// Private and public listeners in one process.
+    #[default]
+    All,
+    /// Private listener only; no public listener or public routes.
+    Private,
+    /// Public listener only, with just the public routes, their adapters and non-owner keys.
+    Public,
+}
+
+impl Plane {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "all" => Some(Self::All),
+            "private" => Some(Self::Private),
+            "public" => Some(Self::Public),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Private => "private",
+            Self::Public => "public",
+        }
     }
 }
 

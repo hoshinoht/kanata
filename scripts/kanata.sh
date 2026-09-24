@@ -17,9 +17,9 @@ Lifecycle
   check                      Validate the live config with the image (offline)
   up                         Check the config, then start the stack
   down                       Stop and remove the stack
-  restart                    Recreate Kanata (picks up config changes)
+  restart                    Recreate Kanata (both containers with the public profile)
   status                     Show containers and Codex sign-in state
-  logs [compose logs args]   Follow Kanata logs (default: -f --tail 100 kanata)
+  logs [compose logs args]   Follow Kanata logs (default: -f --tail 100 of both Kanata containers)
 
 Codex
   codex login|status|logout  Device-code sign-in inside the running container
@@ -43,20 +43,47 @@ die() { echo "error: $*" >&2; exit 1; }
 
 # Config path exactly as Compose mounts it (honours .env).
 config_path() {
-  docker compose config --format json | python3 -c '
+  local model
+  model=$(docker compose config --format json) || die "cannot read the Compose model; check .env and COMPOSE_FILE"
+  python3 -c '
 import json, sys
-for v in json.load(sys.stdin)["services"]["kanata"]["volumes"]:
+for v in json.loads(sys.argv[1])["services"]["kanata"]["volumes"]:
     if v.get("target") == "/etc/kanata/config.toml":
-        print(v["source"])'
+        print(v["source"])' "$model"
 }
 
 check_config() {
-  local config=${1:-$(config_path)}
+  local config=${1:-} services
+  if [[ -z $config ]]; then config=$(config_path) || exit 1; fi
   [[ -f $config ]] || die "config not found: $config"
-  docker run --rm --network none --read-only -v "$config:/c.toml:ro" "$IMAGE" check --config /c.toml
+  # Explicit exits: callers use `check_config && …`, which disables set -e here.
+  docker run --rm --network none --read-only -v "$config:/c.toml:ro" "$IMAGE" check --config /c.toml ||
+    die "config failed kanata check"
+  services=$(kanata_services) || exit 1
+  if grep -qx kanata-public <<<"$services"; then
+    docker run --rm --network none --read-only -v "$config:/c.toml:ro" "$IMAGE" \
+      check --config /c.toml --plane public >/dev/null || die "config is not valid for the public plane"
+  fi
+  return 0
 }
 
 running() { docker compose ps --status running --services | grep -qx kanata; }
+
+# Kanata containers in this Compose model: kanata, plus kanata-public with the public profile.
+kanata_services() {
+  local services
+  services=$(docker compose config --services | grep -xE 'kanata|kanata-public') || true
+  [[ -n $services ]] || die "cannot read the Compose services; check .env and COMPOSE_FILE"
+  printf '%s\n' "$services"
+}
+
+# Recreates the Kanata containers only (never cloudflared).
+recreate_kanata() {
+  local services
+  services=$(kanata_services) || exit 1
+  # shellcheck disable=SC2086
+  docker compose up -d --no-build --force-recreate $services
+}
 
 codex() {
   local action=${1:-}
@@ -202,7 +229,7 @@ owner_key_rotate() {
   # Host-side key path: KANATA_OWNER_KEY_FILE from the environment or .env.
   key_file=${KANATA_OWNER_KEY_FILE:-$(sed -n 's/^KANATA_OWNER_KEY_FILE=//p' .env 2>/dev/null | tail -1)}
   key_file=${key_file:-$HOME/.config/kanata/owner-client-key}
-  config=$(config_path)
+  config=$(config_path) || exit 1
   [[ -f $config ]] || die "config not found: $config"
   key_dir=$(dirname -- "$key_file")
   [[ -d $key_dir ]] || die "key directory does not exist: $key_dir"
@@ -244,7 +271,7 @@ PY
   echo "New owner key written to $key_file (not printed); owner digest updated in $config."
 
   if [[ $restart -eq 1 ]]; then
-    docker compose up -d --no-build --force-recreate kanata
+    recreate_kanata
     echo 'Kanata recreated; the previous owner key no longer authenticates.'
   else
     echo 'Not restarted: the old key keeps working until: scripts/kanata.sh restart'
@@ -269,12 +296,20 @@ case $command in
   check) check_config ;;
   up) check_config && docker compose up -d --no-build ;;
   down) docker compose down ;;
-  restart) check_config && docker compose up -d --no-build --force-recreate kanata ;;
+  restart) check_config && recreate_kanata ;;
   status)
     docker compose ps
     if running; then codex status; fi
     ;;
-  logs) if [[ $# -eq 0 ]]; then docker compose logs -f --tail 100 kanata; else docker compose logs "$@"; fi ;;
+  logs)
+    if [[ $# -eq 0 ]]; then
+      services=$(kanata_services) || exit 1
+      # shellcheck disable=SC2086
+      docker compose logs -f --tail 100 $services
+    else
+      docker compose logs "$@"
+    fi
+    ;;
   codex) codex "$@" ;;
   key)
     [[ ${1:-} == new ]] || die "usage: key new ID OUT --chat ALIAS ..."

@@ -25,5 +25,5 @@ You should get an acknowledgement within a week. Fixes are released as soon as p
 ## Out of scope
 
 - Weaknesses of the host, Docker daemon, firewall, Tailscale or Cloudflare configuration you operate. See the host-isolation notes in the [README](README.md#security).
-- The known residual risk that the public and private listeners share one process with the Codex credentials.
+- The documented residual risks of the public profile: `kanata-public` shares the host, Docker daemon and backends with the private container, and `--plane all` runs both listeners in one process with the Codex credentials.
 - Behaviour of upstream providers, including changes to ChatGPT's private Codex backend.

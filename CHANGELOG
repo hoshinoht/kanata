@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [1.0.0-beta.3] - 2026-09-24
+
+Separate public and private processes: the public profile runs the public listener in its own container without Codex credentials or the owner key.
+
+### Added
+
+- `kanata serve --plane all|private|public` (default `all`). The public plane runs only the public listener with the routes in `public_routes`, the adapters they use and non-owner keys trimmed to public permissions; it never loads the owner key, the Codex adapter or Codex credentials, so public routes need their own non-owner key. The private plane drops the public listener. `kanata check` accepts the same `--plane`, and `scripts/kanata.sh check` also checks the public plane when the public profile is on.
+
+### Changed
+
+- The public Compose profile now runs the public listener in a separate `kanata-public` container (`--plane public`, own egress network, no Codex volume), and the main container runs `--plane private` off the public network. `scripts/kanata.sh restart`, `logs` and owner-key rotation cover both containers.
+
+### Security
+
+- Public and private listeners no longer share a process in the Compose deployment, so a compromise through the public path no longer lands in the process that holds the Codex credentials.
+
 ## [1.0.0-beta.2] - 2026-09-24
 
 Second beta: Apple Foundation Models, declared context windows, a single deployment helper, and fixes for empty length-stopped replies.
