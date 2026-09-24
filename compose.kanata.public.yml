@@ -1,12 +1,52 @@
 # Opt-in public ingress: api hostname -> owner-managed Cloudflare tunnel ->
-# Kanata's public listener. Requires [listeners.public] bind = "172.29.0.2".
+# a separate kanata-public container. Requires [listeners.public] bind = "172.29.0.2".
 #   docker compose -f compose.kanata.yml -f compose.kanata.public.yml ...
 # Nothing is host-published; cloudflared never joins the private network.
+# The public process loads only public routes, their adapters and public keys:
+# no Codex adapter, credentials or volume, and no private listener.
 services:
   kanata:
+    command: ["serve", "--config", "/etc/kanata/config.toml", "--plane", "private"]
+
+  kanata-public:
+    image: kanata:test
+    pull_policy: never
+    command: ["serve", "--config", "/etc/kanata/config.toml", "--plane", "public"]
+    user: "10001:10001"
+    init: false
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    cpus: 0.5
+    mem_limit: 512m
+    stop_grace_period: 35s
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:mode=1777,size=16m
+    # Same config file; the public plane ignores everything not publicly routed.
+    volumes:
+      - type: bind
+        source: "${KANATA_CONFIG_FILE:?Set KANATA_CONFIG_FILE to an operator-managed config file}"
+        target: /etc/kanata/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+    # Public routes usually serve host Ollama (see compose.kanata.host-ollama.yml).
+    extra_hosts:
+      - "host.orb.internal:host-gateway"
     networks:
       public_origin:
         ipv4_address: 172.29.0.2
+      public_egress:
+        ipv4_address: 172.26.0.2
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   cloudflared:
     image: cloudflare/cloudflared:2026.9.1@sha256:b269e8abd07a5bf6f3f4be65d5050b2174eca89c56a0241a8ff32a16aec454e4
@@ -33,7 +73,7 @@ services:
     mem_limit: 256m
     restart: unless-stopped
     depends_on:
-      - kanata
+      - kanata-public
     secrets:
       - source: cloudflared_tunnel_token
         target: cloudflared-tunnel-token
@@ -66,3 +106,9 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/24
+  # kanata-public's own egress, separate from the private container's.
+  public_egress:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.26.0.0/24

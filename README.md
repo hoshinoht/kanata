@@ -20,14 +20,14 @@
 > Model execution, batching, tokenization, GPU scheduling and model loading belong to runtimes such as Ollama, vLLM and hosted providers. Kanata owns the application-facing boundary: keys, routing, validation, limits and a safe public edge.
 
 > [!NOTE]
-> **Beta (`1.0.0-beta.1`).** Kanata targets single-host personal deployments. Interfaces may still change before 1.0.
+> **Beta (`1.0.0-beta.3`).** Kanata targets single-host personal deployments. Interfaces may still change before 1.0.
 
 ## At a glance
 
 | | |
 | --- | --- |
 | **Endpoints** | `GET /v1/models` · `POST /v1/chat/completions` (JSON and SSE) · `POST /v1/audio/transcriptions` |
-| **Backends** | Ollama · vLLM · OpenRouter · Codex (ChatGPT sign-in) |
+| **Backends** | Ollama · vLLM · OpenRouter · Apple Foundation Models (macOS 27+) · Codex (ChatGPT sign-in, experimental) |
 | **Auth** | Static `kanata_sk_…` bearer keys with exact per-model scopes, stored as SHA-256 digests |
 | **Listeners** | Private (behind your tailnet proxy) · optional public (Cloudflare tunnel) · loopback admin |
 | **Deploy** | Distroless, non-root, read-only container; Compose profiles publish **no** host ports |
@@ -46,7 +46,8 @@
 | **Ollama** | Chat, tools, structured output, sampling and reasoning controls |
 | **vLLM** | Text chat, inline-audio chat, native ASR, and transcription through audio chat |
 | **OpenRouter** | Chat with sampling, structured output and reasoning |
-| **Codex** | ChatGPT-subscription models via device-code sign-in (owner key only, private listener only), with effort aliases like `gpt-6-sol:high` |
+| **Apple Foundation Models** | Apple's on-device model through macOS 27's `fm serve`: chat, streaming, JSON-schema output and sampling. 8,192-token context, no tools. Expect loose formatting; guardrail refusals return `finish_reason: "content_filter"` |
+| **Codex** ⚠️ *experimental* | ChatGPT-subscription models via device-code sign-in (owner key only, private listener only), with effort aliases like `gpt-6-sol:high`. Uses an unofficial private backend that may change or break without notice |
 
 ### 🎛️ Typed generation options
 - **Supported fields:** `response_format` (JSON object / JSON schema), `temperature`, `top_p`, `seed`, `max_tokens` / `max_completion_tokens` and `reasoning_effort`.
@@ -56,7 +57,7 @@
 
 ### 🔐 Keys and exposure
 - **`kanata key new`:** issues keys. The server stores only their digests.
-- **Owner key:** only one key may be the owner, and only it can use Codex.
+- **Owner key:** only one key may be the owner, and only it can use Codex. With the public profile, the owner key is never loaded by the public container, so use a separate key for public routes.
 - **Public listener:** its allowlist is empty by default. Missing or invalid keys get 403 on **every** path, and it never serves Codex.
 
 ### 📈 Operations
@@ -77,17 +78,22 @@ flowchart LR
   X -->|HTTPS| CF[Cloudflare tunnel<br/>cloudflared sidecar]
   RP --> KP
   CF --> KU
-  subgraph Kanata["Kanata (one process)"]
+  subgraph Private["kanata (--plane private)"]
     KP[Private listener]
-    KU[Public listener<br/>allowlist only]
     CORE[auth · routing · limits · telemetry]
     KP --> CORE
-    KU --> CORE
+  end
+  subgraph Public["kanata-public (--plane public)"]
+    KU[Public listener<br/>allowlist only]
+    PCORE[public routes and keys only<br/>no Codex]
+    KU --> PCORE
   end
   CORE --> O[Ollama]
   CORE --> V[vLLM]
   CORE --> R[OpenRouter]
+  CORE --> A[Apple FM]
   CORE --> C[Codex]
+  PCORE --> O
 ```
 
 Both listeners sit on internal Docker networks; the container publishes no host ports. See [the contract notes](docs/architecture/kanata-mvp.md) for core types and boundaries.
@@ -98,7 +104,7 @@ Both listeners sit on internal Docker networks; the container publishes no host 
 
 ```sh
 # 1. Build
-docker build -t kanata:test .
+scripts/kanata.sh build
 
 # 2. Configure (config/config.toml is git-ignored)
 cp config/container.example.toml config/config.toml   # edit tailnet address, adapters, routes
@@ -106,9 +112,9 @@ cp .env.example .env                                   # file paths + Compose fi
 
 # 3. Create the owner key (key stays on the host, digest goes into the config), then start
 mkdir -p ~/.config/kanata && chmod 700 ~/.config/kanata
-scripts/rotate-owner-key.sh --no-restart
-docker compose up -d
-docker compose logs -f kanata
+scripts/kanata.sh owner-key rotate --no-restart
+scripts/kanata.sh up
+scripts/kanata.sh logs
 ```
 
 **Next steps:**
@@ -117,9 +123,10 @@ docker compose logs -f kanata
 | --- | --- |
 | Put your reverse proxy on `kanata_private_ingress` → `172.30.0.2:8080` | [deploy/docker](deploy/docker/README.md) |
 | Expose chosen models publicly through a Cloudflare tunnel | [deploy/cloudflared](deploy/cloudflared/README.md) |
-| Sign in to Codex | `scripts/codex-login.sh` |
-| Issue a key for someone else | `scripts/new-client-key.sh alice ~/.config/kanata/keys/alice.key --chat <alias>` |
-| Rotate the owner key | `scripts/rotate-owner-key.sh` |
+| Sign in to Codex | `scripts/kanata.sh codex login` |
+| Issue a key for someone else | `scripts/kanata.sh key new alice ~/.config/kanata/keys/alice.key --chat <alias>` |
+| Rotate the owner key | `scripts/kanata.sh owner-key rotate` |
+| Everything else (`status`, `restart`, `check`, `down`, …) | `scripts/kanata.sh help` |
 | Config fields and templates | [config/README.md](config/README.md) |
 
 ## API
@@ -149,10 +156,13 @@ curl https://kanata.example.com/v1/chat/completions \
     "function_tools": true,
     "streaming": true,
     "input_audio": false,
-    "trust_zone": "external"
+    "trust_zone": "external",
+    "context_tokens": null
   }
 }
 ```
+
+`context_tokens` is the route's declared context window, or `null` for the provider's full window (cloud models). For local Ollama models, see [context length](config/README.md#concepts).
 
 Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you give keys to.
 
@@ -162,14 +172,14 @@ Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you
 > Keys are bearer credentials: whoever holds one gets its scopes. Only one key may be `owner = true`, and only it may hold Codex scopes.
 
 > [!WARNING]
-> **One process, two listeners.** The public and private listeners share one process, which also holds the Codex credentials. A compromise through the public listener could expose them. Expose publicly only what you'd accept that risk for.
+> **Separate processes, shared host.** With the public profile, the public listener runs in its own `kanata-public` container (`kanata serve --plane public`) that loads only public routes, their adapters and public keys: no Codex adapter, credentials or volume. It still shares the host, the Docker daemon and backends such as Ollama, and Docker bridges alone don't isolate containers from each other. Running both listeners in one process (`--plane all`, the default outside Compose) puts the Codex credentials in the public process again.
 
 > [!CAUTION]
 > **Codex** uses ChatGPT's private backend with *your* sign-in; it may change without notice. OpenAI's [Terms of Use](https://openai.com/policies/terms-of-use/) forbid sharing account access, so never expose Codex to other people.
 
 - **Host isolation:** Docker bridges alone don't isolate containers from each other or from the host, so use a host firewall.
 - **Cloudflare Access** on the public route is optional defence in depth, never a replacement for keys.
-- **Suspected compromise:** run `scripts/rotate-owner-key.sh`. It rotates the owner key immediately and prints what else to rotate: other keys, the Codex sign-in, the tunnel token, and proxy DNS tokens.
+- **Suspected compromise:** run `scripts/kanata.sh owner-key rotate`. It rotates the owner key immediately and prints what else to rotate: other keys, the Codex sign-in, the tunnel token, and proxy DNS tokens.
 
 ## Development
 
@@ -189,7 +199,7 @@ cargo run -q -- check --config config/container.example.toml
 | --- | --- |
 | `src/api`, `src/server` | HTTP handlers, listeners, wire decoding |
 | `src/core`, `src/routing`, `src/auth` | Provider-neutral contracts, route registry, key auth |
-| `src/adapter/*` | Ollama, vLLM, OpenRouter, Codex, shared transport |
+| `src/adapter/*` | Ollama (also Apple FM), vLLM, OpenRouter, Codex, shared transport |
 | `src/telemetry` | Access logs, diagnostics, metrics |
 | `config/` | Templates (your `config.toml` is git-ignored) |
 | `compose.kanata*.yml`, `Dockerfile` | Container and Compose profiles |

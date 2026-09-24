@@ -3,16 +3,22 @@ use std::{future::Future, path::PathBuf, sync::Arc};
 use crate::{
     adapter::Adapter,
     auth::EnvironmentSecretResolver,
-    config::{self, ValidatedConfig},
+    config::{self, Plane, ValidatedConfig},
     core::Operation,
     server::{DEFAULT_SHUTDOWN_GRACE, Readiness, TwoPlaneServer},
 };
 
-pub(crate) async fn run<B>(config_path: PathBuf, build_adapters: B) -> Result<(), String>
+pub(crate) async fn run<B>(
+    config_path: PathBuf,
+    plane: Plane,
+    build_adapters: B,
+) -> Result<(), String>
 where
     B: FnOnce(&ValidatedConfig, &EnvironmentSecretResolver) -> Result<Vec<Arc<dyn Adapter>>, ()>,
 {
-    let config = config::load(config_path).map_err(|error| error.to_string())?;
+    let config = config::load(config_path)
+        .and_then(|config| config.for_plane(plane))
+        .map_err(|error| error.to_string())?;
     crate::telemetry::logging::install(config.logging());
     let resolver = EnvironmentSecretResolver;
     let adapters = build_adapters(&config, &resolver)
@@ -44,6 +50,7 @@ where
     tracing::info!(
         target: "kanata::lifecycle",
         version = crate::VERSION,
+        plane = plane.as_str(),
         private = %bound.client_addr(),
         public = %bound.public_addr().map_or_else(|| "-".to_owned(), |address| address.to_string()),
         admin = %bound.admin_addr(),

@@ -34,6 +34,10 @@ struct MessagePayload {
     role: String,
     #[serde(default)]
     content: Option<String>,
+    #[serde(default, rename = "reasoning")]
+    _reasoning: Option<String>,
+    #[serde(default, rename = "reasoning_content")]
+    _reasoning_content: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -112,8 +116,11 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
     if finish_reason == FinishReason::ToolCalls {
         return Err(upstream_failure());
     }
-    let Some(text) = choice.message.content.filter(|text| !text.is_empty()) else {
-        return Err(upstream_failure());
+    let content = match choice.message.content.filter(|text| !text.is_empty()) {
+        Some(text) => vec![ChatContent::Text { text }],
+        // A length stop may carry no visible output.
+        None if finish_reason == FinishReason::Length => Vec::new(),
+        None => return Err(upstream_failure()),
     };
 
     let usage = payload.usage.map(normalize_usage).transpose()?;
@@ -121,7 +128,7 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         model: public_model,
         message: ChatMessage {
             role: ChatRole::Assistant,
-            content: vec![ChatContent::Text { text }],
+            content,
         },
         finish_reason,
         usage,

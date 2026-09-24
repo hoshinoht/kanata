@@ -986,6 +986,32 @@ fn codex_effort_aliases_are_exact_scoped_and_field_validated() {
         "config error at routes[0].codex_reasoning_effort: codex_only"
     );
 
+    let context = |value: &str| {
+        check(personal_contents.replace(
+            "upstream_id = \"qwen3:0.6b\"\nrequires_streaming_chat",
+            &format!(
+                "upstream_id = \"qwen3:0.6b\"\ncontext_tokens = {value}\nrequires_streaming_chat"
+            ),
+        ))
+    };
+    assert!(context("16384").is_ok());
+    for value in ["255", "16777217"] {
+        assert_eq!(
+            context(value).unwrap_err(),
+            "config error at routes[0].context_tokens: out_of_range"
+        );
+    }
+    let transcription_context = check(personal_contents.replacen(
+        "operation = \"transcription\"\n",
+        "operation = \"transcription\"\ncontext_tokens = 8192\n",
+        1,
+    ));
+    assert!(
+        transcription_context
+            .unwrap_err()
+            .ends_with(".context_tokens: chat_only")
+    );
+
     let transcription_effort = check(personal_contents.replace(
         "model_alias = \"gpt-6-luna:low\"\noperation = \"chat\"",
         "model_alias = \"gpt-6-luna:low\"\noperation = \"transcription\"",
@@ -1083,4 +1109,106 @@ fn logging_section_is_optional_defaulted_and_strict() {
         let error = check(format!("{}\n[logging]\n{section}\n", example())).unwrap_err();
         assert_eq!(error, expected);
     }
+}
+
+#[test]
+fn apple_fm_adapters_are_local_chat_without_tools() {
+    let apple = example().replacen("kind = \"ollama\"", "kind = \"apple_fm\"", 1);
+    assert_eq!(
+        check(apple.clone()).unwrap_err(),
+        "config error at adapters[0].capabilities.function_tools: unsupported_by_adapter_kind"
+    );
+    let without_tools = apple
+        .replacen("function_tools = true\n", "function_tools = false\n", 1)
+        .replacen(
+            "requires_function_tools = true",
+            "requires_function_tools = false",
+            1,
+        );
+    assert!(check(without_tools.clone()).is_ok());
+    assert_eq!(
+        check(
+            without_tools
+                .replacen("trust_zone = \"local\"", "trust_zone = \"external\"", 1)
+                .replace("http://ollama.invalid", "https://ollama.invalid")
+        )
+        .unwrap_err(),
+        "config error at adapters[0].trust_zone: provider_zone_mismatch"
+    );
+}
+
+#[test]
+fn planes_split_listeners_routes_keys_and_codex() {
+    use kanata::config::{Plane, ProviderKind};
+
+    let template = fs::read_to_string("config/container.public.example.toml").expect("template");
+    let extra_keys = r#"
+[[application_keys]]
+id = "tester"
+secret_ref = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+permissions = [{ model_alias = "qwen3-0.6b", operation = "chat" }]
+"#;
+    let config = check(
+        template.replace(
+            "public_routes = []",
+            "public_routes = [{ model_alias = \"qwen3-0.6b\", operation = \"chat\" }]",
+        ) + extra_keys,
+    )
+    .expect("public template with a route");
+
+    let private = config.for_plane(Plane::Private).expect("private plane");
+    assert!(private.listeners().public().is_none());
+    assert!(private.publication().public_routes().is_empty());
+    assert_eq!(private.routes().len(), config.routes().len());
+    assert!(private.codex_auth().is_some());
+
+    let public = config.for_plane(Plane::Public).expect("public plane");
+    assert!(public.listeners().public().is_some());
+    assert!(public.listeners().client().bind().is_loopback());
+    assert!(public.codex_auth().is_none());
+    assert!(
+        public
+            .adapters()
+            .iter()
+            .all(|adapter| adapter.kind() != ProviderKind::Codex)
+    );
+    let aliases: Vec<_> = public
+        .routes()
+        .iter()
+        .map(|route| route.identity().selector.model_alias.0.as_str())
+        .collect();
+    assert_eq!(aliases, ["qwen3-0.6b"]);
+    // The owner key never enters the public process; other keys keep only public scopes.
+    let ids: Vec<_> = public
+        .application_keys()
+        .iter()
+        .map(|key| key.id())
+        .collect();
+    assert_eq!(ids, ["tester"]);
+    assert!(public.application_keys().iter().all(|key| {
+        !key.is_owner()
+            && key
+                .permissions()
+                .iter()
+                .all(|selector| config.publication().public_routes().contains(selector))
+    }));
+
+    // With nothing public, no key (owner or not) reaches the public process.
+    let nothing_public = check(template.clone() + extra_keys).expect("empty allowlist");
+    let nothing_public = nothing_public
+        .for_plane(Plane::Public)
+        .expect("public plane");
+    assert!(nothing_public.application_keys().is_empty());
+    assert!(nothing_public.routes().is_empty() && nothing_public.adapters().is_empty());
+
+    let without_listener =
+        check(fs::read_to_string("config/container.example.toml").expect("template"))
+            .expect("private template");
+    assert_eq!(
+        without_listener
+            .for_plane(Plane::Public)
+            .unwrap_err()
+            .to_string(),
+        "config error at listeners.public: required_for_public_plane"
+    );
 }

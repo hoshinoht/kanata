@@ -56,6 +56,24 @@ impl StreamState {
         })
     }
 
+    /// Ends the stream early with `reason`, even before any visible output.
+    pub(super) fn interrupt(
+        &mut self,
+        reason: FinishReason,
+    ) -> Result<Vec<NormalizedEvent>, GatewayError> {
+        if self.done || self.finished.is_some() {
+            return Err(upstream_failure());
+        }
+        let mut events = Vec::new();
+        self.start(&mut events);
+        self.done = true;
+        events.push(NormalizedEvent::ChatCompleted {
+            finish_reason: reason,
+            usage: None,
+        });
+        Ok(events)
+    }
+
     pub(super) fn eof(&self) -> GatewayError {
         upstream_failure()
     }
@@ -116,6 +134,8 @@ impl StreamState {
         }
         if let Some(reason) = choice.finish_reason {
             self.finish(reason)?;
+            // A length stop may carry no visible output.
+            self.start(&mut events);
         }
         if let Some(usage) = chunk.usage {
             if self.finished.is_none() {
@@ -230,7 +250,9 @@ impl StreamState {
         {
             return Err(upstream_failure());
         }
-        if !self.started || (!has_tools && !self.has_visible_text) {
+        if reason != FinishReason::Length
+            && (!self.started || (!has_tools && !self.has_visible_text))
+        {
             return Err(upstream_failure());
         }
         self.finished = Some(reason);

@@ -707,6 +707,32 @@ async fn reasoning_content_is_not_exposed_as_assistant_text() {
 }
 
 #[tokio::test]
+async fn length_stop_without_output_is_an_empty_reply_and_stop_is_not() {
+    for (finish_reason, ok) in [("length", true), ("stop", false)] {
+        let body = json!({
+            "choices": [{
+                "index": 0,
+                "message": {"role":"assistant","content":"","reasoning":"hidden"},
+                "finish_reason": finish_reason
+            }]
+        })
+        .to_string();
+        let mut mock = MockServer::once(ResponseSpec::json(&body)).await;
+        let config = config_for(&mock.address, false, true);
+        let adapter = adapter(&config);
+        let output = adapter.execute(routed(&config, text_request())).await;
+        if ok {
+            let response = crate::support::take_chat(output);
+            assert_eq!(response.finish_reason, FinishReason::Length);
+            assert!(response.message.content.is_empty());
+        } else {
+            assert_eq!(error_kind(output), ErrorKind::UpstreamFailure);
+        }
+        mock.finish().await;
+    }
+}
+
+#[tokio::test]
 async fn known_finish_interruptions_allow_tool_calls_and_stop_does_not() {
     for finish_reason in ["length", "content_filter"] {
         let body = json!({

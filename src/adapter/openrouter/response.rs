@@ -22,6 +22,8 @@ struct CompletionPayload {
     _openrouter_metadata: Option<IgnoredAny>,
     #[serde(default, rename = "service_tier")]
     _service_tier: Option<String>,
+    #[serde(default, rename = "provider")]
+    _provider: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -30,6 +32,10 @@ struct ChoicePayload {
     index: u64,
     message: MessagePayload,
     finish_reason: String,
+    #[serde(default, rename = "native_finish_reason")]
+    _native_finish_reason: Option<String>,
+    #[serde(default, rename = "logprobs")]
+    _logprobs: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -37,6 +43,14 @@ struct ChoicePayload {
 struct MessagePayload {
     role: String,
     content: Option<String>,
+    // A refusal without content still fails as an empty reply.
+    #[serde(default, rename = "refusal")]
+    _refusal: Option<String>,
+    // Reasoning is accepted and not forwarded.
+    #[serde(default, rename = "reasoning")]
+    _reasoning: Option<String>,
+    #[serde(default, rename = "reasoning_details")]
+    _reasoning_details: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -88,8 +102,11 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
     if finish_reason == FinishReason::ToolCalls {
         return Err(upstream_failure());
     }
-    let Some(text) = choice.message.content.filter(|text| !text.is_empty()) else {
-        return Err(upstream_failure());
+    let content = match choice.message.content.filter(|text| !text.is_empty()) {
+        Some(text) => vec![ChatContent::Text { text }],
+        // A length stop may carry no visible output.
+        None if finish_reason == FinishReason::Length => Vec::new(),
+        None => return Err(upstream_failure()),
     };
     let usage = payload.usage.map(normalize_usage).transpose()?;
 
@@ -97,7 +114,7 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         model: public_model,
         message: ChatMessage {
             role: ChatRole::Assistant,
-            content: vec![ChatContent::Text { text }],
+            content,
         },
         finish_reason,
         usage,

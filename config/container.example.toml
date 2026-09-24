@@ -29,6 +29,20 @@ operations = ["chat"]
 streaming_chat = true
 function_tools = false
 
+# Apple Foundation Models (macOS 27+): `scripts/kanata.sh fm-serve install`, then
+# uncomment this adapter and the matching route below.
+# [[adapters]]
+# id = "apple-fm"
+# kind = "apple_fm"
+# base_url = "http://host.orb.internal:1976/v1"
+# trust_zone = "local"
+# [adapters.capabilities]
+# operations = ["chat"]
+# streaming_chat = true
+# function_tools = false
+# structured_output = true
+# sampling_controls = true
+
 [[adapters]]
 id = "codex"
 kind = "codex"
@@ -48,8 +62,21 @@ model_alias = "qwen3-0.6b"
 operation = "chat"
 adapter_id = "ollama-mac"
 upstream_id = "qwen3:0.6b"
+# Declared window shown on /v1/models; must match the Ollama model
+# (see `scripts/kanata.sh ollama-context`). Omit for cloud models.
+# context_tokens = 16384
 requires_streaming_chat = true
 requires_function_tools = false
+
+# [[routes]]
+# id = "apple-fm-system"
+# model_alias = "apple-fm"
+# operation = "chat"
+# adapter_id = "apple-fm"
+# upstream_id = "system"
+# context_tokens = 8192
+# requires_streaming_chat = true
+# requires_function_tools = false
 
 # Codex: the unsuffixed alias uses the default (medium) effort; add :low/:high
 # variants per model. Available models depend on the ChatGPT plan.
@@ -85,7 +112,7 @@ requires_function_tools = true
 # The only key allowed Codex scopes. Stored as a digest; no key file is mounted.
 [[application_keys]]
 id = "owner"
-# Placeholder digest; scripts/rotate-owner-key.sh writes the real one.
+# Placeholder digest; `scripts/kanata.sh owner-key rotate` writes the real one.
 secret_ref = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 owner = true
 permissions = [

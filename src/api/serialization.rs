@@ -42,7 +42,11 @@ pub(super) fn chat_response(
             observer,
         );
     };
-    let message = match response_message(&response.message) {
+    let allow_empty = matches!(
+        response.finish_reason,
+        FinishReason::Length | FinishReason::ContentFilter
+    );
+    let message = match response_message(&response.message, allow_empty) {
         Some(value) => value,
         None => return upstream_failure_observed(observer),
     };
@@ -64,7 +68,9 @@ pub(super) fn next_chat_id() -> String {
     )
 }
 
-fn response_message(message: &ChatMessage) -> Option<Value> {
+/// `allow_empty` accepts a message with no output, e.g. a length stop spent on reasoning
+/// or a content-filter stop.
+fn response_message(message: &ChatMessage, allow_empty: bool) -> Option<Value> {
     let mut text = String::new();
     let mut calls = Vec::new();
     for content in &message.content {
@@ -84,7 +90,10 @@ fn response_message(message: &ChatMessage) -> Option<Value> {
         }
     }
     if text.is_empty() && calls.is_empty() {
-        return None;
+        if !allow_empty {
+            return None;
+        }
+        return Some(json!({"role":"assistant","content":"","tool_calls":null}));
     }
     Some(json!({
         "role":"assistant",

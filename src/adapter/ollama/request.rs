@@ -28,6 +28,8 @@ pub(super) struct ChatPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'static str>,
 }
 
@@ -91,12 +93,22 @@ struct NamedFunctionPayload {
     name: String,
 }
 
+/// `apple_fm` selects the `fm serve` dialect: it ignores `max_tokens` and rejects `json_object`.
 pub(super) fn encode(
     chat: &ChatRequest,
     upstream_model: &str,
     stream: bool,
+    apple_fm: bool,
 ) -> Result<ChatPayload, GatewayError> {
     if upstream_model.is_empty() {
+        return Err(invalid_request());
+    }
+    if apple_fm
+        && matches!(
+            chat.options.response_format,
+            Some(ResponseFormat::JsonObject)
+        )
+    {
         return Err(invalid_request());
     }
     let messages = chat
@@ -131,7 +143,8 @@ pub(super) fn encode(
         temperature: chat.options.sampling.temperature.map(|value| value.get()),
         top_p: chat.options.sampling.top_p.map(|value| value.get()),
         seed: chat.options.sampling.seed,
-        max_tokens: chat.options.max_output_tokens,
+        max_tokens: chat.options.max_output_tokens.filter(|_| !apple_fm),
+        max_completion_tokens: chat.options.max_output_tokens.filter(|_| apple_fm),
         reasoning_effort: chat.options.reasoning_effort.map(|effort| effort.as_str()),
     })
 }

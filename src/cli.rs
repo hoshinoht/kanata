@@ -18,7 +18,7 @@ use crate::{
     config::{self, ProviderKind, ValidatedConfig},
 };
 
-const USAGE: &str = "usage: kanata check --config <path> | kanata serve --config <path> | kanata auth codex {login,status,logout} --config <path> | kanata key new --id <id> [--chat <alias>]... [--transcription <alias>]... [--key-out <path>]";
+const USAGE: &str = "usage: kanata check --config <path> [--plane all|private|public] | kanata serve --config <path> [--plane all|private|public] | kanata auth codex {login,status,logout} --config <path> | kanata key new --id <id> [--chat <alias>]... [--transcription <alias>]... [--key-out <path>]";
 const APPLICATION_KEY_PREFIX: &str = "kanata_sk_";
 
 pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>, String> {
@@ -26,14 +26,31 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>
     if arguments.is_empty() {
         return Ok(None);
     }
-    if arguments.len() == 3 && arguments[0] == "check" && arguments[1] == "--config" {
-        config::load(PathBuf::from(&arguments[2])).map_err(|error| error.to_string())?;
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "check")
+    {
+        let (path, plane) = parse_config_plane(&arguments[1..]).ok_or_else(|| USAGE.to_owned())?;
+        config::load(path)
+            .and_then(|config| config.for_plane(plane))
+            .map_err(|error| error.to_string())?;
         return Ok(Some("configuration valid".into()));
     }
     if arguments.len() >= 2 && arguments[0] == "key" && arguments[1] == "new" {
         return run_key_new(&arguments[2..]).map(Some);
     }
     Err(USAGE.into())
+}
+
+/// `--config <path> [--plane all|private|public]`.
+fn parse_config_plane(arguments: &[String]) -> Option<(PathBuf, config::Plane)> {
+    match arguments {
+        [flag, path] if flag == "--config" => Some((PathBuf::from(path), config::Plane::All)),
+        [flag, path, plane_flag, plane] if flag == "--config" && plane_flag == "--plane" => {
+            Some((PathBuf::from(path), config::Plane::parse(plane)?))
+        }
+        _ => None,
+    }
 }
 
 struct KeyNewRequest {
@@ -173,10 +190,8 @@ where
         .first()
         .is_some_and(|argument| argument == "serve")
     {
-        if arguments.len() != 3 || arguments[1] != "--config" {
-            return Err(USAGE.into());
-        }
-        crate::serve::run(PathBuf::from(&arguments[2]), build_serve_adapters).await?;
+        let (path, plane) = parse_config_plane(&arguments[1..]).ok_or_else(|| USAGE.to_owned())?;
+        crate::serve::run(path, plane, build_serve_adapters).await?;
         return Ok(Some("server stopped".into()));
     }
     run(arguments)
@@ -196,7 +211,7 @@ fn build_serve_adapters(
             continue;
         };
         let adapter: std::sync::Arc<dyn Adapter> = match configured.kind() {
-            ProviderKind::Ollama => std::sync::Arc::new(
+            ProviderKind::Ollama | ProviderKind::AppleFm => std::sync::Arc::new(
                 OllamaAdapter::new(configured, config.timeouts(), config.limits())
                     .map_err(|_| ())?,
             ),
@@ -598,6 +613,29 @@ mod tests {
                 "tests/fixtures/config/example.toml"
             ])),
             Ok(Some("configuration valid".into()))
+        );
+    }
+
+    #[test]
+    fn check_and_serve_accept_only_known_planes() {
+        let config = "tests/fixtures/config/example.toml";
+        assert_eq!(
+            run(args(&["check", "--config", config, "--plane", "private"])),
+            Ok(Some("configuration valid".into()))
+        );
+        assert_eq!(
+            run(args(&["check", "--config", config, "--plane", "public"])),
+            Err("config error at listeners.public: required_for_public_plane".into())
+        );
+        for bad in [
+            &["check", "--config", config, "--plane", "bogus"][..],
+            &["check", "--config", config, "--plane"][..],
+            &["check", "--plane", "public", "--config", config][..],
+        ] {
+            assert!(run(args(bad)).unwrap_err().starts_with("usage: kanata"));
+        }
+        assert!(
+            super::parse_config_plane(&args(&["--config", config, "--plane", "bogus"])).is_none()
         );
     }
 

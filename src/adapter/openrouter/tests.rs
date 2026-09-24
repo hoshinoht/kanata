@@ -277,6 +277,40 @@ fn documented_non_tool_finish_reasons_normalize_to_the_public_contract() {
 }
 
 #[test]
+fn current_response_metadata_fields_are_accepted() {
+    let mut payload: Value =
+        serde_json::from_str(RESPONSE).unwrap_or_else(|_| panic!("response fixture"));
+    payload["provider"] = json!("OpenAI");
+    payload["system_fingerprint"] = Value::Null;
+    let choice = &mut payload["choices"][0];
+    choice["logprobs"] = Value::Null;
+    choice["native_finish_reason"] = json!("completed");
+    choice["message"]["refusal"] = Value::Null;
+    choice["message"]["reasoning"] = Value::Null;
+    let bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| panic!("response json"));
+    assert!(super::response::decode(&bytes, ModelAlias(PUBLIC_MODEL.into())).is_ok());
+}
+
+#[test]
+fn empty_content_is_accepted_only_for_a_length_stop() {
+    let mut payload: Value =
+        serde_json::from_str(RESPONSE).unwrap_or_else(|_| panic!("response fixture"));
+    payload["choices"][0]["message"]["content"] = json!("");
+    payload["choices"][0]["message"]["reasoning"] = json!("thinking");
+    payload["choices"][0]["message"]["reasoning_details"] = json!([{"type": "reasoning.text"}]);
+    for (upstream, ok) in [("length", true), ("stop", false)] {
+        payload["choices"][0]["finish_reason"] = json!(upstream);
+        let bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| panic!("response json"));
+        let result = super::response::decode(&bytes, ModelAlias(PUBLIC_MODEL.into()));
+        match result {
+            Ok(response) if ok => assert!(response.message.content.is_empty()),
+            Err(error) if !ok => assert_eq!(error.kind, ErrorKind::UpstreamFailure),
+            _ => panic!("unexpected result for {upstream}"),
+        }
+    }
+}
+
+#[test]
 fn malformed_required_usage_still_fails_with_known_metadata_present() {
     let mut payload: Value =
         serde_json::from_str(RESPONSE).unwrap_or_else(|_| panic!("response fixture"));

@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -55,6 +55,83 @@ impl ValidatedConfig {
     }
     pub fn logging(&self) -> &ValidatedLogging {
         &self.logging
+    }
+
+    /// Narrows the config to what one `kanata serve --plane` process needs.
+    pub fn for_plane(&self, plane: Plane) -> Result<Self, ConfigError> {
+        let mut config = self.clone();
+        match plane {
+            Plane::All => {}
+            Plane::Private => {
+                config.listeners.public = None;
+                config.publication.public_routes.clear();
+            }
+            Plane::Public => {
+                if config.listeners.public.is_none() {
+                    return Err(ConfigError::new(
+                        "listeners.public",
+                        "required_for_public_plane",
+                    ));
+                }
+                let public = config.publication.public_routes.clone();
+                // Container loopback only: the public process serves no private clients.
+                config.listeners.client.bind = IpAddr::V4(Ipv4Addr::LOCALHOST);
+                config
+                    .routes
+                    .retain(|route| public.contains(&route.identity.selector));
+                let adapter_ids: BTreeSet<String> = config
+                    .routes
+                    .iter()
+                    .map(|route| route.adapter_id.clone())
+                    .collect();
+                config
+                    .adapters
+                    .retain(|adapter| adapter_ids.contains(&adapter.id));
+                config.codex_auth = None;
+                config.application_keys = config
+                    .application_keys
+                    .into_iter()
+                    // The owner key can reach Codex, so it never enters the public process.
+                    .filter(|key| !key.owner)
+                    .filter_map(|mut key| {
+                        key.permissions.retain(|selector| public.contains(selector));
+                        (!key.permissions.is_empty()).then_some(key)
+                    })
+                    .collect();
+            }
+        }
+        Ok(config)
+    }
+}
+
+/// Which listeners one `kanata serve` process runs.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Plane {
+    /// Private and public listeners in one process.
+    #[default]
+    All,
+    /// Private listener only; no public listener or public routes.
+    Private,
+    /// Public listener only, with just the public routes, their adapters and non-owner keys.
+    Public,
+}
+
+impl Plane {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "all" => Some(Self::All),
+            "private" => Some(Self::Private),
+            "public" => Some(Self::Public),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Private => "private",
+            Self::Public => "public",
+        }
     }
 }
 
@@ -256,6 +333,9 @@ impl SecretReference {
     }
 }
 
+const MIN_CONTEXT_TOKENS: u32 = 256;
+const MAX_CONTEXT_TOKENS: u32 = 16_777_216;
+
 #[derive(Clone, Debug)]
 pub struct ValidatedRoute {
     identity: RouteIdentity,
@@ -267,6 +347,7 @@ pub struct ValidatedRoute {
     allows_input_audio: bool,
     allows_audio_streaming_chat: bool,
     allows_audio_function_tools: bool,
+    context_tokens: Option<u32>,
 }
 impl ValidatedRoute {
     pub fn identity(&self) -> &RouteIdentity {
@@ -295,6 +376,10 @@ impl ValidatedRoute {
     }
     pub fn allows_audio_function_tools(&self) -> bool {
         self.allows_audio_function_tools
+    }
+    /// Declared upstream context window; `None` means the provider's own.
+    pub fn context_tokens(&self) -> Option<u32> {
+        self.context_tokens
     }
 }
 
@@ -387,6 +472,8 @@ pub enum ProviderKind {
     Vllm,
     Openrouter,
     Codex,
+    /// Apple Foundation Models through macOS `fm serve`.
+    AppleFm,
 }
 
 impl ProviderKind {
@@ -394,6 +481,18 @@ impl ProviderKind {
         match self {
             Self::Codex => CodexReasoningEffort::from_request(effort).is_some(),
             Self::Ollama | Self::Vllm | Self::Openrouter => true,
+            Self::AppleFm => false,
+        }
+    }
+
+    /// Config name, used as the provider label in logs and metrics.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ollama => "ollama",
+            Self::Vllm => "vllm",
+            Self::Openrouter => "openrouter",
+            Self::Codex => "codex",
+            Self::AppleFm => "apple_fm",
         }
     }
 
@@ -422,6 +521,7 @@ impl ProviderKind {
             Self::Ollama | Self::Openrouter => (true, true, true),
             Self::Vllm => (true, true, false),
             Self::Codex => (false, false, true),
+            Self::AppleFm => (true, true, false),
         }
     }
 }
@@ -590,6 +690,8 @@ struct RawRoute {
     allows_audio_streaming_chat: bool,
     #[serde(default)]
     allows_audio_function_tools: bool,
+    #[serde(default)]
+    context_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -695,6 +797,26 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
                 format!("{path}.capabilities.operations"),
                 "empty",
             ));
+        }
+        if adapter.kind == ProviderKind::AppleFm {
+            if operations.contains(&Operation::Transcription) {
+                return Err(ConfigError::new(
+                    format!("{path}.capabilities.operations"),
+                    "apple_fm_chat_only",
+                ));
+            }
+            // fm serve returns tool arguments as plain text and takes no audio.
+            for (name, declared) in [
+                ("function_tools", adapter.capabilities.function_tools),
+                ("input_audio", adapter.capabilities.input_audio),
+            ] {
+                if declared {
+                    return Err(ConfigError::new(
+                        format!("{path}.capabilities.{name}"),
+                        "unsupported_by_adapter_kind",
+                    ));
+                }
+            }
         }
         if adapter.kind == ProviderKind::Codex && operations.contains(&Operation::Transcription) {
             return Err(ConfigError::new(
@@ -966,6 +1088,20 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
                 "unsupported_by_adapter",
             ));
         }
+        if let Some(tokens) = route.context_tokens {
+            if route.operation != Operation::Chat {
+                return Err(ConfigError::new(
+                    format!("{path}.context_tokens"),
+                    "chat_only",
+                ));
+            }
+            if !(MIN_CONTEXT_TOKENS..=MAX_CONTEXT_TOKENS).contains(&tokens) {
+                return Err(ConfigError::new(
+                    format!("{path}.context_tokens"),
+                    "out_of_range",
+                ));
+            }
+        }
         let extension_allowlist = validate_extension_allowlist(
             route.extension_allowlist,
             &format!("{path}.extension_allowlist"),
@@ -984,6 +1120,7 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
             allows_input_audio: route.allows_input_audio,
             allows_audio_streaming_chat: route.allows_audio_streaming_chat,
             allows_audio_function_tools: route.allows_audio_function_tools,
+            context_tokens: route.context_tokens,
         });
     }
     if routes.is_empty() {
@@ -1293,7 +1430,7 @@ fn validate_url(adapter: &RawAdapter, path: &str) -> Result<Url, ConfigError> {
 fn validate_provider_zone(adapter: &RawAdapter, path: &str) -> Result<(), ConfigError> {
     let valid = match adapter.kind {
         ProviderKind::Openrouter | ProviderKind::Codex => adapter.trust_zone == TrustZone::External,
-        ProviderKind::Ollama | ProviderKind::Vllm => matches!(
+        ProviderKind::Ollama | ProviderKind::Vllm | ProviderKind::AppleFm => matches!(
             adapter.trust_zone,
             TrustZone::Local | TrustZone::PrivateNetwork
         ),

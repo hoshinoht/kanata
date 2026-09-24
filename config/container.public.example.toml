@@ -68,7 +68,7 @@ requires_function_tools = true
 
 [[application_keys]]
 id = "owner"
-# Placeholder digest; scripts/rotate-owner-key.sh writes the real one.
+# Placeholder digest; `scripts/kanata.sh owner-key rotate` writes the real one.
 secret_ref = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 owner = true
 permissions = [

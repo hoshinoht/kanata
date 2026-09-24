@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+## [1.0.0-beta.3] - 2026-09-24
+
+Separate public and private processes: the public profile runs the public listener in its own container without Codex credentials or the owner key.
+
+### Added
+
+- `kanata serve --plane all|private|public` (default `all`). The public plane runs only the public listener with the routes in `public_routes`, the adapters they use and non-owner keys trimmed to public permissions; it never loads the owner key, the Codex adapter or Codex credentials, so public routes need their own non-owner key. The private plane drops the public listener. `kanata check` accepts the same `--plane`, and `scripts/kanata.sh check` also checks the public plane when the public profile is on.
+
+### Changed
+
+- The public Compose profile now runs the public listener in a separate `kanata-public` container (`--plane public`, own egress network, no Codex volume), and the main container runs `--plane private` off the public network. `scripts/kanata.sh restart`, `logs` and owner-key rotation cover both containers.
+
+### Security
+
+- Public and private listeners no longer share a process in the Compose deployment, so a compromise through the public path no longer lands in the process that holds the Codex credentials.
+
+## [1.0.0-beta.2] - 2026-09-24
+
+Second beta: Apple Foundation Models, declared context windows, a single deployment helper, and fixes for empty length-stopped replies.
+
+### Added
+
+- `scripts/kanata.sh`: one deployment helper for build, config check, up/down/restart, status, logs, Codex sign-in, client keys and owner-key rotation. `up` and `restart` validate the config first.
+- Chat routes accept an optional `context_tokens`, shown on `/v1/models` as `kanata.context_tokens` (`null` = the provider's own window, as for cloud models). `scripts/kanata.sh ollama-context MODEL TOKENS` creates a sized local Ollama variant that shares the base model's weights, since Ollama's OpenAI-compatible API can't set the context size per request.
+- Apple Foundation Models adapter (`kind = "apple_fm"`) for the on-device model behind macOS 27's `fm serve`, reusing the Ollama chat path. It sends the output cap as `max_completion_tokens` (fm ignores `max_tokens`), rejects tools, audio, `json_object` and `reasoning_effort`, turns guardrail refusals into an empty `content_filter` reply (streaming too), and returns 400 when the 8,192-token context overflows. Requests carry `Host: localhost:<port>` because `fm serve` rejects other hosts. `scripts/kanata.sh fm-serve install|uninstall|status` keeps `fm serve` running on loopback as a login agent. Formatting from this small model is expected to be loose.
+- Opt-in `compose.kanata.openrouter.yml` passes an OpenRouter API key file to Kanata as a Compose secret (`file:/run/secrets/openrouter-api-key`).
+- `SECURITY.md` with private vulnerability reporting, and a GitHub Actions CI workflow (fmt, clippy, tests, config templates) with SHA-pinned actions.
+
+### Changed
+
+- Replaced `scripts/codex-login.sh`, `scripts/new-client-key.sh` and `scripts/rotate-owner-key.sh` with `scripts/kanata.sh codex`, `key new` and `owner-key rotate`. Owner-key rotation now writes the key file with mode `0600`.
+- The Codex adapter is labelled experimental in the README.
+
+### Fixed
+
+- Clippy `unnecessary_cast` on Linux in the Codex credential-file check.
+- OpenRouter non-streaming replies no longer fail with 502 because of the response fields OpenRouter now sends (`provider`, `logprobs`, `native_finish_reason`, `refusal`).
+- A reply that stops on `length` with no visible text (e.g. a thinking model that spends `max_tokens` on reasoning) now returns 200 with empty `content` and `finish_reason: "length"` instead of 502, on Ollama, vLLM and OpenRouter, streaming and non-streaming. Other empty replies still fail with 502. vLLM chat responses may include `reasoning` / `reasoning_content`, and OpenRouter responses and stream deltas may include `reasoning` / `reasoning_details`; reasoning is accepted but not forwarded.
+
 ## [1.0.0-beta.1] - 2026-09-24
 
 First beta. Kanata runs as a single-host gateway with a private and an optional public client listener.

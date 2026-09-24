@@ -249,7 +249,7 @@ pub(super) fn build_request(
                 .ok_or_else(types::internal_error)?
                 .clone(),
         )
-        .header(header::HOST, origin.authority())
+        .header(header::HOST, origin.host_header())
         .header(header::USER_AGENT, USER_AGENT)
         .header(header::CONNECTION, "close")
         .header(header::ACCEPT_ENCODING, "identity")

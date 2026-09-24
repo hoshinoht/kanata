@@ -18,6 +18,7 @@ pub struct RouteEntry {
     pub adapter_extension_allowlist: BTreeSet<ExtensionKey>,
     pub requires_streaming_chat: bool,
     pub requires_function_tools: bool,
+    pub context_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -74,5 +75,6 @@ fn entry(route: &ValidatedRoute, adapter: &ValidatedAdapter) -> RouteEntry {
         adapter_extension_allowlist: adapter.extension_allowlist().clone(),
         requires_streaming_chat: route.requires_streaming_chat(),
         requires_function_tools: route.requires_function_tools(),
+        context_tokens: route.context_tokens(),
     }
 }

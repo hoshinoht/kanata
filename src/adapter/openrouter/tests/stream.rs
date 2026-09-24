@@ -305,3 +305,56 @@ async fn dropping_stream_closes_verified_https_upstream_without_replay() {
         .unwrap_or_else(|_| panic!("fixture server task"));
     assert_eq!(accepted.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn length_stop_without_text_completes_empty_and_stop_does_not() {
+    let chunk = |delta: Value, finish: Value, usage: Value| {
+        json!({
+            "id":"gen-fixture","object":"chat.completion.chunk","created":1,"model":"m",
+            "choices":[{"index":0,"delta":delta,"finish_reason":finish,"native_finish_reason":null}],
+            "usage":usage
+        })
+        .to_string()
+    };
+    let usage = json!({"prompt_tokens":1,"completion_tokens":2,"total_tokens":3});
+    for (finish, ok) in [("length", true), ("stop", false)] {
+        let mut state =
+            super::super::stream_state::StreamState::new(ModelAlias(PUBLIC_MODEL.into()));
+        let mut events = state
+            .data(&chunk(
+                json!({"role":"assistant"}),
+                Value::Null,
+                Value::Null,
+            ))
+            .unwrap_or_else(|_| panic!("role chunk"));
+        events.extend(
+            state
+                .data(&chunk(
+                    json!({"content":"","reasoning":"thinking"}),
+                    Value::Null,
+                    Value::Null,
+                ))
+                .unwrap_or_else(|_| panic!("reasoning chunk")),
+        );
+        let finished = state.data(&chunk(json!({}), json!(finish), Value::Null));
+        if !ok {
+            assert!(finished.is_err());
+            continue;
+        }
+        events.extend(finished.unwrap_or_else(|_| panic!("length finish")));
+        state
+            .data(&chunk(json!({}), json!(finish), usage.clone()))
+            .unwrap_or_else(|_| panic!("usage chunk"));
+        events.push(state.done().unwrap_or_else(|_| panic!("done")));
+        assert!(matches!(
+            events.as_slice(),
+            [
+                NormalizedEvent::ChatStarted { .. },
+                NormalizedEvent::ChatCompleted {
+                    finish_reason: FinishReason::Length,
+                    ..
+                }
+            ]
+        ));
+    }
+}

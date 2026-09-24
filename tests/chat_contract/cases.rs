@@ -128,6 +128,34 @@ async fn nonstream_finish_reason_matches_returned_tool_calls() {
 }
 
 #[tokio::test]
+async fn nonstream_empty_output_is_an_empty_reply_only_for_a_length_stop() {
+    for (finish_reason, status) in [
+        (FinishReason::Length, StatusCode::OK),
+        (FinishReason::Stop, StatusCode::BAD_GATEWAY),
+    ] {
+        let (server, _requests) = private_server(Outcome::Chat {
+            model: None,
+            message: kanata::core::ChatMessage {
+                role: ChatRole::Assistant,
+                content: Vec::new(),
+            },
+            finish_reason,
+            usage: None,
+        });
+        let response = server
+            .client_oneshot(chat_request(BASIC))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), status, "{finish_reason:?}");
+        if status == StatusCode::OK {
+            let body = response_json(response).await;
+            assert_eq!(body["choices"][0]["message"]["content"], json!(""));
+            assert_eq!(body["choices"][0]["finish_reason"], json!("length"));
+        }
+    }
+}
+
+#[tokio::test]
 async fn openai_messages_tools_and_tool_history_convert_to_core_ir() {
     let (server, requests) = private_server(chat_outcome("tool response"));
     let response = server
