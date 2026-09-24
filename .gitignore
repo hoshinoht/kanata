@@ -31,4 +31,16 @@ target
 # Environment variables
 .env
 
+# Live operator config (paths and addresses; keys live outside the repo)
+/config/config.toml
+
 # Docker
+
+# Stray client-key files
+*.key
+
+# Local research, review and deployment-process artifacts
+/research/
+
+# macOS
+.DS_Store
