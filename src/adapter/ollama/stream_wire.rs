@@ -23,10 +23,19 @@ pub(super) struct StreamDelta {
     pub(super) role: Option<String>,
     #[serde(default)]
     pub(super) content: Option<String>,
+    /// Ollama's reasoning field.
+    #[serde(default)]
+    pub(super) reasoning: Option<String>,
     #[serde(default)]
     pub(super) reasoning_content: Option<String>,
     #[serde(default)]
     pub(super) tool_calls: Option<Vec<ToolDelta>>,
+}
+
+impl StreamDelta {
+    pub(super) fn has_reasoning(&self) -> bool {
+        self.reasoning.is_some() || self.reasoning_content.is_some()
+    }
 }
 
 #[derive(Deserialize)]

@@ -25,6 +25,7 @@
 - `kanata key new` no longer prints an `[[application_keys]]` block; it writes `keys.toml` (requires `--config` and `--expires`).
 - **BREAKING for every Compose deployment**, including un-migrated inline configs: `KANATA_KEYS_DIR` and `KANATA_STATE_DIR` are required and must be `<config dir>/keys` and `<config dir>/state`. The keys directory is mounted read-only at `/etc/kanata/keys`; `state/private` and `state/public` are mounted writable at `/etc/kanata/state`. `scripts/kanata.sh` checks the paths and creates missing directories (0700).
 - `scripts/kanata.sh key ...` now runs the host `kanata key ...` with `--config` set to the deployed config.
+- Ollama streams: the adapter now recognises Ollama's `reasoning` delta field (it previously looked only for `reasoning_content`, which Ollama doesn't send). Reasoning is still not forwarded.
 
 ### Deprecated
 

@@ -102,6 +102,7 @@ fn choice_chunk(delta: Value, finish_reason: Option<&str>) -> Value {
 async fn stream_completion_requires_visible_text_or_a_tool_call() {
     for delta in [
         json!({"role":"assistant"}),
+        json!({"role":"assistant","reasoning":"hidden"}),
         json!({"role":"assistant","reasoning_content":"hidden"}),
     ] {
         let body = format!(

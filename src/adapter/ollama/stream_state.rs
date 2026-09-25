@@ -101,6 +101,7 @@ impl StreamState {
         if choice.index != 0 {
             return Err(upstream_failure());
         }
+        let has_reasoning = choice.delta.has_reasoning();
         let mut events = Vec::new();
         if let Some(role) = choice.delta.role.as_deref() {
             if role != "assistant" {
@@ -144,7 +145,7 @@ impl StreamState {
             self.set_usage(usage.into_usage())?;
         }
         if !self.started {
-            if choice.delta.reasoning_content.is_some() {
+            if has_reasoning {
                 return Ok(events);
             }
             if self.finished.is_some() {
