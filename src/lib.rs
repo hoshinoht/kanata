@@ -4,6 +4,7 @@ pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod core;
+pub mod keys;
 pub mod routing;
 mod serve;
 pub mod server;

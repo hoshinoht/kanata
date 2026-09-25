@@ -126,6 +126,9 @@ async fn dispatch_chat(
     }
     let extensions = chat.extensions.clone();
     let reasoning_effort = chat.options.reasoning_effort;
+    if chat.options.enable_thinking.is_some() && !route.provider_kind.accepts_enable_thinking() {
+        return invalid_param("chat_template_kwargs");
+    }
     let request = CoreRequest::Chat(chat);
     match check_supported(&route.capabilities, adapter.capabilities(), &request) {
         Ok(()) => {}
@@ -147,7 +150,7 @@ async fn dispatch_chat(
         Err(_) => return invalid(),
     };
     let mut permit = match deadline
-        .run(|| state.admission().acquire(route, auth.key_identity()))
+        .run(|| state.admission().acquire(route, auth.key_limits()))
         .await
     {
         Ok(Ok(permit)) => permit,

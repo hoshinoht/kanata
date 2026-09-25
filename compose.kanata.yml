@@ -1,6 +1,6 @@
 services:
   kanata:
-    image: kanata:test
+    image: ${KANATA_IMAGE:-kanata:test}
     pull_policy: never
     build:
       context: .
@@ -21,12 +21,23 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=16m
     # No host ports: a reverse proxy reaches the client listener over private_ingress.
-    # Client keys are sha256 digests in the config; no key file is mounted.
+    # Keys dir (keys.toml, sha256 digests only) is read-only; the state dir holds usage-<plane>.json.
     volumes:
       - type: bind
         source: "${KANATA_CONFIG_FILE:?Set KANATA_CONFIG_FILE to an operator-managed config file}"
         target: /etc/kanata/config.toml
         read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${KANATA_KEYS_DIR:?Set KANATA_KEYS_DIR to <config dir>/keys}"
+        target: /etc/kanata/keys
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${KANATA_STATE_DIR:?Set KANATA_STATE_DIR to <config dir>/state}/private"
+        target: /etc/kanata/state
         bind:
           create_host_path: false
       - type: volume

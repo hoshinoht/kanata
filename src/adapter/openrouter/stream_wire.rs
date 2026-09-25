@@ -51,6 +51,29 @@ pub(super) struct StreamDelta {
     pub(super) reasoning: Option<String>,
     #[serde(default)]
     pub(super) reasoning_details: Option<serde_json::Value>,
+    #[serde(default)]
+    pub(super) tool_calls: Option<Vec<ToolDelta>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ToolDelta {
+    pub(super) index: u64,
+    #[serde(default)]
+    pub(super) id: Option<String>,
+    #[serde(rename = "type", default)]
+    pub(super) kind: Option<String>,
+    #[serde(default)]
+    pub(super) function: Option<FunctionDelta>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct FunctionDelta {
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    #[serde(default)]
+    pub(super) arguments: Option<String>,
 }
 
 pub(super) fn parse(data: &str) -> Result<StreamChunk, GatewayError> {

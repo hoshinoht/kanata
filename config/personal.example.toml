@@ -177,30 +177,12 @@ codex_reasoning_effort = "low"
 requires_streaming_chat = true
 requires_function_tools = true
 
-# Provide separate high-entropy values for the owner and restricted external key.
-[[application_keys]]
-id = "personal-client"
-secret_ref = "env:KANATA_CLIENT_KEY"
-owner = true
-permissions = [
-  { model_alias = "local-chat", operation = "chat" },
-  { model_alias = "ollama-cloud", operation = "chat" },
-  { model_alias = "private-chat-a", operation = "chat" },
-  { model_alias = "private-chat-b", operation = "chat" },
-  { model_alias = "private-audio-chat", operation = "chat" },
-  { model_alias = "private-audio-transcribe", operation = "transcription" },
-  { model_alias = "private-native-asr", operation = "transcription" },
-  { model_alias = "codex-chat", operation = "chat" },
-  { model_alias = "gpt-6-sol", operation = "chat" },
-  { model_alias = "gpt-6-luna:low", operation = "chat" },
-]
-
-[[application_keys]]
-id = "external-client"
-secret_ref = "env:KANATA_EXTERNAL_CLIENT_KEY"
-permissions = [
-  { model_alias = "private-chat-a", operation = "chat" },
-]
+# Application keys live in a machine-managed file (paths are relative to this
+# file). Create the owner key with the host CLI:
+# `kanata key new --config <this file> --owner --id owner --chat <alias>... --expires <days>`
+[keys]
+file = "keys/keys.toml"
+usage_dir = "state"
 
 [limits]
 max_queue = 32

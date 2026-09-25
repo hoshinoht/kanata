@@ -4,13 +4,17 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::core::{
     Capabilities, ExtensionKey, MAX_INPUT_AUDIO_BYTES, ModelAlias, Operation, ReasoningEffort,
     RouteIdentity, RouteSelector, TrustZone,
 };
+use crate::keys::{self, file::KeysFile};
+
+/// Keys within this many seconds of expiry are reported by [`ValidatedConfig::key_warnings`].
+pub const KEY_EXPIRY_WARNING_SECS: u64 = 7 * 86_400;
 
 pub const MAX_TIMEOUT_MS: u64 = 604_800_000;
 /// Upper bound for configured concurrency and request counts.
@@ -25,9 +29,26 @@ pub struct ValidatedConfig {
     adapters: Vec<ValidatedAdapter>,
     routes: Vec<ValidatedRoute>,
     application_keys: Vec<ValidatedApplicationKey>,
+    key_source: KeySource,
     limits: ValidatedLimits,
     timeouts: ValidatedTimeouts,
     logging: ValidatedLogging,
+}
+
+/// Where application keys come from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum KeySource {
+    /// Deprecated `[[application_keys]]` in the config file.
+    Inline,
+    /// `[keys] file`, resolved against the config file's directory.
+    File {
+        path: PathBuf,
+        usage_dir: Option<PathBuf>,
+        /// The file did not exist; no keys are loaded.
+        missing: bool,
+        /// SHA-256 of the file bytes the current keys were parsed from.
+        sha256: Option<[u8; 32]>,
+    },
 }
 
 impl ValidatedConfig {
@@ -46,9 +67,67 @@ impl ValidatedConfig {
     pub fn routes(&self) -> &[ValidatedRoute] {
         &self.routes
     }
+    /// Non-revoked keys, expired ones included.
     pub fn application_keys(&self) -> &[ValidatedApplicationKey] {
         &self.application_keys
     }
+    pub fn key_source(&self) -> &KeySource {
+        &self.key_source
+    }
+
+    /// Replaces the keys with the active records of a reloaded keys file.
+    pub fn with_application_keys(&self, file: &KeysFile) -> Result<Self, ConfigError> {
+        let KeySource::File {
+            path, usage_dir, ..
+        } = &self.key_source
+        else {
+            return Err(ConfigError::new("keys", "required"));
+        };
+        let application_keys = application_keys_from_file(file, &self.routes)?;
+        Ok(Self {
+            application_keys,
+            key_source: KeySource::File {
+                path: path.clone(),
+                usage_dir: usage_dir.clone(),
+                missing: false,
+                sha256: Some(file.sha256()),
+            },
+            ..self.clone()
+        })
+    }
+
+    /// Operator warnings: deprecated inline keys, a missing keys file, and keys
+    /// expired or expiring within [`KEY_EXPIRY_WARNING_SECS`]. Ids and dates only.
+    pub fn key_warnings(&self, now: u64) -> Vec<String> {
+        let mut warnings = Vec::new();
+        match &self.key_source {
+            KeySource::Inline => warnings.push(
+                "inline [[application_keys]] are deprecated; move them to a keys file with `kanata key migrate`".into(),
+            ),
+            KeySource::File {
+                path,
+                missing: true,
+                ..
+            } => warnings.push(format!(
+                "keys file {} not found; no application keys are loaded (create one with `kanata key new`)",
+                path.display()
+            )),
+            KeySource::File { .. } => {}
+        }
+        for key in &self.application_keys {
+            let Some(expires_at) = key.expires_at else {
+                continue;
+            };
+            let at = keys::time::format(expires_at);
+            if key.is_expired(now) {
+                warnings.push(format!("key {} expired at {at}", key.id));
+            } else if expires_at - now <= KEY_EXPIRY_WARNING_SECS {
+                warnings.push(format!("key {} expires at {at}", key.id));
+            }
+        }
+        warnings
+    }
+
     pub fn limits(&self) -> &ValidatedLimits {
         &self.limits
     }
@@ -400,6 +479,7 @@ pub struct ValidatedRoute {
     allows_audio_streaming_chat: bool,
     allows_audio_function_tools: bool,
     context_tokens: Option<u32>,
+    enable_thinking: Option<bool>,
 }
 impl ValidatedRoute {
     pub fn identity(&self) -> &RouteIdentity {
@@ -433,6 +513,10 @@ impl ValidatedRoute {
     pub fn context_tokens(&self) -> Option<u32> {
         self.context_tokens
     }
+    /// vLLM chat-template thinking switch; `None` leaves the template default.
+    pub fn enable_thinking(&self) -> Option<bool> {
+        self.enable_thinking
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -443,8 +527,16 @@ pub struct ValidatedApplicationKey {
     permissions: Vec<RouteSelector>,
     max_in_flight: Option<u64>,
     rate_limit: Option<KeyRateLimit>,
+    expires_at: Option<u64>,
 }
 impl ValidatedApplicationKey {
+    /// Unix seconds; `None` never expires (always for inline keys).
+    pub fn expires_at(&self) -> Option<u64> {
+        self.expires_at
+    }
+    pub fn is_expired(&self, now: u64) -> bool {
+        self.expires_at.is_some_and(|at| now >= at)
+    }
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -545,6 +637,11 @@ impl ProviderKind {
         }
     }
 
+    /// Whether a request may set `chat_template_kwargs.enable_thinking`.
+    pub fn accepts_enable_thinking(self) -> bool {
+        matches!(self, Self::Vllm)
+    }
+
     /// Config name, used as the provider label in logs and metrics.
     pub fn label(self) -> &'static str {
         match self {
@@ -600,7 +697,7 @@ pub struct ConfigError {
 }
 
 impl ConfigError {
-    fn new(path: impl Into<String>, class: &'static str) -> Self {
+    pub(crate) fn new(path: impl Into<String>, class: &'static str) -> Self {
         Self {
             path: path.into(),
             class,
@@ -616,14 +713,38 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-fn sanitized_deserialize_error(error: serde_path_to_error::Error<toml::de::Error>) -> ConfigError {
+/// Parses TOML into `T`; errors carry only the field path and a class.
+/// `root` is `"config"` for the config file (paths stay unprefixed) or a
+/// prefix for other files, whose unknown key names are never echoed.
+pub(crate) fn parse_toml<T: serde::de::DeserializeOwned>(
+    contents: &str,
+    root: &str,
+) -> Result<T, ConfigError> {
+    let deserializer = toml::de::Deserializer::parse(contents)
+        .map_err(|_| ConfigError::new(root, "parse_error"))?;
+    serde_path_to_error::deserialize(deserializer)
+        .map_err(|error| sanitized_deserialize_error(error, root))
+}
+
+fn sanitized_deserialize_error(
+    error: serde_path_to_error::Error<toml::de::Error>,
+    root: &str,
+) -> ConfigError {
+    let is_config = root == "config";
     let message = error.inner().to_string();
     let mut path = error.path().to_string();
     let class = if message.contains("unknown field") || message.contains("unknown key") {
-        if path.is_empty()
+        if is_config
+            && path.is_empty()
             && let Some(field) = message.split('`').nth(1).filter(valid_path_token)
         {
             path = field.into();
+        }
+        if !is_config {
+            // The last segment is the unknown key itself, i.e. file content.
+            path = path
+                .rsplit_once('.')
+                .map_or_else(String::new, |(parent, _)| parent.to_owned());
         }
         "unknown_field"
     } else if message.contains("invalid type") {
@@ -631,9 +752,12 @@ fn sanitized_deserialize_error(error: serde_path_to_error::Error<toml::de::Error
     } else {
         "schema_error"
     };
-    if !valid_diagnostic_path(&path) {
-        path = "config".into();
-    }
+    let valid = valid_diagnostic_path(&path);
+    let path = match (is_config, valid) {
+        (true, true) => path,
+        (false, true) => format!("{root}.{path}"),
+        (_, false) => root.to_owned(),
+    };
     ConfigError::new(path, class)
 }
 
@@ -646,7 +770,10 @@ struct RawConfig {
     codex_auth: Option<RawCodexAuth>,
     adapters: Vec<RawAdapter>,
     routes: Vec<RawRoute>,
+    #[serde(default)]
     application_keys: Vec<RawApplicationKey>,
+    #[serde(default)]
+    keys: Option<RawKeys>,
     limits: RawLimits,
     timeouts: RawTimeouts,
     #[serde(default)]
@@ -767,6 +894,8 @@ struct RawRoute {
     allows_audio_function_tools: bool,
     #[serde(default)]
     context_tokens: Option<u32>,
+    #[serde(default)]
+    enable_thinking: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -785,16 +914,24 @@ struct RawApplicationKey {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawRateLimit {
-    requests: u64,
-    per_ms: u64,
+struct RawKeys {
+    file: String,
+    #[serde(default)]
+    usage_dir: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct RawPermission {
-    model_alias: String,
-    operation: Operation,
+pub(crate) struct RawRateLimit {
+    pub(crate) requests: u64,
+    pub(crate) per_ms: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawPermission {
+    pub(crate) model_alias: String,
+    pub(crate) operation: Operation,
 }
 
 #[derive(Deserialize)]
@@ -819,16 +956,28 @@ struct RawTimeouts {
 }
 
 pub fn load(path: impl AsRef<Path>) -> Result<ValidatedConfig, ConfigError> {
+    let path = path.as_ref();
     let contents =
         fs::read_to_string(path).map_err(|_| ConfigError::new("config", "read_error"))?;
-    let deserializer = toml::de::Deserializer::parse(&contents)
-        .map_err(|_| ConfigError::new("config", "parse_error"))?;
-    let raw =
-        serde_path_to_error::deserialize(deserializer).map_err(sanitized_deserialize_error)?;
-    validate(raw)
+    let raw = parse_toml(&contents, "config")?;
+    validate(raw, path.parent().unwrap_or(Path::new("")), true)
 }
 
-fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
+/// Like [`load`] but leaves a `[keys] file` unread (no application keys, `sha256: None`),
+/// so the host key CLI can validate it itself and repair route drift.
+pub fn load_deferring_keys(path: impl AsRef<Path>) -> Result<ValidatedConfig, ConfigError> {
+    let path = path.as_ref();
+    let contents =
+        fs::read_to_string(path).map_err(|_| ConfigError::new("config", "read_error"))?;
+    let raw = parse_toml(&contents, "config")?;
+    validate(raw, path.parent().unwrap_or(Path::new("")), false)
+}
+
+fn validate(
+    raw: RawConfig,
+    config_dir: &Path,
+    read_keys_file: bool,
+) -> Result<ValidatedConfig, ConfigError> {
     let mut publication = validate_publication(&raw.publication)?;
     let listeners = validate_listeners(&raw.listeners, publication.tailnet_addresses())?;
     let (limits, timeouts) = validate_bounds(&raw.limits, &raw.timeouts)?;
@@ -858,11 +1007,22 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
                 &format!("{path}.secret_ref"),
                 false,
             )?)
-        } else if adapter.kind == ProviderKind::Openrouter {
+        } else if adapter.kind == ProviderKind::Openrouter
+            || (adapter.kind == ProviderKind::Vllm && adapter.trust_zone == TrustZone::External)
+        {
             return Err(ConfigError::new(format!("{path}.secret_ref"), "required"));
         } else {
             None
         };
+        if adapter.kind == ProviderKind::Vllm
+            && secret_ref.is_some()
+            && base_url.scheme() != "https"
+        {
+            return Err(ConfigError::new(
+                format!("{path}.base_url"),
+                "https_required",
+            ));
+        }
         validate_provider_zone(&adapter, &path)?;
         let extension_allowlist = validate_extension_allowlist(
             adapter.extension_allowlist,
@@ -1192,6 +1352,22 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
                 ));
             }
         }
+        if route.enable_thinking.is_some() {
+            let uses_chat_template = route.operation == Operation::Chat
+                || adapter.transcription_mode == Some(VllmTranscriptionMode::AudioChat);
+            if adapter.kind != ProviderKind::Vllm {
+                return Err(ConfigError::new(
+                    format!("{path}.enable_thinking"),
+                    "vllm_only",
+                ));
+            }
+            if !uses_chat_template {
+                return Err(ConfigError::new(
+                    format!("{path}.enable_thinking"),
+                    "requires_chat_template",
+                ));
+            }
+        }
         let extension_allowlist = validate_extension_allowlist(
             route.extension_allowlist,
             &format!("{path}.extension_allowlist"),
@@ -1211,6 +1387,7 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
             allows_audio_streaming_chat: route.allows_audio_streaming_chat,
             allows_audio_function_tools: route.allows_audio_function_tools,
             context_tokens: route.context_tokens,
+            enable_thinking: route.enable_thinking,
         });
     }
     if routes.is_empty() {
@@ -1223,7 +1400,16 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
         &routes,
         &adapters,
     )?;
-    let application_keys = validate_application_keys(raw.application_keys, &routes)?;
+    let (application_keys, key_source) = match raw.keys {
+        Some(_) if !raw.application_keys.is_empty() => {
+            return Err(ConfigError::new("keys", "conflicting_key_sources"));
+        }
+        Some(keys) => load_key_file(&keys, config_dir, &routes, read_keys_file)?,
+        None => (
+            validate_application_keys(raw.application_keys, &routes)?,
+            KeySource::Inline,
+        ),
+    };
     Ok(ValidatedConfig {
         listeners,
         publication,
@@ -1231,6 +1417,7 @@ fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
         adapters,
         routes,
         application_keys,
+        key_source,
         limits,
         timeouts,
         logging: ValidatedLogging {
@@ -1520,7 +1707,8 @@ fn validate_url(adapter: &RawAdapter, path: &str) -> Result<Url, ConfigError> {
 fn validate_provider_zone(adapter: &RawAdapter, path: &str) -> Result<(), ConfigError> {
     let valid = match adapter.kind {
         ProviderKind::Openrouter | ProviderKind::Codex => adapter.trust_zone == TrustZone::External,
-        ProviderKind::Ollama | ProviderKind::Vllm | ProviderKind::AppleFm => matches!(
+        ProviderKind::Vllm => true,
+        ProviderKind::Ollama | ProviderKind::AppleFm => matches!(
             adapter.trust_zone,
             TrustZone::Local | TrustZone::PrivateNetwork
         ),
@@ -1566,52 +1754,169 @@ fn validate_application_keys(
                 "duplicate_secret",
             ));
         }
-        if key.permissions.is_empty() {
-            return Err(ConfigError::new(format!("{path}.permissions"), "empty"));
-        }
-        let mut permissions = BTreeSet::new();
-        for (permission_index, permission) in key.permissions.iter().enumerate() {
-            if !permissions.insert((permission.model_alias.clone(), permission.operation)) {
-                return Err(ConfigError::new(
-                    format!("{path}.permissions[{permission_index}]"),
-                    "duplicate",
-                ));
-            }
-            if !routes.iter().any(|route| {
-                route.identity.selector.model_alias.0 == permission.model_alias
-                    && route.identity.selector.operation == permission.operation
-            }) {
-                return Err(ConfigError::new(
-                    format!("{path}.permissions[{permission_index}]"),
-                    "unknown_route_selector",
-                ));
-            }
-        }
-        let max_in_flight = validate_optional_limit(key.max_in_flight, &path)?;
-        let rate_limit = key
-            .rate_limit
-            .map(|limit| validate_rate_limit(limit, &path))
-            .transpose()?;
+        let permissions = validate_permissions(&key.permissions, &path, Some(routes))?;
+        let (max_in_flight, rate_limit) =
+            validate_key_limits(key.max_in_flight, key.rate_limit, &path)?;
         validated.push(ValidatedApplicationKey {
             id: key.id,
             owner: key.owner,
             max_in_flight,
             rate_limit,
             secret_ref,
-            permissions: key
-                .permissions
-                .into_iter()
-                .map(|permission| RouteSelector {
-                    model_alias: ModelAlias(permission.model_alias),
-                    operation: permission.operation,
-                })
-                .collect(),
+            permissions,
+            expires_at: None,
         });
     }
     if ids.is_empty() {
         return Err(ConfigError::new("application_keys", "empty"));
     }
     Ok(validated)
+}
+
+/// Key permission rules shared by inline keys and the keys file. `routes = None`
+/// (revoked records) checks syntax only.
+pub(crate) fn validate_permissions(
+    raw: &[RawPermission],
+    path: &str,
+    routes: Option<&[ValidatedRoute]>,
+) -> Result<Vec<RouteSelector>, ConfigError> {
+    if raw.is_empty() {
+        return Err(ConfigError::new(format!("{path}.permissions"), "empty"));
+    }
+    let mut seen = BTreeSet::new();
+    for (index, permission) in raw.iter().enumerate() {
+        let permission_path = || format!("{path}.permissions[{index}]");
+        if !seen.insert((permission.model_alias.as_str(), permission.operation)) {
+            return Err(ConfigError::new(permission_path(), "duplicate"));
+        }
+        match routes {
+            Some(routes)
+                if !routes.iter().any(|route| {
+                    route.identity.selector.model_alias.0 == permission.model_alias
+                        && route.identity.selector.operation == permission.operation
+                }) =>
+            {
+                return Err(ConfigError::new(
+                    permission_path(),
+                    "unknown_route_selector",
+                ));
+            }
+            None if parse_model_alias(&permission.model_alias).is_none() => {
+                return Err(ConfigError::new(permission_path(), "invalid_exact_alias"));
+            }
+            _ => {}
+        }
+    }
+    Ok(raw
+        .iter()
+        .map(|permission| RouteSelector {
+            model_alias: ModelAlias(permission.model_alias.clone()),
+            operation: permission.operation,
+        })
+        .collect())
+}
+
+pub(crate) fn validate_key_limits(
+    max_in_flight: Option<u64>,
+    rate_limit: Option<RawRateLimit>,
+    path: &str,
+) -> Result<(Option<u64>, Option<KeyRateLimit>), ConfigError> {
+    let max_in_flight = validate_optional_limit(max_in_flight, path)?;
+    let rate_limit = rate_limit
+        .map(|limit| validate_rate_limit(limit, path))
+        .transpose()?;
+    Ok((max_in_flight, rate_limit))
+}
+
+fn load_key_file(
+    raw: &RawKeys,
+    config_dir: &Path,
+    routes: &[ValidatedRoute],
+    read_file: bool,
+) -> Result<(Vec<ValidatedApplicationKey>, KeySource), ConfigError> {
+    let path = config_dir.join(validate_key_path(&raw.file, "keys.file")?);
+    let usage_dir = raw
+        .usage_dir
+        .as_deref()
+        .map(|dir| validate_key_path(dir, "keys.usage_dir").map(|dir| config_dir.join(dir)))
+        .transpose()?;
+    if !read_file {
+        return Ok((
+            Vec::new(),
+            KeySource::File {
+                path,
+                usage_dir,
+                missing: false,
+                sha256: None,
+            },
+        ));
+    }
+    let Some(bytes) = keys::file::read(&path)? else {
+        return Ok((
+            Vec::new(),
+            KeySource::File {
+                path,
+                usage_dir,
+                missing: true,
+                sha256: None,
+            },
+        ));
+    };
+    let file = keys::file::parse(&bytes, routes)?;
+    Ok((
+        application_keys_from_file(&file, routes)?,
+        KeySource::File {
+            path,
+            usage_dir,
+            missing: false,
+            sha256: Some(file.sha256()),
+        },
+    ))
+}
+
+fn validate_key_path<'a>(value: &'a str, path: &str) -> Result<&'a Path, ConfigError> {
+    if value.is_empty() {
+        return Err(ConfigError::new(path, "empty"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(ConfigError::new(path, "invalid_path"));
+    }
+    Ok(Path::new(value))
+}
+
+/// Active records only; re-checks scopes so a file parsed elsewhere cannot
+/// grant a selector this config does not route.
+fn application_keys_from_file(
+    file: &KeysFile,
+    routes: &[ValidatedRoute],
+) -> Result<Vec<ValidatedApplicationKey>, ConfigError> {
+    let mut keys = Vec::new();
+    for (index, record) in file.records().iter().enumerate() {
+        if record.is_revoked() {
+            continue;
+        }
+        for (permission_index, selector) in record.permissions().iter().enumerate() {
+            if !routes
+                .iter()
+                .any(|route| route.identity.selector == *selector)
+            {
+                return Err(ConfigError::new(
+                    format!("keys_file.keys[{index}].permissions[{permission_index}]"),
+                    "unknown_route_selector",
+                ));
+            }
+        }
+        keys.push(ValidatedApplicationKey {
+            id: record.id().to_owned(),
+            owner: record.is_owner(),
+            secret_ref: SecretReference::Sha256(*record.digest()),
+            permissions: record.permissions().to_vec(),
+            max_in_flight: record.max_in_flight(),
+            rate_limit: record.rate_limit(),
+            expires_at: record.expires_at(),
+        });
+    }
+    Ok(keys)
 }
 
 fn validate_secret_ref(
@@ -1806,7 +2111,7 @@ fn validate_bounds(
     ))
 }
 
-fn parse_sha256_hex(value: &str) -> Option<[u8; 32]> {
+pub(crate) fn parse_sha256_hex(value: &str) -> Option<[u8; 32]> {
     let bytes = value.as_bytes();
     if bytes.len() != 64 {
         return None;

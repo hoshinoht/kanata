@@ -18,12 +18,18 @@ Kanata makes its outbound calls to model backends over the separate `backend_egr
 | `compose.kanata.host-ollama.yml` | Opt-in `host.orb.internal` mapping so Kanata can reach Ollama running on the Docker host (e.g. macOS for Metal) |
 | `compose.kanata.public.yml` | Opt-in public plane: a separate `kanata-public` container (`--plane public`, no Codex volume) on the public network, the `cloudflared` sidecar, and `--plane private` for the main container |
 | `compose.kanata.openrouter.yml` | Opt-in OpenRouter API key as a Compose secret at `/run/secrets/openrouter-api-key`, from `KANATA_OPENROUTER_KEY_FILE` |
+| `compose.kanata.omnilion.yml` | Opt-in OmniLion API key as a Compose secret at `/run/secrets/omnilion-api-key` in both `kanata` and `kanata-public`, from `KANATA_OMNILION_KEY_FILE`; needs `compose.kanata.public.yml` |
 | `.env` (git-ignored; from `.env.example`) | `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`, and paths to the config, the host-side owner key and the tunnel token. Paths only, never secrets |
 
 ## Config and secrets
 
 - `KANATA_CONFIG_FILE` is mounted read-only at `/etc/kanata/config.toml`. Start from `config/container.example.toml`.
-- **Client keys** are stored in the config only as `sha256:` digests, so no key file is mounted. The owner key's plaintext stays on the host at `KANATA_OWNER_KEY_FILE`. `scripts/kanata.sh owner-key rotate` creates or rotates it and updates its digest.
+- **Client keys** live in `keys.toml` as `sha256:` digests only; the owner key's plaintext stays on the host at `KANATA_OWNER_KEY_FILE`. Manage keys with the host CLI (`cargo install --locked --path .`, then `kanata key ...`); changes apply within about 2 s, no restart.
+- **Keys and state mounts** (required): `KANATA_KEYS_DIR` must be `<config dir>/keys` and `KANATA_STATE_DIR` must be `<config dir>/state`, the same paths the host CLI derives from the config's `[keys]` table. The keys directory is mounted read-only at `/etc/kanata/keys` in both containers; `state/private` and `state/public` are mounted writable at `/etc/kanata/state` in `kanata` and `kanata-public`. `scripts/kanata.sh` checks these paths and creates missing directories (0700).
+- **Why a directory:** the CLI replaces `keys.toml` by atomic rename. A single-file bind mount keeps pointing at the old inode, so the container would never see the change; mounting the directory does.
+- **Ownership:** the container runs as uid 10001 and must read `keys.toml` (0600).
+  - macOS (OrbStack, checked; Docker Desktop should behave the same): file sharing maps host ownership, so run `kanata key ...` as your own user.
+  - Linux: `sudo chown -R 10001:10001 <config dir>/keys <config dir>/state`, then run the CLI as the container uid: `sudo -u '#10001' kanata key ... --config <config>`. Do not change the container uid.
 - **File permissions:** bind mounts and Compose file secrets keep their host ownership and mode. Make the config file, and the tunnel token if used, readable by the container user, e.g. `0444` inside a `0700` directory.
 - **Codex credentials** live only in the dedicated `codex_state` volume. Log in with `scripts/kanata.sh codex login`. No host home directory, keychain or Docker socket is mounted.
 

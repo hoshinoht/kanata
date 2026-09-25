@@ -3,9 +3,11 @@ use serde::Serialize;
 
 use serde_json::Number;
 
+use serde_json::Value;
+
 use crate::core::{
-    ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, GatewayError, InputAudioFormat,
-    ResponseFormat, TranscriptionRequest, ValidatedAudio,
+    ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, FunctionTool, GatewayError,
+    InputAudioFormat, ResponseFormat, ToolChoice, TranscriptionRequest, ValidatedAudio,
 };
 
 const MAX_LANGUAGE_HINT_BYTES: usize = 80;
@@ -16,7 +18,13 @@ const TRANSCRIPTION_INSTRUCTION: &str = "Transcribe the audio and return only th
 pub(super) struct ChatPayload {
     model: String,
     messages: Vec<MessagePayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ToolPayload>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<ToolChoicePayload>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     // Number keeps the transcription path's integer `0` byte-identical.
@@ -28,12 +36,75 @@ pub(super) struct ChatPayload {
     seed: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<ResponseFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chat_template_kwargs: Option<ChatTemplateKwargs>,
+}
+
+#[derive(Serialize)]
+struct ChatTemplateKwargs {
+    enable_thinking: bool,
+}
+
+#[derive(Serialize)]
+struct StreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Serialize)]
 struct MessagePayload {
     role: &'static str,
-    content: MessageContent,
+    // Absent only on an assistant turn that carries just tool calls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<MessageContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<ToolCallPayload>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ToolPayload {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: FunctionPayload,
+}
+
+#[derive(Serialize)]
+struct FunctionPayload {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    parameters: Value,
+}
+
+#[derive(Serialize)]
+struct ToolCallPayload {
+    id: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: CallFunctionPayload,
+}
+
+#[derive(Serialize)]
+struct CallFunctionPayload {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ToolChoicePayload {
+    Simple(&'static str),
+    Named {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        function: NamedFunctionPayload,
+    },
+}
+
+#[derive(Serialize)]
+struct NamedFunctionPayload {
+    name: String,
 }
 
 #[derive(Serialize)]
@@ -70,9 +141,11 @@ struct InputAudioPayload {
     format: &'static str,
 }
 
+/// `route_thinking` is the route default; a request value overrides it.
 pub(super) fn encode(
     chat: &ChatRequest,
     upstream_model: &str,
+    route_thinking: Option<bool>,
 ) -> Result<ChatPayload, GatewayError> {
     if upstream_model.trim().is_empty() {
         return Err(invalid_request());
@@ -82,10 +155,19 @@ pub(super) fn encode(
         .iter()
         .map(encode_message)
         .collect::<Result<Vec<_>, _>>()?;
+    let tools = (!chat.tools.is_empty()).then(|| chat.tools.iter().map(encode_tool).collect());
+    // Omitted for the default so tool-free payloads stay unchanged.
+    let tool_choice = (tools.is_some() || !matches!(chat.tool_choice, ToolChoice::Auto))
+        .then(|| encode_tool_choice(&chat.tool_choice));
     Ok(ChatPayload {
         model: upstream_model.to_owned(),
         messages,
-        stream: false,
+        tools,
+        tool_choice,
+        stream: chat.stream,
+        stream_options: chat.stream.then_some(StreamOptions {
+            include_usage: true,
+        }),
         max_tokens: chat.options.max_output_tokens,
         temperature: chat
             .options
@@ -99,13 +181,42 @@ pub(super) fn encode(
             .response_format
             .clone()
             .filter(|format| !matches!(format, ResponseFormat::Text)),
+        chat_template_kwargs: template_kwargs(chat.options.enable_thinking.or(route_thinking)),
     })
+}
+
+fn encode_tool(tool: &FunctionTool) -> ToolPayload {
+    ToolPayload {
+        kind: "function",
+        function: FunctionPayload {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+            parameters: tool.parameters.clone(),
+        },
+    }
+}
+
+fn encode_tool_choice(choice: &ToolChoice) -> ToolChoicePayload {
+    match choice {
+        ToolChoice::None => ToolChoicePayload::Simple("none"),
+        ToolChoice::Auto => ToolChoicePayload::Simple("auto"),
+        ToolChoice::Required => ToolChoicePayload::Simple("required"),
+        ToolChoice::Function { name } => ToolChoicePayload::Named {
+            kind: "function",
+            function: NamedFunctionPayload { name: name.clone() },
+        },
+    }
+}
+
+fn template_kwargs(enable_thinking: Option<bool>) -> Option<ChatTemplateKwargs> {
+    enable_thinking.map(|enable_thinking| ChatTemplateKwargs { enable_thinking })
 }
 
 pub(super) fn encode_transcription(
     transcription: &TranscriptionRequest,
     upstream_model: &str,
     max_audio_bytes: usize,
+    enable_thinking: Option<bool>,
 ) -> Result<ChatPayload, GatewayError> {
     if upstream_model.trim().is_empty()
         || transcription.file.bytes().len() > max_audio_bytes
@@ -123,20 +234,26 @@ pub(super) fn encode_transcription(
         model: upstream_model.to_owned(),
         messages: vec![MessagePayload {
             role: "user",
-            content: MessageContent::Parts(vec![
+            content: Some(MessageContent::Parts(vec![
                 audio_part_bytes(transcription.file.bytes(), format),
                 ContentPart::Text(TextPart {
                     kind: "text",
                     text: content,
                 }),
-            ]),
+            ])),
+            tool_calls: None,
+            tool_call_id: None,
         }],
+        tools: None,
+        tool_choice: None,
         stream: false,
+        stream_options: None,
         max_tokens: Some(512),
         temperature: Some(Number::from(0)),
         top_p: None,
         seed: None,
         response_format: None,
+        chat_template_kwargs: template_kwargs(enable_thinking),
     })
 }
 
@@ -167,8 +284,11 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
         ChatRole::Developer => "developer",
         ChatRole::User => "user",
         ChatRole::Assistant => "assistant",
-        ChatRole::Tool => return Err(unsupported_operation()),
+        ChatRole::Tool => return encode_tool_result(message),
     };
+    if message.role == ChatRole::Assistant {
+        return encode_assistant(message);
+    }
 
     if message
         .content
@@ -195,7 +315,9 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(MessagePayload {
             role,
-            content: MessageContent::Parts(parts),
+            content: Some(MessageContent::Parts(parts)),
+            tool_calls: None,
+            tool_call_id: None,
         });
     }
 
@@ -212,7 +334,52 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
 
     Ok(MessagePayload {
         role,
-        content: MessageContent::Text(text),
+        content: Some(MessageContent::Text(text)),
+        tool_calls: None,
+        tool_call_id: None,
+    })
+}
+
+/// Assistant history: text (empty segments skipped) plus any tool calls.
+fn encode_assistant(message: &ChatMessage) -> Result<MessagePayload, GatewayError> {
+    let mut text = String::new();
+    let mut calls = Vec::new();
+    for content in &message.content {
+        match content {
+            ChatContent::Text { text: segment } => text.push_str(segment),
+            ChatContent::ToolCall { call } => calls.push(ToolCallPayload {
+                id: call.id.clone(),
+                kind: "function",
+                function: CallFunctionPayload {
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                },
+            }),
+            ChatContent::InputAudio { .. } | ChatContent::ToolResult { .. } => {
+                return Err(unsupported_operation());
+            }
+        }
+    }
+    if text.is_empty() && calls.is_empty() {
+        return Err(invalid_request());
+    }
+    Ok(MessagePayload {
+        role: "assistant",
+        content: (!text.is_empty()).then_some(MessageContent::Text(text)),
+        tool_calls: (!calls.is_empty()).then_some(calls),
+        tool_call_id: None,
+    })
+}
+
+fn encode_tool_result(message: &ChatMessage) -> Result<MessagePayload, GatewayError> {
+    let [ChatContent::ToolResult { call_id, content }] = message.content.as_slice() else {
+        return Err(invalid_request());
+    };
+    Ok(MessagePayload {
+        role: "tool",
+        content: Some(MessageContent::Text(content.clone())),
+        tool_calls: None,
+        tool_call_id: Some(call_id.clone()),
     })
 }
 
@@ -317,15 +484,113 @@ mod tests {
                 max_output_tokens: Some(64),
                 max_output_tokens_param: Default::default(),
                 reasoning_effort: None,
+                enable_thinking: None,
             },
             extensions: Default::default(),
         };
         let payload =
-            super::encode(&chat, "meta-llama/Meta-Llama-3.1-8B-Instruct").expect("encodes");
+            super::encode(&chat, "meta-llama/Meta-Llama-3.1-8B-Instruct", None).expect("encodes");
         let expected: Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/vllm/chat-options-request.json"
         ))
         .expect("fixture json");
         assert_eq!(serde_json::to_value(payload).expect("serializes"), expected);
+    }
+
+    #[test]
+    fn route_thinking_switch_sets_chat_template_kwargs() {
+        let chat = ChatRequest {
+            model: ModelAlias("omni".into()),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: vec![ChatContent::Text { text: "hi".into() }],
+            }],
+            tools: Vec::new(),
+            tool_choice: ToolChoice::Auto,
+            stream: false,
+            options: ChatOptions::default(),
+            extensions: Default::default(),
+        };
+        let off =
+            serde_json::to_value(super::encode(&chat, "OmniLion", Some(false)).expect("encodes"))
+                .expect("serializes");
+        assert_eq!(
+            off["chat_template_kwargs"],
+            serde_json::json!({"enable_thinking": false})
+        );
+        let unset = serde_json::to_value(super::encode(&chat, "OmniLion", None).expect("encodes"))
+            .expect("serializes");
+        assert!(unset.get("chat_template_kwargs").is_none());
+    }
+
+    #[test]
+    fn tools_history_and_request_thinking_encode() {
+        use crate::core::{FunctionTool, ToolCall};
+        let chat = ChatRequest {
+            model: ModelAlias("omni".into()),
+            messages: vec![
+                ChatMessage {
+                    role: ChatRole::User,
+                    content: vec![ChatContent::Text {
+                        text: "weather?".into(),
+                    }],
+                },
+                ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: vec![
+                        ChatContent::Text {
+                            text: String::new(),
+                        },
+                        ChatContent::ToolCall {
+                            call: ToolCall {
+                                id: "call-1".into(),
+                                name: "get_weather".into(),
+                                arguments: "{}".into(),
+                            },
+                        },
+                    ],
+                },
+                ChatMessage {
+                    role: ChatRole::Tool,
+                    content: vec![ChatContent::ToolResult {
+                        call_id: "call-1".into(),
+                        content: "sunny".into(),
+                    }],
+                },
+            ],
+            tools: vec![FunctionTool {
+                name: "get_weather".into(),
+                description: None,
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+            tool_choice: ToolChoice::Function {
+                name: "get_weather".into(),
+            },
+            stream: true,
+            options: ChatOptions {
+                enable_thinking: Some(false),
+                ..ChatOptions::default()
+            },
+            extensions: Default::default(),
+        };
+        let payload =
+            serde_json::to_value(super::encode(&chat, "omnilion", Some(true)).expect("encodes"))
+                .expect("serializes");
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "model": "omnilion",
+                "messages": [
+                    {"role": "user", "content": "weather?"},
+                    {"role": "assistant", "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}]},
+                    {"role": "tool", "content": "sunny", "tool_call_id": "call-1"}
+                ],
+                "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}],
+                "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+                "stream": true,
+                "stream_options": {"include_usage": true},
+                "chat_template_kwargs": {"enable_thinking": false}
+            })
+        );
     }
 }

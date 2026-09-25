@@ -462,20 +462,6 @@ async fn constructor_accepts_only_text_or_fixture_scoped_audio_chat_operations()
         config_for(
             "127.0.0.1:8000",
             ConfigOptions {
-                streaming_chat: true,
-                ..ConfigOptions::default()
-            },
-        ),
-        config_for(
-            "127.0.0.1:8000",
-            ConfigOptions {
-                function_tools: true,
-                ..ConfigOptions::default()
-            },
-        ),
-        config_for(
-            "127.0.0.1:8000",
-            ConfigOptions {
                 input_audio: true,
                 streaming_chat: true,
                 audio_streaming_chat: true,

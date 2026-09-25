@@ -246,6 +246,12 @@ pub fn config_with(
     } else {
         ""
     };
+    // Credentials are only sent over HTTPS.
+    let scheme = if secret_ref.is_empty() {
+        "http"
+    } else {
+        "https"
+    };
     let transcription_mode = if operation == "transcription" {
         "transcription_mode = \"native_asr\"\n"
     } else {
@@ -267,7 +273,7 @@ tailnet_addresses = ["100.64.0.1"]
 [[adapters]]
 id = "vllm-fixture"
 kind = "vllm"
-base_url = "http://{address}/v1"
+base_url = "{scheme}://{address}/v1"
 trust_zone = "local"
 {transcription_mode}{secret_ref}[adapters.capabilities]
 operations = ["{operation}"]

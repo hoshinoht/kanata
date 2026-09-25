@@ -1,9 +1,15 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, de::IgnoredAny};
 
 use crate::core::{
     ChatContent, ChatMessage, ChatResponse, ChatRole, ErrorKind, FinishReason, GatewayError,
-    ModelAlias, Usage,
+    ModelAlias, ToolCall, TranscriptionResponse, Usage,
 };
+
+pub(super) const MAX_TOOL_CALLS: usize = 64;
+const MAX_TOOL_CALL_ID_BYTES: usize = 128;
+const MAX_TOOL_NAME_BYTES: usize = 64;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +57,26 @@ struct MessagePayload {
     _reasoning: Option<String>,
     #[serde(default, rename = "reasoning_details")]
     _reasoning_details: Option<serde_json::Value>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ToolCallPayload>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolCallPayload {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default, rename = "index")]
+    _index: Option<u64>,
+    function: FunctionCallPayload,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FunctionCallPayload {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Deserialize)]
@@ -99,15 +125,37 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         return Err(upstream_failure());
     }
     let finish_reason = parse_finish_reason(&choice.finish_reason)?;
-    if finish_reason == FinishReason::ToolCalls {
+    let mut content = Vec::new();
+    if let Some(text) = choice.message.content.filter(|text| !text.is_empty()) {
+        content.push(ChatContent::Text { text });
+    }
+    let calls = choice.message.tool_calls.unwrap_or_default();
+    if calls.len() > MAX_TOOL_CALLS {
         return Err(upstream_failure());
     }
-    let content = match choice.message.content.filter(|text| !text.is_empty()) {
-        Some(text) => vec![ChatContent::Text { text }],
-        // A length stop may carry no visible output.
-        None if finish_reason == FinishReason::Length => Vec::new(),
-        None => return Err(upstream_failure()),
-    };
+    let mut ids = BTreeSet::new();
+    for call in calls {
+        if call.kind != "function"
+            || !valid_call_id(&call.id)
+            || !ids.insert(call.id.clone())
+            || !valid_tool_name(&call.function.name)
+        {
+            return Err(upstream_failure());
+        }
+        content.push(ChatContent::ToolCall {
+            call: ToolCall {
+                id: call.id,
+                name: call.function.name,
+                arguments: call.function.arguments,
+            },
+        });
+    }
+    // A length stop may carry no visible output.
+    if (content.is_empty() && finish_reason != FinishReason::Length)
+        || (finish_reason == FinishReason::ToolCalls) != !ids.is_empty()
+    {
+        return Err(upstream_failure());
+    }
     let usage = payload.usage.map(normalize_usage).transpose()?;
 
     Ok(ChatResponse {
@@ -118,6 +166,26 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         },
         finish_reason,
         usage,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TranscriptionPayload {
+    text: String,
+    #[serde(default, rename = "usage")]
+    _usage: Option<IgnoredAny>,
+}
+
+pub(super) fn decode_transcription(bytes: &[u8]) -> Result<TranscriptionResponse, GatewayError> {
+    let payload: TranscriptionPayload =
+        serde_json::from_slice(bytes).map_err(|_| upstream_failure())?;
+    let text = payload.text.trim();
+    if text.is_empty() {
+        return Err(upstream_failure());
+    }
+    Ok(TranscriptionResponse {
+        text: text.to_owned(),
     })
 }
 
@@ -132,13 +200,28 @@ pub(super) fn normalize_usage(usage: UsagePayload) -> Result<Usage, GatewayError
     })
 }
 
-fn parse_finish_reason(value: &str) -> Result<FinishReason, GatewayError> {
+pub(super) fn parse_finish_reason(value: &str) -> Result<FinishReason, GatewayError> {
     match value {
         "stop" => Ok(FinishReason::Stop),
         "length" => Ok(FinishReason::Length),
+        "tool_calls" => Ok(FinishReason::ToolCalls),
         "content_filter" => Ok(FinishReason::ContentFilter),
         _ => Err(upstream_failure()),
     }
+}
+
+pub(super) fn valid_call_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_TOOL_CALL_ID_BYTES
+        && value.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
+pub(super) fn valid_tool_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_TOOL_NAME_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 fn upstream_failure() -> GatewayError {

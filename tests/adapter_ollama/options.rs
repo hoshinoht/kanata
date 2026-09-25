@@ -59,6 +59,7 @@ fn options_request() -> CoreRequest {
         max_output_tokens: Some(128),
         max_output_tokens_param: Default::default(),
         reasoning_effort: Some(ReasoningEffort::None),
+        enable_thinking: None,
     };
     CoreRequest::Chat(chat)
 }

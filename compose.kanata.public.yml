@@ -9,7 +9,7 @@ services:
     command: ["serve", "--config", "/etc/kanata/config.toml", "--plane", "private"]
 
   kanata-public:
-    image: kanata:test
+    image: ${KANATA_IMAGE:-kanata:test}
     pull_policy: never
     command: ["serve", "--config", "/etc/kanata/config.toml", "--plane", "public"]
     user: "10001:10001"
@@ -32,6 +32,18 @@ services:
         source: "${KANATA_CONFIG_FILE:?Set KANATA_CONFIG_FILE to an operator-managed config file}"
         target: /etc/kanata/config.toml
         read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${KANATA_KEYS_DIR:?Set KANATA_KEYS_DIR to <config dir>/keys}"
+        target: /etc/kanata/keys
+        read_only: true
+        bind:
+          create_host_path: false
+      # Own state dir: per-plane usage files never share a mount.
+      - type: bind
+        source: "${KANATA_STATE_DIR:?Set KANATA_STATE_DIR to <config dir>/state}/public"
+        target: /etc/kanata/state
         bind:
           create_host_path: false
     # Public routes usually serve host Ollama (see compose.kanata.host-ollama.yml).

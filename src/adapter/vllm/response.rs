@@ -1,9 +1,15 @@
-use serde::Deserialize;
+use std::collections::BTreeSet;
+
+use serde::{Deserialize, de::IgnoredAny};
 
 use crate::core::{
     ChatContent, ChatMessage, ChatResponse, ChatRole, ErrorKind, FinishReason, GatewayError,
-    ModelAlias, TranscriptionResponse, Usage,
+    ModelAlias, ToolCall, TranscriptionResponse, Usage,
 };
+
+pub(super) const MAX_TOOL_CALLS: usize = 64;
+const MAX_TOOL_CALL_ID_BYTES: usize = 128;
+const MAX_TOOL_NAME_BYTES: usize = 64;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -18,6 +24,21 @@ struct CompletionPayload {
     usage: Option<UsagePayload>,
     #[serde(default)]
     system_fingerprint: Option<String>,
+    // Recent vLLM metadata; accepted and not forwarded.
+    #[serde(default, rename = "service_tier")]
+    _service_tier: Option<IgnoredAny>,
+    #[serde(default, rename = "prompt_logprobs")]
+    _prompt_logprobs: Option<IgnoredAny>,
+    #[serde(default, rename = "prompt_token_ids")]
+    _prompt_token_ids: Option<IgnoredAny>,
+    #[serde(default, rename = "prompt_text")]
+    _prompt_text: Option<IgnoredAny>,
+    #[serde(default, rename = "kv_transfer_params")]
+    _kv_transfer_params: Option<IgnoredAny>,
+    #[serde(default, rename = "ec_transfer_params")]
+    _ec_transfer_params: Option<IgnoredAny>,
+    #[serde(default, rename = "metrics")]
+    _metrics: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -26,6 +47,17 @@ struct ChoicePayload {
     index: u64,
     message: MessagePayload,
     finish_reason: String,
+    #[serde(default, rename = "logprobs")]
+    _logprobs: Option<IgnoredAny>,
+    #[serde(default, rename = "stop_reason")]
+    _stop_reason: Option<IgnoredAny>,
+    #[serde(default, rename = "token_ids")]
+    _token_ids: Option<IgnoredAny>,
+    #[serde(default, rename = "routed_experts")]
+    _routed_experts: Option<IgnoredAny>,
+    // LiteLLM proxy metadata.
+    #[serde(default, rename = "provider_specific_fields")]
+    _provider_specific_fields: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -34,10 +66,23 @@ struct MessagePayload {
     role: String,
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ToolCallPayload>>,
     #[serde(default, rename = "reasoning")]
     _reasoning: Option<String>,
     #[serde(default, rename = "reasoning_content")]
     _reasoning_content: Option<String>,
+    // A refusal or audio without text content still fails as an empty reply.
+    #[serde(default, rename = "refusal")]
+    _refusal: Option<IgnoredAny>,
+    #[serde(default, rename = "annotations")]
+    _annotations: Option<IgnoredAny>,
+    #[serde(default, rename = "audio")]
+    _audio: Option<IgnoredAny>,
+    #[serde(default, rename = "function_call")]
+    _function_call: Option<IgnoredAny>,
+    #[serde(default, rename = "provider_specific_fields")]
+    _provider_specific_fields: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -46,6 +91,10 @@ struct UsagePayload {
     prompt_tokens: u64,
     completion_tokens: u64,
     total_tokens: u64,
+    #[serde(default, rename = "prompt_tokens_details")]
+    _prompt_tokens_details: Option<IgnoredAny>,
+    #[serde(default, rename = "completion_tokens_details")]
+    _completion_tokens_details: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -61,6 +110,21 @@ struct TranscriptionCompletionPayload {
     usage: Option<UsagePayload>,
     #[serde(default)]
     system_fingerprint: Option<String>,
+    // Recent vLLM metadata; accepted and not forwarded.
+    #[serde(default, rename = "service_tier")]
+    _service_tier: Option<IgnoredAny>,
+    #[serde(default, rename = "prompt_logprobs")]
+    _prompt_logprobs: Option<IgnoredAny>,
+    #[serde(default, rename = "prompt_token_ids")]
+    _prompt_token_ids: Option<IgnoredAny>,
+    #[serde(default, rename = "prompt_text")]
+    _prompt_text: Option<IgnoredAny>,
+    #[serde(default, rename = "kv_transfer_params")]
+    _kv_transfer_params: Option<IgnoredAny>,
+    #[serde(default, rename = "ec_transfer_params")]
+    _ec_transfer_params: Option<IgnoredAny>,
+    #[serde(default, rename = "metrics")]
+    _metrics: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -69,6 +133,17 @@ struct TranscriptionChoicePayload {
     index: u64,
     message: TranscriptionMessagePayload,
     finish_reason: String,
+    #[serde(default, rename = "logprobs")]
+    _logprobs: Option<IgnoredAny>,
+    #[serde(default, rename = "stop_reason")]
+    _stop_reason: Option<IgnoredAny>,
+    #[serde(default, rename = "token_ids")]
+    _token_ids: Option<IgnoredAny>,
+    #[serde(default, rename = "routed_experts")]
+    _routed_experts: Option<IgnoredAny>,
+    // LiteLLM proxy metadata.
+    #[serde(default, rename = "provider_specific_fields")]
+    _provider_specific_fields: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -81,12 +156,41 @@ struct TranscriptionMessagePayload {
     _reasoning: Option<String>,
     #[serde(default, rename = "reasoning_content")]
     _reasoning_content: Option<String>,
+    // A refusal or audio without text content still fails as an empty reply.
+    #[serde(default, rename = "refusal")]
+    _refusal: Option<IgnoredAny>,
+    #[serde(default, rename = "annotations")]
+    _annotations: Option<IgnoredAny>,
+    #[serde(default, rename = "audio")]
+    _audio: Option<IgnoredAny>,
+    #[serde(default, rename = "function_call")]
+    _function_call: Option<IgnoredAny>,
+    #[serde(default, rename = "provider_specific_fields")]
+    _provider_specific_fields: Option<IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolCallPayload {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    function: FunctionCallPayload,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FunctionCallPayload {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativeTranscriptionPayload {
     text: String,
+    #[serde(default, rename = "usage")]
+    _usage: Option<IgnoredAny>,
 }
 
 pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatResponse, GatewayError> {
@@ -113,15 +217,38 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         return Err(upstream_failure());
     }
     let finish_reason = parse_finish_reason(&choice.finish_reason)?;
-    if finish_reason == FinishReason::ToolCalls {
+    let mut content = Vec::new();
+    if let Some(text) = choice.message.content.filter(|text| !text.is_empty()) {
+        content.push(ChatContent::Text { text });
+    }
+    let calls = choice.message.tool_calls.unwrap_or_default();
+    if calls.len() > MAX_TOOL_CALLS {
         return Err(upstream_failure());
     }
-    let content = match choice.message.content.filter(|text| !text.is_empty()) {
-        Some(text) => vec![ChatContent::Text { text }],
-        // A length stop may carry no visible output.
-        None if finish_reason == FinishReason::Length => Vec::new(),
-        None => return Err(upstream_failure()),
-    };
+    let mut ids = BTreeSet::new();
+    for call in calls {
+        if call.kind != "function"
+            || !valid_call_id(&call.id)
+            || !ids.insert(call.id.clone())
+            || !valid_tool_name(&call.function.name)
+        {
+            return Err(upstream_failure());
+        }
+        content.push(ChatContent::ToolCall {
+            call: ToolCall {
+                id: call.id,
+                name: call.function.name,
+                arguments: call.function.arguments,
+            },
+        });
+    }
+    let has_tool_calls = !ids.is_empty();
+    // A length stop may carry no visible output.
+    if (content.is_empty() && finish_reason != FinishReason::Length)
+        || (finish_reason == FinishReason::ToolCalls) != has_tool_calls
+    {
+        return Err(upstream_failure());
+    }
 
     let usage = payload.usage.map(normalize_usage).transpose()?;
     Ok(ChatResponse {
@@ -204,13 +331,80 @@ fn parse_finish_reason(value: &str) -> Result<FinishReason, GatewayError> {
     match value {
         "stop" => Ok(FinishReason::Stop),
         "length" => Ok(FinishReason::Length),
+        "tool_calls" => Ok(FinishReason::ToolCalls),
         "content_filter" => Ok(FinishReason::ContentFilter),
         _ => Err(upstream_failure()),
     }
 }
 
+pub(super) fn valid_call_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_TOOL_CALL_ID_BYTES
+        && value.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
+pub(super) fn valid_tool_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_TOOL_NAME_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
 fn upstream_failure() -> GatewayError {
     GatewayError {
         kind: ErrorKind::UpstreamFailure,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::core::{ChatContent, ModelAlias};
+
+    const CHAT: &str = include_str!("../../../tests/fixtures/vllm/chat-vllm-0.30-response.json");
+    const NATIVE: &str =
+        include_str!("../../../tests/fixtures/vllm/native-asr-vllm-0.30-response.json");
+
+    #[test]
+    fn vllm_0_30_metadata_fields_are_accepted() {
+        let chat = super::decode(CHAT.as_bytes(), ModelAlias("omni".into())).expect("chat");
+        assert_eq!(
+            chat.message.content,
+            vec![ChatContent::Text {
+                text: "fixture audio transcript".into()
+            }]
+        );
+        let bridged = super::decode_transcription(CHAT.as_bytes()).expect("bridge");
+        assert_eq!(bridged.text, "fixture audio transcript");
+        let native = super::decode_native_transcription(NATIVE.as_bytes()).expect("native");
+        assert_eq!(native.text, "fixture native transcript");
+    }
+
+    #[test]
+    fn litellm_tool_call_response_decodes() {
+        const TOOL: &str =
+            include_str!("../../../tests/fixtures/vllm/chat-litellm-tool-call-response.json");
+        let chat = super::decode(TOOL.as_bytes(), ModelAlias("omni".into())).expect("chat");
+        assert_eq!(chat.finish_reason, crate::core::FinishReason::ToolCalls);
+        assert!(matches!(
+            chat.message.content.as_slice(),
+            [ChatContent::ToolCall { call }]
+                if call.name == "get_weather" && call.arguments == r#"{"city": "Singapore"}"#
+        ));
+    }
+
+    #[test]
+    fn litellm_proxy_fields_are_accepted() {
+        const LITELLM: &str =
+            include_str!("../../../tests/fixtures/vllm/chat-litellm-proxy-response.json");
+        let chat = super::decode(LITELLM.as_bytes(), ModelAlias("omni".into())).expect("chat");
+        assert_eq!(
+            chat.message.content,
+            vec![ChatContent::Text {
+                text: "fixture litellm reply".into()
+            }]
+        );
+        let bridged = super::decode_transcription(LITELLM.as_bytes()).expect("bridge");
+        assert_eq!(bridged.text, "fixture litellm reply");
     }
 }

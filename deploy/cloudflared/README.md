@@ -1,6 +1,6 @@
 # Public ingress through a Cloudflare tunnel
 
-Public clients reach Kanata's **public listener** through a remotely managed Cloudflare tunnel. The public listener runs in its own `kanata-public` container (`kanata serve --plane public`), started from the same image and config. That process loads only the routes in `public_routes`, the adapters they use, and keys without Codex scopes trimmed to their public permissions. It never loads the owner key or any key with Codex scopes, so use a separate non-owner key for public routes (`scripts/kanata.sh key new`). It has no Codex adapter, credentials or volume, and no private listener. The private `kanata` container runs `--plane private` and is not on the public network.
+Public clients reach Kanata's **public listener** through a remotely managed Cloudflare tunnel. The public listener runs in its own `kanata-public` container (`kanata serve --plane public`), started from the same image and config. That process loads only the routes in `public_routes`, the adapters they use, and keys without Codex scopes trimmed to their public permissions. It never loads the owner key or any key with Codex scopes, so use a separate non-owner key for public routes (`kanata key new`). It has no Codex adapter, credentials or volume, and no private listener. The private `kanata` container runs `--plane private` and is not on the public network.
 
 Nothing is host-published: `cloudflared` makes outbound connections to Cloudflare, and the tunnel forwards to `172.29.0.2:8081` on the internal `kanata_public_origin` network, which only `kanata-public` and `cloudflared` join.
 
@@ -48,17 +48,18 @@ The `cloudflared` sidecar is digest-pinned, runs as non-root with a read-only fi
 
 ## Keys for other people
 
-Issue one key per person. The config stores only the key's SHA-256 digest:
+Issue one key per person with the host `kanata` CLI (`cargo install --locked --path .`). `keys.toml` stores only the key's SHA-256 digest, and changes reach both containers within about 2 s, without a restart:
 
 ```sh
-scripts/kanata.sh key new alice ~/.config/kanata/keys/alice.key --chat qwen3-0.6b
-# or, with a Rust toolchain:
-cargo run -q -- key new --id alice --chat qwen3-0.6b --key-out ~/.config/kanata/keys/alice.key
+kanata routes --config config/config.toml        # which aliases are public
+kanata key new --config config/config.toml --id alice --chat qwen3-0.6b --expires 30 \
+  --key-out ~/.config/kanata/keys/alice.key
 ```
 
-1. Paste the printed `[[application_keys]]` block into `config/config.toml`, then run `docker compose restart kanata`.
-2. Send the key file's contents over a private channel, together with [the API quickstart](../../docs/guides/public-api-quickstart.md).
-3. **Revoke:** delete the block and restart. **Rotate:** issue a new key under a new `id`, then revoke the old one.
+1. Send the key file's contents over a private channel, together with [the API quickstart](../../docs/guides/public-api-quickstart.md). Without `--key-out` the key is printed once on stdout.
+2. **Revoke:** `kanata key rm alice --config config/config.toml`. A revoked key behaves like an unknown one (403 on the public listener).
+3. **Rotate:** `kanata key rotate alice --config config/config.toml --expires 30 --key-out ...`. **Change scopes or expiry** without a new secret: `kanata key edit alice --config config/config.toml --add-chat <alias>`; adding a non-public alias to a public key needs `--force`.
+4. An expired key gets `401 key_expired`; check expiries with `kanata key list --config config/config.toml`.
 
 Scope these keys only to public-allowed, non-Codex aliases. A key also works on the private route for anyone who can reach it.
 

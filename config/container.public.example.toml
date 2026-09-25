@@ -66,23 +66,16 @@ upstream_id = "gpt-6-sol"
 requires_streaming_chat = true
 requires_function_tools = true
 
-[[application_keys]]
-id = "owner"
-# Placeholder digest; `scripts/kanata.sh owner-key rotate` writes the real one.
-secret_ref = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-owner = true
-permissions = [
-  { model_alias = "qwen3-0.6b", operation = "chat" },
-  { model_alias = "gpt-6-sol", operation = "chat" },
-]
+# Application keys live in a machine-managed file (paths are relative to this
+# file). Create the owner key with the host CLI:
+# `kanata key new --config <this file> --owner --id owner --chat <alias>... --expires <days>`
+[keys]
+file = "keys/keys.toml"
+usage_dir = "state"
 
 # Keys for other people: non-owner, scoped to public-eligible models only.
-# A key works publicly only for aliases in both its permissions and public_routes.
-# Generate with `kanata key new --id alice --chat qwen3-0.6b`; paste its block:
-# [[application_keys]]
-# id = "alice"
-# secret_ref = "sha256:<64 hex from kanata key new>"
-# permissions = [{ model_alias = "qwen3-0.6b", operation = "chat" }]
+# A key works publicly only for aliases in both its permissions and public_routes:
+# `kanata key new --config <this file> --id alice --chat qwen3-0.6b --expires 30`.
 
 # Container logs (docker compose logs kanata). level: trace|debug|info|warn|error;
 # format: text|json. debug adds sanitized provider error messages.

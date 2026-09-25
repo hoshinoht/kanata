@@ -4,7 +4,38 @@
 
 ### Added
 
+- OpenRouter audio: an OpenRouter adapter can now declare `input_audio` (and `audio_streaming_chat`) to forward `input_audio` chat parts, and the `transcription` operation to use OpenRouter's `/audio/transcriptions` speech-to-text endpoint (e.g. `mistralai/voxtral-small-24b-2507` for audio chat, `mistralai/voxtral-small-24b-2507-stt` for transcription). Transcription accepts `language`; a `prompt` is rejected because the endpoint ignores it. Checked live against OpenRouter with Voxtral Small: audio chat (normal and streaming) and transcription.
+- vLLM on a remote host: a vLLM adapter may now use `trust_zone = "external"`, which requires a `secret_ref` sent as a bearer token (for vLLM's `--api-key`). Any vLLM adapter with a `secret_ref` must use an `https` `base_url`.
+- Opt-in `compose.kanata.omnilion.yml` passes an OmniLion API key file to both the private and public containers as a Compose secret (`file:/run/secrets/omnilion-api-key`), for a remote vLLM adapter reachable on the public plane.
+- vLLM streaming and tool calls: a vLLM adapter can now declare `streaming_chat`, `function_tools`, `audio_streaming_chat` and `audio_function_tools` (the audio variants need `input_audio` and the matching route `allows_audio_*` flags). Chat accepts `tools`, `tool_choice` and assistant/tool history, and streams text and tool-call deltas with usage.
+- OpenRouter tool calls: an OpenRouter adapter can now declare `function_tools` (and `audio_function_tools` with `input_audio`). Chat accepts `tools`, `tool_choice` and assistant/tool history, and returns tool calls, streamed or not. Checked live against OpenRouter with Voxtral Small (`mistralai/voxtral-small-24b-2507`): streamed and non-streamed tool calls, a forced tool call from audio, and a streamed tool call from audio. With a system prompt, Voxtral often answers audio in text instead of calling a tool; that is model behaviour, identical when calling OpenRouter directly.
+- Chat requests to vLLM routes may set `chat_template_kwargs: {"enable_thinking": bool}`, which overrides the route's `enable_thinking`; other template kwargs are rejected with `400 invalid_request`, and so is the field on other backends (`param: chat_template_kwargs`).
+- vLLM behind a LiteLLM proxy: LiteLLM's `provider_specific_fields` and its trailing usage chunk with an empty choice are accepted. Checked live against OmniLion (vLLM 0.29 behind LiteLLM on Cloud Run) through the public listener with the AI SDK (`ai` 7, `@ai-sdk/openai-compatible` 3): streamed audio chat with a tool call and follow-up, a forced tool call from audio, and non-streamed tool calls.
+- `routes[].enable_thinking` (vLLM chat, or transcription through audio chat) sends `chat_template_kwargs.enable_thinking` to switch a Qwen3-style model's thinking on or off; unset leaves the model's default.
+- vLLM 0.30 responses are now accepted: the extra metadata fields recent vLLM servers add (for example `service_tier`, `prompt_logprobs`, `token_ids`, `refusal`, `annotations`, and transcription `usage`) are ignored instead of failing the request as `502 upstream_failure`. Other unknown fields are still rejected. Checked live against vLLM 0.30.0 (CPU) serving Qwen3-ASR-1.7B: audio chat, audio-chat transcription and native transcription all work over HTTPS with an API key.
 - Contributor guidance for coding agents: `AGENTS.md` at the root (repository map, CI commands, conventions) and in `src/`, `src/api/`, `src/adapter/` and `tests/` (module layout, layering rules, handler, adapter and test conventions).
+- Host key CLI: `kanata key new|list|show|edit|rm|rotate|migrate` manages keys in a separate `keys.toml` (`[keys] file = "keys/keys.toml"`, `usage_dir = "state"`, relative to the config's directory). Every key has an expiry (`--expires 1|3|7|13|30|60|unlimited`; 60 and unlimited warn). `key new` shows the key once (stdout or `--key-out`) and stores only its SHA-256 digest; with no scopes in a terminal it offers a route picker, and unknown aliases get did-you-mean errors. `key edit` changes scopes, expiry and limits (`--max-in-flight`, `--rate-limit N/MS`, `--clear-limits`) without a new secret; `key rm` revokes (the owner needs `--force`); `key rotate (<id>|--owner)` issues a new secret. `kanata routes --config <path> [--json]` lists grantable aliases and whether each is public (`yes`, `no`, `never`).
+- Hot reload: key changes apply within about 2 s without a restart; an invalid keys file is rejected and the previous keys stay active.
+- Usage state and audit log: each server plane writes `usage-<plane>.json` (key ids, request counts, last use; flushed every 30 s and at shutdown), shown by `key list`/`key show`. The CLI appends each change to `keys/audit.jsonl` (time, local user and uid, action, key id, owner flag, edit changes; never secrets).
+- `401 key_expired` (`authentication_error`, "API key has expired") on both listeners for an expired key.
+- Key lifecycle evidence: in-process and fixture tests (`key_reload`, `key_usage`, `key_cli`), plus one local container check on macOS/OrbStack (uid 10001 reading a 0600 `keys.toml`, a new key picked up in about 1 s, revocation, usage file written). Not a claim about any live deployment.
+
+### Changed
+
+- `kanata key new` no longer prints an `[[application_keys]]` block; it writes `keys.toml` (requires `--config` and `--expires`).
+- **BREAKING for every Compose deployment**, including un-migrated inline configs: `KANATA_KEYS_DIR` and `KANATA_STATE_DIR` are required and must be `<config dir>/keys` and `<config dir>/state`. The keys directory is mounted read-only at `/etc/kanata/keys`; `state/private` and `state/public` are mounted writable at `/etc/kanata/state`. `scripts/kanata.sh` checks the paths and creates missing directories (0700).
+- `scripts/kanata.sh key ...` now runs the host `kanata key ...` with `--config` set to the deployed config.
+
+### Deprecated
+
+- Inline `[[application_keys]]`: still loaded, but no expiry, revocation, reload or usage; combining it with `[keys]` is an error. Migrate with `kanata key migrate --config <path>`, add `[keys]`, delete the inline blocks, then `scripts/kanata.sh check`.
+- `scripts/kanata.sh key new ID OUT ...` and `scripts/kanata.sh owner-key rotate` (now needs `--expires`): both print a deprecation notice and delegate to the host `kanata` (`key new --id ID --key-out OUT`, `key rotate --owner`).
+
+### Security
+
+- Key management has no network path: `kanata key` runs only on the host (or over SSH), and no listener or admin endpoint exposes it.
+- `keys.toml` (and the lock, audit and `--key-out` files) are written 0600; the server and CLI reject a group- or world-writable keys file.
+- Revoked keys are indistinguishable from unknown keys (private `401 invalid_api_key`, public `403`).
 
 ## [1.0.0-beta.4] - 2026-09-24
 

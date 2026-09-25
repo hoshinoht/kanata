@@ -6,7 +6,7 @@ You have been given access to a small, personally run, OpenAI-compatible API. It
 | --- | --- |
 | Base URL | `https://api.example.com/v1` |
 | Auth | `Authorization: Bearer <your key>` (keys start with `kanata_sk_`) |
-| Endpoints | `GET /v1/models`, `POST /v1/chat/completions` |
+| Endpoints | `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/audio/transcriptions` (models with speech input) |
 | Models | Whatever `GET /v1/models` lists for your key (for example `qwen3-0.6b`, a tiny test model, so expect short and sometimes silly answers) |
 
 ## Your key
@@ -49,6 +49,19 @@ curl -sN https://api.example.com/v1/chat/completions \
 
 You receive `data: {...}` server-sent events, ending with `data: [DONE]`. Add `"stream_options":{"include_usage":true}` to also get token usage in the last chunk.
 
+## 4. Speech (models that list `transcription` or `input_audio`)
+
+`GET /v1/models` shows each model's `kanata.operations` and `kanata.input_audio`. Audio is WAV or MP3, up to 25 MiB; 16 kHz mono 16-bit WAV works best.
+
+```sh
+curl -s https://api.example.com/v1/audio/transcriptions \
+  -H "Authorization: Bearer $KANATA_API_KEY" \
+  -F model=<model> \
+  -F "file=@clip.wav;type=audio/wav"
+```
+
+Set the file's type explicitly (`type=audio/wav` or `type=audio/mpeg`); an untyped upload is rejected. Returns `{"text": "..."}`. Models with `input_audio` also take audio inside a chat message, as a `{"type":"input_audio","input_audio":{"data":"<base64>","format":"wav"}}` content part.
+
 ## Python (openai ≥ 1.0)
 
 ```python
@@ -88,7 +101,7 @@ console.log(reply.choices[0].message.content);
 
 ## What is supported
 
-- **Request fields:** `model`, `messages` (`system` / `user` / `assistant` / `tool` roles with text content, plus assistant `tool_calls`), `stream`, `stream_options.include_usage`, and `tools` / `tool_choice` on models that support tools.
+- **Request fields:** `model`, `messages` (`system` / `user` / `assistant` / `tool` roles with text content, plus assistant `tool_calls` and user `input_audio` parts), `stream`, `stream_options.include_usage`, and `tools` / `tool_choice` on models that support tools.
 - **Generation options,** where the model's route supports them (all do on `qwen3-0.6b`):
 
   | Option | Accepted values |
@@ -99,6 +112,7 @@ console.log(reply.choices[0].message.content);
   | `max_tokens` or `max_completion_tokens` | 1 – 1,048,576 |
   | `response_format` | `{"type":"json_object"}` or `{"type":"json_schema","json_schema":{"name":…,"schema":{…},"strict":true}}` (schema ≤ 64 KiB, nesting ≤ 32 levels) |
   | `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (the model decides which it honours) |
+  | `chat_template_kwargs` | only `{"enable_thinking": true\|false}`, on vLLM-served models (e.g. `omnilion`) |
 - **Strictness:** Kanata returns `400 invalid_request` for fields it doesn't support or a model can't honour, rather than silently ignoring them. The error's `param` names the field.
 - **Not available:** embeddings, images, the Responses/Assistants APIs, fine-tuning and files.
 
@@ -107,8 +121,9 @@ console.log(reply.choices[0].message.content);
 | HTTP | `error.code` | Meaning / what to do |
 | --- | --- | --- |
 | 400 | `invalid_request` | Malformed JSON or an unsupported field. Check `param` |
+| 401 | `key_expired` | Your key has expired. Ask the owner for a new one |
 | 403 | `permission_denied` | Missing, invalid or revoked key, or a model your key may not use publicly |
-| 404 | `not_found` | Wrong path. Use `/v1/models` or `/v1/chat/completions` |
+| 404 | `not_found` | Wrong path. Use `/v1/models`, `/v1/chat/completions` or `/v1/audio/transcriptions` |
 | 408 | `request_cancelled` | The request was cancelled, for example because the client disconnected |
 | 413 | `invalid_request` | Request body larger than 1 MiB |
 | 429 | `gateway_queue_full` | The gateway queue for this model is full. Retry after the `Retry-After` seconds |

@@ -20,8 +20,8 @@ use crate::{
     auth::{SecretResolver, canonical_bearer_token},
     config::{ProviderKind, ValidatedAdapter, ValidatedConfig, ValidatedTimeouts},
     core::{
-        Capabilities, ErrorKind, GatewayError, Operation, Request, Response, RoutedRequest,
-        TrustZone,
+        Capabilities, ChatContent, ErrorKind, GatewayError, Operation, Request, Response,
+        RoutedRequest, TrustZone,
     },
 };
 
@@ -35,6 +35,8 @@ pub struct OpenRouterAdapter {
     capabilities: Capabilities,
     bearer_token: String,
     max_body_bytes: usize,
+    max_audio_bytes: usize,
+    max_audio_chat_body_bytes: usize,
     route_bindings: Vec<validation::RouteBinding>,
     transport: Arc<Transport>,
 }
@@ -87,12 +89,13 @@ impl OpenRouterAdapter {
         if adapter.kind() != ProviderKind::Openrouter
             || adapter.trust_zone() != TrustZone::External
             || adapter.secret_ref().is_none()
-            || configured.operations.len() != 1
-            || !configured.operations.contains(&Operation::Chat)
-            || configured.function_tools
-            || configured.input_audio
-            || configured.audio_streaming_chat
-            || configured.audio_function_tools
+            || configured.operations.is_empty()
+            || (configured.function_tools && !configured.operations.contains(&Operation::Chat))
+            || (configured.audio_function_tools
+                && !(configured.input_audio && configured.function_tools))
+            || (configured.input_audio && !configured.operations.contains(&Operation::Chat))
+            || (configured.audio_streaming_chat
+                && !(configured.input_audio && configured.streaming_chat))
         {
             return Err(internal_error());
         }
@@ -101,7 +104,7 @@ impl OpenRouterAdapter {
             .routes()
             .iter()
             .filter(|route| route.adapter_id() == adapter_id)
-            .map(|route| validation::bind_route(adapter_id, route, configured.streaming_chat))
+            .map(|route| validation::bind_route(adapter_id, route, configured))
             .collect::<Result<Vec<_>, _>>()?;
         if route_bindings.is_empty()
             || !route_bindings
@@ -117,12 +120,21 @@ impl OpenRouterAdapter {
             canonical_bearer_token(secret_ref, secret).map_err(|_| internal_error())?;
         let max_body_bytes =
             usize::try_from(config.limits().max_body_bytes()).map_err(|_| internal_error())?;
-        if max_body_bytes == 0 {
+        let max_audio_bytes =
+            usize::try_from(config.limits().max_audio_bytes()).map_err(|_| internal_error())?;
+        let max_audio_chat_body_bytes =
+            usize::try_from(config.limits().max_audio_chat_body_bytes())
+                .map_err(|_| internal_error())?;
+        if max_body_bytes == 0 || max_audio_bytes == 0 || max_audio_chat_body_bytes == 0 {
             return Err(internal_error());
         }
 
-        let mut capabilities = Capabilities::new([Operation::Chat]);
+        let mut capabilities = Capabilities::new(configured.operations.iter().copied());
         capabilities.streaming_chat = configured.streaming_chat;
+        capabilities.function_tools = configured.function_tools;
+        capabilities.input_audio = configured.input_audio;
+        capabilities.audio_streaming_chat = configured.audio_streaming_chat;
+        capabilities.audio_function_tools = configured.audio_function_tools;
         capabilities.structured_output = configured.structured_output;
         capabilities.sampling_controls = configured.sampling_controls;
         capabilities.reasoning_control = configured.reasoning_control;
@@ -132,6 +144,8 @@ impl OpenRouterAdapter {
             capabilities,
             bearer_token,
             max_body_bytes,
+            max_audio_bytes,
+            max_audio_chat_body_bytes,
             route_bindings,
             transport: Arc::new(make_transport(adapter, config.timeouts())?),
         })
@@ -161,17 +175,18 @@ impl OpenRouterAdapter {
         &self.id
     }
 
-    async fn post_completion(
+    async fn post_json(
         transport: Arc<Transport>,
-        payload: request::ChatPayload,
+        path: &'static [&'static str],
+        payload: &impl serde::Serialize,
         bearer_token: String,
         request_budget: usize,
         label: UpstreamLabel,
     ) -> Result<Vec<u8>, GatewayError> {
         let request = TransportRequest::json(
             Method::POST,
-            Endpoint::new(&["chat", "completions"])?,
-            &payload,
+            Endpoint::new(path)?,
+            payload,
             Some(CredentialHeader::authorization(bearer_token)),
             Some(Accept::Json),
             request_budget,
@@ -243,25 +258,61 @@ impl Adapter for OpenRouterAdapter {
     }
 
     fn execute(&self, routed: RoutedRequest) -> AdapterFuture {
-        if let Err(error) = validation::validate(&routed, &self.capabilities, &self.route_bindings)
-        {
+        if let Err(error) = validation::validate(
+            &routed,
+            &self.capabilities,
+            &self.route_bindings,
+            self.max_audio_bytes,
+        ) {
             return Box::pin(async move { Err(error) });
         }
 
         let (context, request) = routed.into_parts();
-        let Request::Chat(chat) = request else {
-            return Box::pin(async { Err(unsupported_operation()) });
+        let transport = self.transport.clone();
+        let bearer_token = format!("Bearer {}", self.bearer_token);
+        let label = UpstreamLabel::new(&self.id, "openrouter");
+        let chat = match request {
+            Request::Chat(chat) => chat,
+            Request::Transcription(transcription) => {
+                let payload =
+                    match request::encode_transcription(&transcription, &context.route.upstream_id)
+                    {
+                        Ok(payload) => payload,
+                        Err(error) => return Box::pin(async move { Err(error) }),
+                    };
+                let request_budget = self.max_audio_chat_body_bytes;
+                return Box::pin(async move {
+                    let body = Self::post_json(
+                        transport,
+                        &["audio", "transcriptions"],
+                        &payload,
+                        bearer_token,
+                        request_budget,
+                        label,
+                    )
+                    .await?;
+                    let response = response::decode_transcription(&body)?;
+                    Ok(AdapterOutput::Complete(Response::Transcription(response)))
+                });
+            }
         };
         let public_model = context.route.selector.model_alias;
         let streaming = chat.stream;
+        let has_audio = chat.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|content| matches!(content, ChatContent::InputAudio { .. }))
+        });
+        let request_budget = if has_audio {
+            self.max_audio_chat_body_bytes
+        } else {
+            self.max_body_bytes
+        };
         let payload = match request::encode(&chat, &context.route.upstream_id, streaming) {
             Ok(payload) => payload,
             Err(error) => return Box::pin(async move { Err(error) }),
         };
-        let transport = self.transport.clone();
-        let bearer_token = format!("Bearer {}", self.bearer_token);
-        let request_budget = self.max_body_bytes;
-        let label = UpstreamLabel::new(&self.id, "openrouter");
         Box::pin(async move {
             if streaming {
                 let body =
@@ -272,9 +323,15 @@ impl Adapter for OpenRouterAdapter {
                     public_model,
                 )))
             } else {
-                let body =
-                    Self::post_completion(transport, payload, bearer_token, request_budget, label)
-                        .await?;
+                let body = Self::post_json(
+                    transport,
+                    &["chat", "completions"],
+                    &payload,
+                    bearer_token,
+                    request_budget,
+                    label,
+                )
+                .await?;
                 let response = response::decode(&body, public_model)?;
                 Ok(AdapterOutput::Complete(Response::Chat(response)))
             }
@@ -303,11 +360,5 @@ fn internal_error() -> GatewayError {
 fn upstream_failure() -> GatewayError {
     GatewayError {
         kind: ErrorKind::UpstreamFailure,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
     }
 }

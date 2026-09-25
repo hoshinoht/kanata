@@ -699,6 +699,7 @@ fn chat_options_encode_with_reasoning_as_an_effort_object() {
             max_output_tokens: Some(64),
             max_output_tokens_param: Default::default(),
             reasoning_effort: Some(ReasoningEffort::Max),
+            enable_thinking: None,
         },
         extensions: Extensions::default(),
     };
@@ -708,4 +709,168 @@ fn chat_options_encode_with_reasoning_as_an_effort_object() {
     ))
     .expect("fixture json");
     assert_eq!(serde_json::to_value(payload).expect("serializes"), expected);
+}
+
+#[test]
+fn input_audio_encodes_as_content_parts_and_text_stays_a_string() {
+    use crate::core::{InputAudioFormat, ValidatedAudio};
+    let chat = ChatRequest {
+        model: ModelAlias(PUBLIC_MODEL.into()),
+        messages: vec![
+            ChatMessage {
+                role: ChatRole::System,
+                content: vec![ChatContent::Text {
+                    text: "Be brief.".into(),
+                }],
+            },
+            ChatMessage {
+                role: ChatRole::User,
+                content: vec![
+                    ChatContent::Text {
+                        text: "What is said?".into(),
+                    },
+                    ChatContent::InputAudio {
+                        audio: ValidatedAudio::new(InputAudioFormat::Wav, b"RIFF".to_vec())
+                            .expect("audio"),
+                    },
+                ],
+            },
+        ],
+        tools: Vec::new(),
+        tool_choice: ToolChoice::Auto,
+        stream: false,
+        extensions: Extensions::default(),
+        options: Default::default(),
+    };
+    let payload = serde_json::to_value(
+        super::request::encode(&chat, "mistralai/voxtral-small-24b-2507", false).expect("encodes"),
+    )
+    .expect("serializes");
+    assert_eq!(
+        payload["messages"],
+        json!([
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": [
+                {"type": "text", "text": "What is said?"},
+                {"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}}
+            ]}
+        ])
+    );
+}
+
+#[test]
+fn transcription_encodes_base64_json_and_decodes_text_only() {
+    use crate::core::{TranscriptionRequest, ValidatedFile};
+    let transcription = TranscriptionRequest {
+        model: ModelAlias(PUBLIC_MODEL.into()),
+        file: ValidatedFile::new("clip.mp3", "audio/mpeg", b"ID3".to_vec()).expect("file"),
+        language: Some("en".into()),
+        prompt: None,
+        extensions: Extensions::default(),
+    };
+    let payload = serde_json::to_value(
+        super::request::encode_transcription(
+            &transcription,
+            "mistralai/voxtral-small-24b-2507-stt",
+        )
+        .expect("encodes"),
+    )
+    .expect("serializes");
+    assert_eq!(
+        payload,
+        json!({
+            "model": "mistralai/voxtral-small-24b-2507-stt",
+            "input_audio": {"data": "SUQz", "format": "mp3"},
+            "language": "en",
+            "response_format": "json"
+        })
+    );
+
+    let decoded = super::response::decode_transcription(
+        br#"{"text":" hello ","usage":{"seconds":1.2,"cost":0.0001}}"#,
+    )
+    .expect("decodes");
+    assert_eq!(decoded.text, "hello");
+    assert!(super::response::decode_transcription(br#"{"text":"  "}"#).is_err());
+    assert!(super::response::decode_transcription(br#"{"text":"x","extra":1}"#).is_err());
+}
+
+#[test]
+fn tool_call_completion_decodes() {
+    const TOOL: &str =
+        include_str!("../../../tests/fixtures/openrouter/chat-completion-tool-call.json");
+    let chat =
+        super::response::decode(TOOL.as_bytes(), ModelAlias("voxtral".into())).expect("tool call");
+    assert_eq!(chat.finish_reason, FinishReason::ToolCalls);
+    assert!(matches!(
+        chat.message.content.as_slice(),
+        [ChatContent::ToolCall { call }]
+            if call.id == "call-fixture" && call.name == "get_weather"
+                && call.arguments == r#"{"city": "Singapore"}"#
+    ));
+}
+
+#[test]
+fn tools_and_tool_history_encode() {
+    use crate::core::{FunctionTool, ToolCall};
+    let chat = ChatRequest {
+        model: ModelAlias(PUBLIC_MODEL.into()),
+        messages: vec![
+            ChatMessage {
+                role: ChatRole::User,
+                content: vec![ChatContent::Text {
+                    text: "weather?".into(),
+                }],
+            },
+            ChatMessage {
+                role: ChatRole::Assistant,
+                content: vec![
+                    ChatContent::Text {
+                        text: String::new(),
+                    },
+                    ChatContent::ToolCall {
+                        call: ToolCall {
+                            id: "call-1".into(),
+                            name: "get_weather".into(),
+                            arguments: "{}".into(),
+                        },
+                    },
+                ],
+            },
+            ChatMessage {
+                role: ChatRole::Tool,
+                content: vec![ChatContent::ToolResult {
+                    call_id: "call-1".into(),
+                    content: "sunny".into(),
+                }],
+            },
+        ],
+        tools: vec![FunctionTool {
+            name: "get_weather".into(),
+            description: None,
+            parameters: json!({"type": "object"}),
+        }],
+        tool_choice: ToolChoice::Function {
+            name: "get_weather".into(),
+        },
+        stream: true,
+        options: Default::default(),
+        extensions: Extensions::default(),
+    };
+    let payload = super::request::encode(&chat, UPSTREAM_MODEL, true).expect("encodes");
+    assert_eq!(
+        serde_json::to_value(payload).expect("serializes"),
+        json!({
+            "model": UPSTREAM_MODEL,
+            "messages": [
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}]},
+                {"role": "tool", "content": "sunny", "tool_call_id": "call-1"}
+            ],
+            "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}],
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "stream": true,
+            "provider": {"allow_fallbacks": false}
+        })
+    );
 }

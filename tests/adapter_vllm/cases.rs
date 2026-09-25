@@ -2,6 +2,8 @@ use std::{sync::atomic::Ordering, time::Duration};
 
 use kanata::{
     adapter::{Adapter, AdapterOutput, vllm::VllmAdapter},
+    auth::{SecretResolutionError, SecretResolver},
+    config::SecretReference,
     core::{ErrorKind, ModelAlias, Operation, Request as CoreRequest, TrustZone},
 };
 use serde_json::{Value, json};
@@ -38,8 +40,6 @@ async fn adapter_declares_only_fixture_backed_nonstream_text_chat() {
 async fn constructor_rejects_unimplemented_capabilities_and_secret_references() {
     for (operation, streaming, tools, secret_ref) in [
         (Operation::Transcription, false, false, false),
-        (Operation::Chat, true, false, false),
-        (Operation::Chat, false, true, false),
         (Operation::Chat, false, false, true),
     ] {
         let config = config_with("127.0.0.1:8000", operation, streaming, tools, secret_ref);
@@ -48,6 +48,31 @@ async fn constructor_rejects_unimplemented_capabilities_and_secret_references() 
             "accepted operation={operation:?}, streaming={streaming}, tools={tools}, secret={secret_ref}"
         );
     }
+}
+
+struct FixtureResolver;
+
+impl SecretResolver for FixtureResolver {
+    fn resolve(&self, reference: &SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
+        match reference {
+            SecretReference::Env(name) if name == "VLLM_KEY" => Ok(b"fixture-vllm-key".to_vec()),
+            _ => Err(SecretResolutionError),
+        }
+    }
+}
+
+#[test]
+fn secret_reference_is_resolved_only_through_the_secret_aware_constructor() {
+    let config = config_with("vllm.invalid", Operation::Chat, false, false, true);
+    assert!(VllmAdapter::from_config(&config, "vllm-fixture", "vllm-chat").is_err());
+    let adapter = VllmAdapter::from_config_with_secrets(
+        &config,
+        "vllm-fixture",
+        "vllm-chat",
+        &FixtureResolver,
+    )
+    .unwrap_or_else(|error| panic!("secret-aware adapter: {error:?}"));
+    assert!(!format!("{adapter:?}").contains("fixture-vllm-key"));
 }
 
 #[tokio::test]

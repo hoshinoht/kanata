@@ -40,6 +40,9 @@ pub(in crate::api) struct ChatWire {
     #[serde(default)]
     reasoning_effort: OptionalField<Value>,
     #[serde(default)]
+    #[serde(deserialize_with = "reject_null_kwargs")]
+    chat_template_kwargs: Option<ChatTemplateKwargs>,
+    #[serde(default)]
     extensions: Extensions,
 }
 
@@ -55,7 +58,7 @@ impl ChatWire {
             return Err(ChatWireError::Invalid);
         }
 
-        let options = OptionsWire {
+        let mut options = OptionsWire {
             response_format: self.response_format,
             temperature: self.temperature,
             top_p: self.top_p,
@@ -65,6 +68,9 @@ impl ChatWire {
             reasoning_effort: self.reasoning_effort,
         }
         .into_core()?;
+        options.enable_thinking = self
+            .chat_template_kwargs
+            .and_then(|kwargs| kwargs.enable_thinking);
 
         let tools = into_tools(self.tools).map_err(|_| ChatWireError::Invalid)?;
         let tool_choice = self
@@ -112,6 +118,23 @@ fn into_tools(wire_tools: Vec<ToolWire>) -> Result<Vec<FunctionTool>, ()> {
 struct StreamOptions {
     #[serde(default)]
     include_usage: bool,
+}
+
+/// Only the thinking switch; other template kwargs are rejected.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatTemplateKwargs {
+    #[serde(default)]
+    enable_thinking: Option<bool>,
+}
+
+fn reject_null_kwargs<'de, D>(deserializer: D) -> Result<Option<ChatTemplateKwargs>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<ChatTemplateKwargs>::deserialize(deserializer)?
+        .map(Some)
+        .ok_or_else(|| D::Error::custom("chat_template_kwargs cannot be null"))
 }
 
 fn reject_null<'de, D>(deserializer: D) -> Result<Option<StreamOptions>, D::Error>

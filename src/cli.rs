@@ -16,10 +16,11 @@ use crate::{
     },
     auth::EnvironmentSecretResolver,
     config::{self, ProviderKind, ValidatedConfig},
+    core::Operation,
+    keys::cli::{Exposure, RouteChoice},
 };
 
-const USAGE: &str = "usage: kanata check --config <path> [--plane all|private|public] | kanata serve --config <path> [--plane all|private|public] | kanata auth codex {login,status,logout} --config <path> | kanata key new --id <id> [--chat <alias>]... [--transcription <alias>]... [--key-out <path>]";
-const APPLICATION_KEY_PREFIX: &str = "kanata_sk_";
+const USAGE: &str = "usage: kanata check --config <path> [--plane all|private|public] | kanata serve --config <path> [--plane all|private|public] | kanata auth codex {login,status,logout} --config <path> | kanata key {new,list,show,edit,rm,rotate,migrate} ... (see `kanata key`) | kanata routes --config <path> [--json]";
 
 pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>, String> {
     let arguments: Vec<_> = arguments.into_iter().collect();
@@ -31,15 +32,19 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>
         .is_some_and(|argument| argument == "check")
     {
         let (path, plane) = parse_config_plane(&arguments[1..]).ok_or_else(|| USAGE.to_owned())?;
-        config::load(path)
+        let config = config::load(path)
             .and_then(|config| config.for_plane(plane))
             .map_err(|error| error.to_string())?;
+        for warning in config.key_warnings(crate::keys::time::now()) {
+            eprintln!("warning: {warning}");
+        }
         return Ok(Some("configuration valid".into()));
     }
-    if arguments.len() >= 2 && arguments[0] == "key" && arguments[1] == "new" {
-        return run_key_new(&arguments[2..]).map(Some);
+    match arguments[0].as_str() {
+        "key" => crate::keys::cli::run(&arguments[1..], route_choices).map(Some),
+        "routes" => run_routes(&arguments[1..]).map(Some),
+        _ => Err(USAGE.into()),
     }
-    Err(USAGE.into())
 }
 
 /// `--config <path> [--plane all|private|public]`.
@@ -53,119 +58,110 @@ fn parse_config_plane(arguments: &[String]) -> Option<(PathBuf, config::Plane)> 
     }
 }
 
-struct KeyNewRequest {
-    id: String,
-    permissions: Vec<(String, &'static str)>,
-    key_out: Option<PathBuf>,
+/// Codex routes are never public; others are public when listed in `publication.public_routes`.
+fn route_exposure(config: &ValidatedConfig, route: &config::ValidatedRoute) -> Exposure {
+    let selector = &route.identity().selector;
+    if route_kind(config, route) == Some(ProviderKind::Codex) {
+        Exposure::Never
+    } else if config.publication().public_routes().contains(selector) {
+        Exposure::Public
+    } else {
+        Exposure::Private
+    }
 }
 
-fn parse_key_new(arguments: &[String]) -> Result<KeyNewRequest, String> {
-    let mut id = None;
-    let mut permissions: Vec<(String, &'static str)> = Vec::new();
-    let mut key_out = None;
-    for pair in arguments.chunks(2) {
-        let [flag, value] = pair else {
-            return Err(USAGE.into());
-        };
-        match flag.as_str() {
-            "--id" if id.is_none() => {
-                if !config::valid_identifier(value) {
-                    return Err(
-                        "key id must use only ASCII letters, digits, '-', '_' or '.'".into(),
-                    );
-                }
-                id = Some(value.clone());
-            }
-            "--chat" | "--transcription" => {
-                if config::parse_model_alias(value).is_none() {
-                    return Err("model alias is invalid".into());
-                }
-                let operation = if flag == "--chat" {
-                    "chat"
-                } else {
-                    "transcription"
-                };
-                if permissions
-                    .iter()
-                    .any(|(alias, existing)| alias == value && *existing == operation)
-                {
-                    return Err("duplicate permission".into());
-                }
-                permissions.push((value.clone(), operation));
-            }
-            "--key-out" if key_out.is_none() => key_out = Some(PathBuf::from(value)),
-            _ => return Err(USAGE.into()),
-        }
-    }
-    let id = id.ok_or_else(|| USAGE.to_owned())?;
-    if permissions.is_empty() {
-        return Err("at least one --chat or --transcription scope is required".into());
-    }
-    Ok(KeyNewRequest {
-        id,
-        permissions,
-        key_out,
-    })
-}
-
-fn run_key_new(arguments: &[String]) -> Result<String, String> {
-    use base64::Engine as _;
-    use sha2::Digest as _;
-
-    let request = parse_key_new(arguments)?;
-    let mut random = [0u8; 32];
-    getrandom::fill(&mut random).map_err(|_| "operating system randomness is unavailable")?;
-    let key = format!(
-        "{APPLICATION_KEY_PREFIX}{}",
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random)
-    );
-    let digest: String = sha2::Sha256::digest(key.as_bytes())
+fn route_kind(config: &ValidatedConfig, route: &config::ValidatedRoute) -> Option<ProviderKind> {
+    config
+        .adapters()
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-
-    let mut block = format!(
-        "[[application_keys]]\nid = \"{}\"\nsecret_ref = \"sha256:{digest}\"\npermissions = [\n",
-        request.id
-    );
-    for (alias, operation) in &request.permissions {
-        block.push_str(&format!(
-            "  {{ model_alias = \"{alias}\", operation = \"{operation}\" }},\n"
-        ));
-    }
-    block.push(']');
-
-    match request.key_out {
-        Some(path) => {
-            write_new_key_file(&path, &key)?;
-            Ok(block)
-        }
-        None => Ok(format!(
-            "Application key (shown once; store it now):\n{key}\n\n{block}"
-        )),
-    }
+        .find(|adapter| adapter.id() == route.adapter_id())
+        .map(|adapter| adapter.kind())
 }
 
-fn write_new_key_file(path: &std::path::Path, key: &str) -> Result<(), String> {
-    use std::io::Write as _;
+fn route_choices(config: &ValidatedConfig) -> Vec<RouteChoice> {
+    config
+        .routes()
+        .iter()
+        .map(|route| RouteChoice {
+            selector: route.identity().selector.clone(),
+            exposure: route_exposure(config, route),
+        })
+        .collect()
+}
 
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options
-        .open(path)
-        .map_err(|_| "key output file already exists or could not be created")?;
-    if file
-        .write_all(format!("{key}\n").as_bytes())
-        .and_then(|()| file.sync_all())
-        .is_err()
-    {
-        drop(file);
-        let _ = std::fs::remove_file(path);
-        return Err("key output file could not be written".into());
+/// `kanata routes`: grantable aliases only; never upstream ids, URLs or secrets.
+fn run_routes(arguments: &[String]) -> Result<String, String> {
+    let (path, json) = match arguments {
+        [flag, path] if flag == "--config" => (path, false),
+        [flag, path, json] if flag == "--config" && json == "--json" => (path, true),
+        _ => return Err("usage: kanata routes --config <path> [--json]".into()),
+    };
+    let config = config::load(path).map_err(|error| error.to_string())?;
+    let rows: Vec<[String; 5]> = config
+        .routes()
+        .iter()
+        .map(|route| {
+            let selector = &route.identity().selector;
+            [
+                selector.model_alias.0.clone(),
+                match selector.operation {
+                    Operation::Chat => "chat",
+                    Operation::Transcription => "transcription",
+                }
+                .into(),
+                route_kind(&config, route)
+                    .map_or("-", ProviderKind::label)
+                    .into(),
+                match route_exposure(&config, route) {
+                    Exposure::Public => "yes",
+                    Exposure::Private => "no",
+                    Exposure::Never => "never",
+                }
+                .into(),
+                if route.allows_input_audio() {
+                    "audio input"
+                } else {
+                    ""
+                }
+                .into(),
+            ]
+        })
+        .collect();
+    if json {
+        let array: Vec<_> = rows
+            .iter()
+            .map(|[alias, operation, backend, public, notes]| {
+                serde_json::json!({
+                    "alias": alias,
+                    "operation": operation,
+                    "backend": backend,
+                    "public": public,
+                    "notes": notes,
+                })
+            })
+            .collect();
+        return Ok(serde_json::to_string_pretty(&array).expect("json serializes"));
     }
-    Ok(())
+    let header = ["ALIAS", "OPERATION", "BACKEND", "PUBLIC", "NOTES"].map(str::to_owned);
+    let mut widths = [0; 5];
+    for row in std::iter::once(&header).chain(&rows) {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.len());
+        }
+    }
+    Ok(std::iter::once(&header)
+        .chain(&rows)
+        .map(|row| {
+            row.iter()
+                .zip(widths)
+                .map(|(cell, width)| format!("{cell:<width$}"))
+                .collect::<Vec<_>>()
+                .join("  ")
+                .trim_end()
+                .to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 pub async fn run_async(
@@ -216,8 +212,13 @@ fn build_serve_adapters(
                     .map_err(|_| ())?,
             ),
             ProviderKind::Vllm => std::sync::Arc::new(
-                VllmAdapter::from_config(config, configured.id(), &route.identity().route_id)
-                    .map_err(|_| ())?,
+                VllmAdapter::from_config_with_secrets(
+                    config,
+                    configured.id(),
+                    &route.identity().route_id,
+                    resolver,
+                )
+                .map_err(|_| ())?,
             ),
             ProviderKind::Openrouter => std::sync::Arc::new(
                 OpenRouterAdapter::from_config(
