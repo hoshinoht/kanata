@@ -68,6 +68,8 @@ struct Annotations {
     provider: Option<String>,
     error_code: Option<&'static str>,
     response_code: Option<&'static str>,
+    reasoning_effort: Option<&'static str>,
+    client_request_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -175,6 +177,18 @@ impl Observer {
         annotations.provider = Some(provider.to_owned());
     }
 
+    /// `id` must already be validated as a safe caller-supplied `x-request-id`.
+    /// Recorded on the private listener only.
+    pub(crate) fn annotate_client_request_id(&self, id: &str) {
+        if self.state.meta.listener == Listener::Private {
+            self.annotations().client_request_id = Some(id.to_owned());
+        }
+    }
+
+    pub(crate) fn annotate_reasoning_effort(&self, effort: &'static str) {
+        self.annotations().reasoning_effort = Some(effort);
+    }
+
     fn annotations(&self) -> std::sync::MutexGuard<'_, Annotations> {
         self.state
             .annotations
@@ -223,6 +237,7 @@ impl Observer {
         tracing::info!(
             target: "kanata::access",
             request_id = %self.state.request_id,
+            client_request_id = annotations.client_request_id.as_deref().unwrap_or(UNSET),
             listener = meta.listener.as_str(),
             method = %meta.method,
             endpoint = self.state.endpoint.as_str(),
@@ -238,6 +253,7 @@ impl Observer {
             model,
             operation = annotations.operation.unwrap_or(UNSET),
             stream = annotations.stream,
+            reasoning_effort = annotations.reasoning_effort.unwrap_or(UNSET),
             adapter = annotations.adapter.as_deref().unwrap_or(UNSET),
             client_ip = %meta.client_ip.map_or_else(|| UNSET.to_owned(), |ip| ip.to_string()),
             "request completed",

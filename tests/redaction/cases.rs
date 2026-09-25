@@ -144,8 +144,13 @@ fn field(body: &mut Vec<u8>, boundary: &str, name: &str, value: &[u8]) {
 
 fn assert_redacted(capture: &Capture) {
     let text = capture.text();
+    // The caller's validated x-request-id may appear only as the access-line field.
+    let scrubbed = text.replace("client_request_id=\"SYNTHETIC_REQUEST_ID\"", "");
     for marker in MARKERS {
-        assert!(!text.contains(marker), "telemetry leaked {marker}: {text}");
+        assert!(
+            !scrubbed.contains(marker),
+            "telemetry leaked {marker}: {text}"
+        );
     }
     let events: Vec<_> = text
         .lines()

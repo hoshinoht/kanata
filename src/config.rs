@@ -518,6 +518,11 @@ impl ValidatedRoute {
     pub fn max_output_tokens(&self) -> Option<u32> {
         self.max_output_tokens
     }
+    /// Reasoning effort fixed by the route rather than the client.
+    pub fn pinned_reasoning_effort(&self) -> Option<&'static str> {
+        self.codex_reasoning_effort
+            .map(CodexReasoningEffort::as_str)
+    }
     /// vLLM chat-template thinking switch; `None` leaves the template default.
     pub fn enable_thinking(&self) -> Option<bool> {
         self.enable_thinking

@@ -16,8 +16,9 @@ use crate::server::{Authenticated, ClientState};
 use super::{
     deadline::RequestDeadline,
     errors::{
-        admission_rejected_observed, body_too_large, forbidden, gateway_error_observed, invalid,
-        request_id, server_draining_observed, unavailable, upstream_failure_observed,
+        admission_rejected_observed, annotate_client_request_id, body_too_large, forbidden,
+        gateway_error_observed, invalid, request_id, server_draining_observed, unavailable,
+        upstream_failure_observed,
     },
     multipart::{MultipartInputError, parse_multipart},
     supported, validate_extensions,
@@ -41,6 +42,7 @@ pub(super) async fn transcriptions(
         Some(value) => value,
         None => return invalid(),
     };
+    annotate_client_request_id(observer.as_ref(), request.headers(), &request_id);
     let max_audio_bytes = state.max_audio_bytes();
     let wire = match deadline
         .run(move || parse_multipart(request, max_audio_bytes))

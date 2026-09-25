@@ -16,9 +16,9 @@ use super::{
     check_supported,
     deadline::RequestDeadline,
     errors::{
-        admission_rejected_observed, body_too_large, forbidden, gateway_error_observed, invalid,
-        invalid_param, request_id, server_draining_observed, unavailable,
-        upstream_failure_observed,
+        admission_rejected_observed, annotate_client_request_id, body_too_large, forbidden,
+        gateway_error_observed, invalid, invalid_param, request_id, server_draining_observed,
+        unavailable, upstream_failure_observed,
     },
     serialization,
     sse::{StreamLifetime, stream_response},
@@ -44,6 +44,7 @@ pub(super) async fn chat_completions(
     let Some(request_id) = request_id else {
         return invalid();
     };
+    annotate_client_request_id(observer.as_ref(), request.headers(), &request_id);
     if !has_json_content_type(request.headers()) {
         return invalid();
     }
@@ -145,6 +146,14 @@ async fn dispatch_chat(
         && requested > cap
     {
         return invalid_param(max_output_tokens_param.as_str());
+    }
+    if let (Some(observer), Some(effort)) = (
+        observer.as_ref(),
+        reasoning_effort
+            .map(|effort| effort.as_str())
+            .or(route.pinned_reasoning_effort),
+    ) {
+        observer.annotate_reasoning_effort(effort);
     }
     let context = RequestContext {
         request_id,

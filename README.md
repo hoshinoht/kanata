@@ -64,7 +64,7 @@
 ### 📈 Operations
 - **Admission and limits:** bounded admission, request bodies and uploads, and phased timeouts.
 - **Lifecycle:** cancellation on client disconnect and graceful drain.
-- **Logs:** one access line per request (key id, model, status, timing), and upstream-failure diagnostics that never include keys, prompts or bodies.
+- **Logs:** one access line per request (key id, model, status, timing, reasoning effort, and on the private listener the caller's `x-request-id` when sent), and upstream-failure diagnostics that never include keys, prompts or bodies.
 - **Metrics:** Prometheus-style `/metrics` with per-key and per-model counters.
 
 ## Architecture
