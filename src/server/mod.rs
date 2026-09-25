@@ -611,6 +611,7 @@ fn model_capabilities(routes: &[&crate::routing::RouteEntry]) -> serde_json::Val
         "trust_zone": trust_zone,
         "reasoning_efforts": reasoning_efforts,
         "context_tokens": chat.and_then(|route| route.context_tokens),
+        "max_output_tokens": chat.and_then(|route| route.max_output_tokens),
     })
 }
 

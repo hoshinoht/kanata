@@ -479,6 +479,7 @@ pub struct ValidatedRoute {
     allows_audio_streaming_chat: bool,
     allows_audio_function_tools: bool,
     context_tokens: Option<u32>,
+    max_output_tokens: Option<u32>,
     enable_thinking: Option<bool>,
 }
 impl ValidatedRoute {
@@ -512,6 +513,10 @@ impl ValidatedRoute {
     /// Declared upstream context window; `None` means the provider's own.
     pub fn context_tokens(&self) -> Option<u32> {
         self.context_tokens
+    }
+    /// Declared output cap; larger client requests are rejected.
+    pub fn max_output_tokens(&self) -> Option<u32> {
+        self.max_output_tokens
     }
     /// vLLM chat-template thinking switch; `None` leaves the template default.
     pub fn enable_thinking(&self) -> Option<bool> {
@@ -894,6 +899,8 @@ struct RawRoute {
     allows_audio_function_tools: bool,
     #[serde(default)]
     context_tokens: Option<u32>,
+    #[serde(default)]
+    max_output_tokens: Option<u32>,
     #[serde(default)]
     enable_thinking: Option<bool>,
 }
@@ -1352,6 +1359,18 @@ fn validate(
                 ));
             }
         }
+        if let Some(tokens) = route.max_output_tokens {
+            let path = format!("{path}.max_output_tokens");
+            if route.operation != Operation::Chat {
+                return Err(ConfigError::new(path, "chat_only"));
+            }
+            if !(1..=crate::core::MAX_OUTPUT_TOKENS).contains(&tokens) {
+                return Err(ConfigError::new(path, "out_of_range"));
+            }
+            if route.context_tokens.is_some_and(|context| tokens > context) {
+                return Err(ConfigError::new(path, "exceeds_context_tokens"));
+            }
+        }
         if route.enable_thinking.is_some() {
             let uses_chat_template = route.operation == Operation::Chat
                 || adapter.transcription_mode == Some(VllmTranscriptionMode::AudioChat);
@@ -1387,6 +1406,7 @@ fn validate(
             allows_audio_streaming_chat: route.allows_audio_streaming_chat,
             allows_audio_function_tools: route.allows_audio_function_tools,
             context_tokens: route.context_tokens,
+            max_output_tokens: route.max_output_tokens,
             enable_thinking: route.enable_thinking,
         });
     }

@@ -51,7 +51,7 @@ You receive `data: {...}` server-sent events, ending with `data: [DONE]`. Add `"
 
 ## 4. Speech (models that list `transcription` or `input_audio`)
 
-`GET /v1/models` shows each model's `kanata.operations` and `kanata.input_audio`. Audio is WAV or MP3, up to 25 MiB; 16 kHz mono 16-bit WAV works best.
+`GET /v1/models` shows each model's `kanata.operations` and `kanata.input_audio` (and, where declared, `kanata.context_tokens` and `kanata.max_output_tokens`). Audio is WAV or MP3, up to 25 MiB; 16 kHz mono 16-bit WAV works best.
 
 ```sh
 curl -s https://api.example.com/v1/audio/transcriptions \
@@ -109,7 +109,7 @@ console.log(reply.choices[0].message.content);
   | `temperature` | 0–2 |
   | `top_p` | above 0, up to 1 |
   | `seed` | integer |
-  | `max_tokens` or `max_completion_tokens` | 1 – 1,048,576 |
+  | `max_tokens` or `max_completion_tokens` | 1 – 1,048,576, and no more than the model's `kanata.max_output_tokens` when set |
   | `response_format` | `{"type":"json_object"}` or `{"type":"json_schema","json_schema":{"name":…,"schema":{…},"strict":true}}` (schema ≤ 64 KiB, nesting ≤ 32 levels) |
   | `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (the model decides which it honours) |
   | `chat_template_kwargs` | only `{"enable_thinking": true\|false}`, on vLLM-served models (e.g. `omnilion`) |

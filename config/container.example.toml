@@ -69,6 +69,8 @@ upstream_id = "qwen3:0.6b"
 # Declared window shown on /v1/models; must match the Ollama model
 # (see `scripts/kanata.sh ollama-context`). Omit for cloud models.
 # context_tokens = 16384
+# Largest max_tokens a client may request; shown on /v1/models.
+# max_output_tokens = 4096
 requires_streaming_chat = true
 requires_function_tools = false
 

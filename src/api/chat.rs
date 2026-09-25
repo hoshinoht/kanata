@@ -126,6 +126,8 @@ async fn dispatch_chat(
     }
     let extensions = chat.extensions.clone();
     let reasoning_effort = chat.options.reasoning_effort;
+    let max_output_tokens = chat.options.max_output_tokens;
+    let max_output_tokens_param = chat.options.max_output_tokens_param;
     if chat.options.enable_thinking.is_some() && !route.provider_kind.accepts_enable_thinking() {
         return invalid_param("chat_template_kwargs");
     }
@@ -138,6 +140,11 @@ async fn dispatch_chat(
     if reasoning_effort.is_some_and(|effort| !route.provider_kind.accepts_reasoning_effort(effort))
     {
         return invalid_param("reasoning_effort");
+    }
+    if let (Some(requested), Some(cap)) = (max_output_tokens, route.max_output_tokens)
+        && requested > cap
+    {
+        return invalid_param(max_output_tokens_param.as_str());
     }
     let context = RequestContext {
         request_id,

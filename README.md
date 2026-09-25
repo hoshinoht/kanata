@@ -163,12 +163,13 @@ curl https://kanata.example.com/v1/chat/completions \
     "input_audio": false,
     "trust_zone": "external",
     "context_tokens": null,
+    "max_output_tokens": null,
     "admission": { "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000, "adapter_max_in_flight": null }
   }
 }
 ```
 
-`context_tokens` is the route's declared context window, or `null` for the provider's full window (cloud models). For local Ollama models, see [context length](config/README.md#concepts). `admission` shows the per-route limits from `[limits]` and `[timeouts]`, plus the backend's shared cap (`null` if uncapped), and appears only on the private listener. When a route or backend is full, Kanata answers `429 gateway_queue_full`, or `503 gateway_busy` if no slot frees up within `queue_ms`. Per-key limits answer `429 gateway_key_busy` or `429 gateway_key_rate_limited`, and a backend whose circuit breaker is open answers `503 upstream_unavailable` straight away. All of these carry `Retry-After` and are separate from an upstream `429 rate_limit_exceeded` or `504 upstream_timeout`. See [capacity](config/README.md#concepts).
+`context_tokens` is the route's declared context window, or `null` for the provider's full window (cloud models). For local Ollama models, see [context length](config/README.md#concepts). `max_output_tokens` is the route's declared output cap (`null` if none); a larger `max_tokens` is rejected. `admission` shows the per-route limits from `[limits]` and `[timeouts]`, plus the backend's shared cap (`null` if uncapped), and appears only on the private listener. When a route or backend is full, Kanata answers `429 gateway_queue_full`, or `503 gateway_busy` if no slot frees up within `queue_ms`. Per-key limits answer `429 gateway_key_busy` or `429 gateway_key_rate_limited`, and a backend whose circuit breaker is open answers `503 upstream_unavailable` straight away. All of these carry `Retry-After` and are separate from an upstream `429 rate_limit_exceeded` or `504 upstream_timeout`. See [capacity](config/README.md#concepts).
 
 Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you give keys to.
 

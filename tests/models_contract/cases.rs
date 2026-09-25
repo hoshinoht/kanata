@@ -241,7 +241,7 @@ async fn models_report_kanata_capabilities_per_alias() {
         ),
         (
             "upstream_id = \"llama3.2:latest\"\n",
-            "upstream_id = \"llama3.2:latest\"\ncontext_tokens = 16384\n",
+            "upstream_id = \"llama3.2:latest\"\ncontext_tokens = 16384\nmax_output_tokens = 4096\n",
         ),
     ]);
     let specs = ["ollama-local", "codex-private"]
@@ -263,7 +263,7 @@ async fn models_report_kanata_capabilities_per_alias() {
             "operations": ["chat"], "structured_output": true, "sampling_controls": true,
             "reasoning_control": true, "function_tools": true, "streaming": true,
             "input_audio": false, "trust_zone": "local", "reasoning_efforts": null,
-            "context_tokens": 16384,
+            "context_tokens": 16384, "max_output_tokens": 4096,
             "admission": {
                 "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000,
                 "adapter_max_in_flight": null
@@ -277,6 +277,7 @@ async fn models_report_kanata_capabilities_per_alias() {
             "reasoning_control": true, "function_tools": true, "streaming": true,
             "input_audio": false, "trust_zone": "external",
             "reasoning_efforts": ["low", "medium", "high"], "context_tokens": null,
+            "max_output_tokens": null,
             "admission": {
                 "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000,
                 "adapter_max_in_flight": null

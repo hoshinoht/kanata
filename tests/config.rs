@@ -1168,6 +1168,24 @@ fn codex_effort_aliases_are_exact_scoped_and_field_validated() {
             .ends_with(".context_tokens: chat_only")
     );
 
+    let output = |value: &str| {
+        check(personal_contents.replace(
+            "upstream_id = \"qwen3:0.6b\"\nrequires_streaming_chat",
+            &format!(
+                "upstream_id = \"qwen3:0.6b\"\ncontext_tokens = 8192\n{value}\nrequires_streaming_chat"
+            ),
+        ))
+    };
+    assert!(output("max_output_tokens = 8192").is_ok());
+    assert_eq!(
+        output("max_output_tokens = 8193").unwrap_err(),
+        "config error at routes[0].max_output_tokens: exceeds_context_tokens"
+    );
+    assert_eq!(
+        output("max_output_tokens = 0").unwrap_err(),
+        "config error at routes[0].max_output_tokens: out_of_range"
+    );
+
     let transcription_effort = check(personal_contents.replace(
         "model_alias = \"gpt-6-luna:low\"\noperation = \"chat\"",
         "model_alias = \"gpt-6-luna:low\"\noperation = \"transcription\"",
