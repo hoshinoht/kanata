@@ -1,5 +1,5 @@
 use crate::{
-    config::{CodexReasoningEffort, ValidatedRoute},
+    config::{CodexReasoningEffort, CodexReasoningSummary, ValidatedRoute},
     core::{
         Capabilities, ErrorKind, GatewayError, Operation, Request, RouteIdentity, RoutedRequest,
         TrustZone,
@@ -9,6 +9,7 @@ use crate::{
 pub(super) struct RouteBinding {
     identity: RouteIdentity,
     reasoning_effort: CodexReasoningEffort,
+    reasoning_summary: Option<CodexReasoningSummary>,
 }
 
 impl RouteBinding {
@@ -18,6 +19,10 @@ impl RouteBinding {
 
     pub(super) fn reasoning_effort(&self) -> CodexReasoningEffort {
         self.reasoning_effort
+    }
+
+    pub(super) fn reasoning_summary(&self) -> Option<CodexReasoningSummary> {
+        self.reasoning_summary
     }
 }
 
@@ -57,6 +62,7 @@ pub(super) fn bind_route(
     Ok(RouteBinding {
         identity: identity.clone(),
         reasoning_effort,
+        reasoning_summary: route.codex_reasoning_summary(),
     })
 }
 

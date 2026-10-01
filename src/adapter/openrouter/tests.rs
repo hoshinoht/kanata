@@ -371,6 +371,7 @@ async fn verified_https_chat_sends_explicit_model_no_fallback_and_normalizes_fix
             input_tokens: 11,
             output_tokens: 7,
             total_tokens: 18,
+            reasoning_tokens: Some(0),
         })
     );
 

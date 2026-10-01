@@ -1037,7 +1037,13 @@ pub struct ChatResponse {
     pub finish_reason: FinishReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// Upstream reasoning text or summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
 }
+
+/// Reasoning bytes forwarded per response; the rest is dropped.
+pub const MAX_REASONING_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TranscriptionResponse {
@@ -1066,6 +1072,9 @@ pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    /// Part of `output_tokens`, when the upstream reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1075,6 +1084,9 @@ pub enum NormalizedEvent {
         model: ModelAlias,
     },
     ChatTextDelta {
+        text: String,
+    },
+    ChatReasoningDelta {
         text: String,
     },
     ChatToolCallDelta {

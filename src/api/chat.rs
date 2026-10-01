@@ -21,7 +21,7 @@ use super::{
         unavailable, upstream_failure_observed,
     },
     serialization,
-    sse::{StreamLifetime, stream_response},
+    sse::{StreamLifetime, StreamOutput, stream_response},
     validate_extensions,
     wire::ChatWire,
 };
@@ -182,19 +182,29 @@ async fn dispatch_chat(
     if let Some(observer) = observer.as_ref() {
         observer.annotate_adapter(&route.adapter_id, &provider_label(route));
     }
+    // Reasoning stays on the private listener.
+    let expose_reasoning = state.listener() == crate::telemetry::Listener::Private;
     let result = deadline.run(move || adapter.execute(routed)).await;
     if let Ok(outcome) = &result {
         permit.record_outcome(outcome);
     }
     match result {
         Ok(Ok(AdapterOutput::Complete(CoreResponse::Chat(response)))) if !stream => {
-            serialization::chat_response(response, &response_model, observer.as_ref())
+            serialization::chat_response(
+                response,
+                &response_model,
+                expose_reasoning,
+                observer.as_ref(),
+            )
         }
         Ok(Ok(AdapterOutput::Events(events))) if stream => {
             stream_response(
                 events,
                 response_model,
-                include_usage,
+                StreamOutput {
+                    include_usage,
+                    expose_reasoning,
+                },
                 deadline,
                 state.first_byte_ms(),
                 state.idle_ms(),

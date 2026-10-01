@@ -78,7 +78,7 @@ impl StreamState {
         if chunk.choices.len() != 1 {
             return Err(upstream_failure());
         }
-        let choice = chunk
+        let mut choice = chunk
             .choices
             .into_iter()
             .next()
@@ -86,12 +86,18 @@ impl StreamState {
         if choice.index != 0 {
             return Err(upstream_failure());
         }
+        let has_reasoning = choice.delta.has_reasoning();
+        let reasoning = choice.delta.take_reasoning();
         let mut events = Vec::new();
         if let Some(role) = choice.delta.role.as_deref() {
             if role != "assistant" {
                 return Err(upstream_failure());
             }
             self.start(&mut events);
+        }
+        if let Some(text) = reasoning {
+            self.start(&mut events);
+            events.push(NormalizedEvent::ChatReasoningDelta { text });
         }
         if choice
             .delta
@@ -129,7 +135,7 @@ impl StreamState {
             self.set_usage(usage.into_usage())?;
         }
         if !self.started {
-            if choice.delta.reasoning_content.is_some() {
+            if has_reasoning {
                 return Ok(events);
             }
             if self.finished.is_some() {
@@ -318,6 +324,7 @@ mod tests {
                     input_tokens: 276,
                     output_tokens: 26,
                     total_tokens: 302,
+                    reasoning_tokens: Some(0),
                 }),
             })
         );

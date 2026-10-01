@@ -46,9 +46,9 @@ pub(super) struct StreamDelta {
     pub(super) role: Option<String>,
     #[serde(default)]
     pub(super) content: Option<String>,
-    // Reasoning is accepted and not forwarded.
     #[serde(default)]
     pub(super) reasoning: Option<String>,
+    // Structured reasoning is accepted and not forwarded.
     #[serde(default)]
     pub(super) reasoning_details: Option<serde_json::Value>,
     #[serde(default)]

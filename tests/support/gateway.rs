@@ -100,6 +100,7 @@ impl Adapter for RecordingAdapter {
                 message,
                 finish_reason,
                 usage,
+                reasoning: None,
             }))),
             Outcome::WrongModel(model) => {
                 Ok(AdapterOutput::Complete(CoreResponse::Chat(ChatResponse {
@@ -107,6 +108,7 @@ impl Adapter for RecordingAdapter {
                     message: assistant_text("UPSTREAM_RESPONSE_MARKER"),
                     finish_reason: FinishReason::Stop,
                     usage: None,
+                    reasoning: None,
                 })))
             }
             Outcome::WrongResponse => Ok(AdapterOutput::Complete(CoreResponse::Transcription(
@@ -125,6 +127,7 @@ impl Adapter for RecordingAdapter {
                     },
                     finish_reason: FinishReason::Stop,
                     usage: None,
+                    reasoning: None,
                 })))
             }
             Outcome::Transcription => Ok(AdapterOutput::Complete(CoreResponse::Transcription(
@@ -337,6 +340,7 @@ pub fn chat_outcome(text: &str) -> Outcome {
             input_tokens: 11,
             output_tokens: 7,
             total_tokens: 18,
+            reasoning_tokens: None,
         }),
     }
 }

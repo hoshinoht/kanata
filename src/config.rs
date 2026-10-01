@@ -350,6 +350,25 @@ impl CodexReasoningEffort {
     }
 }
 
+/// Reasoning summary detail requested from Codex.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum CodexReasoningSummary {
+    Auto,
+    Concise,
+    Detailed,
+}
+
+impl CodexReasoningSummary {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Concise => "concise",
+            Self::Detailed => "detailed",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ValidatedCodexAuth {
     store: CodexAuthStore,
@@ -472,6 +491,7 @@ pub struct ValidatedRoute {
     identity: RouteIdentity,
     adapter_id: String,
     codex_reasoning_effort: Option<CodexReasoningEffort>,
+    codex_reasoning_summary: Option<CodexReasoningSummary>,
     extension_allowlist: BTreeSet<ExtensionKey>,
     requires_streaming_chat: bool,
     requires_function_tools: bool,
@@ -491,6 +511,9 @@ impl ValidatedRoute {
     }
     pub fn codex_reasoning_effort(&self) -> Option<CodexReasoningEffort> {
         self.codex_reasoning_effort
+    }
+    pub fn codex_reasoning_summary(&self) -> Option<CodexReasoningSummary> {
+        self.codex_reasoning_summary
     }
     pub fn extension_allowlist(&self) -> &BTreeSet<ExtensionKey> {
         &self.extension_allowlist
@@ -892,6 +915,8 @@ struct RawRoute {
     upstream_id: String,
     #[serde(default)]
     codex_reasoning_effort: Option<CodexReasoningEffort>,
+    #[serde(default)]
+    codex_reasoning_summary: Option<CodexReasoningSummary>,
     #[serde(default)]
     extension_allowlist: Vec<String>,
     requires_streaming_chat: bool,
@@ -1300,6 +1325,20 @@ fn validate(
                 None
             }
         };
+        if route.codex_reasoning_summary.is_some() {
+            if adapter.kind != ProviderKind::Codex {
+                return Err(ConfigError::new(
+                    format!("{path}.codex_reasoning_summary"),
+                    "codex_only",
+                ));
+            }
+            if route.operation != Operation::Chat {
+                return Err(ConfigError::new(
+                    format!("{path}.codex_reasoning_summary"),
+                    "codex_chat_only",
+                ));
+            }
+        }
         if !adapter.capabilities.operations.contains(&route.operation) {
             return Err(ConfigError::new(
                 format!("{path}.operation"),
@@ -1404,6 +1443,7 @@ fn validate(
             },
             adapter_id: route.adapter_id,
             codex_reasoning_effort,
+            codex_reasoning_summary: route.codex_reasoning_summary,
             extension_allowlist,
             requires_streaming_chat: route.requires_streaming_chat,
             requires_function_tools: route.requires_function_tools,

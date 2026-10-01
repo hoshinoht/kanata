@@ -67,6 +67,7 @@ impl Adapter for RecordingAdapter {
                 },
                 finish_reason: FinishReason::Stop,
                 usage: None,
+                reasoning: None,
             }),
             CoreRequest::Transcription(_) => CoreResponse::Transcription(TranscriptionResponse {
                 text: "transcribed".into(),

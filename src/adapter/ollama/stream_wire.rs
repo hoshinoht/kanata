@@ -36,6 +36,13 @@ impl StreamDelta {
     pub(super) fn has_reasoning(&self) -> bool {
         self.reasoning.is_some() || self.reasoning_content.is_some()
     }
+
+    pub(super) fn take_reasoning(&mut self) -> Option<String> {
+        self.reasoning
+            .take()
+            .or(self.reasoning_content.take())
+            .filter(|text| !text.is_empty())
+    }
 }
 
 #[derive(Deserialize)]
@@ -62,6 +69,14 @@ pub(super) struct UsagePayload {
     pub(super) prompt_tokens: u64,
     pub(super) completion_tokens: u64,
     pub(super) total_tokens: u64,
+    #[serde(default)]
+    pub(super) completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct CompletionTokensDetails {
+    #[serde(default)]
+    pub(super) reasoning_tokens: Option<u64>,
 }
 
 impl UsagePayload {
@@ -70,6 +85,9 @@ impl UsagePayload {
             input_tokens: self.prompt_tokens,
             output_tokens: self.completion_tokens,
             total_tokens: self.total_tokens,
+            reasoning_tokens: self
+                .completion_tokens_details
+                .and_then(|details| details.reasoning_tokens),
         }
     }
 }

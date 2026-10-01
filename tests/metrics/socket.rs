@@ -72,7 +72,9 @@ impl Adapter for FixedAdapter {
                     input_tokens: 1,
                     output_tokens: 1,
                     total_tokens: 2,
+                    reasoning_tokens: None,
                 }),
+                reasoning: None,
             })))
         })
     }

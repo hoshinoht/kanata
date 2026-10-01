@@ -2,12 +2,16 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 
 use crate::adapter::EventStream;
-use crate::core::{ErrorKind, FinishReason, GatewayError, NormalizedEvent, TimeoutPhase, Usage};
+use crate::core::{
+    ErrorKind, FinishReason, GatewayError, MAX_REASONING_BYTES, NormalizedEvent, TimeoutPhase,
+    Usage,
+};
 use axum::body::Bytes;
 
 use super::super::super::telemetry::Observer;
 use super::super::serialization::{finish, finish_matches_tool_calls};
 use super::super::stream_timeout::StreamTimeout;
+use super::StreamOutput;
 use super::encoding::{self, Metadata};
 
 const MAX_TOOL_CALLS: usize = 64;
@@ -19,6 +23,8 @@ pub(in crate::api) struct StreamState {
     events: Option<EventStream>,
     metadata: Metadata,
     include_usage: bool,
+    expose_reasoning: bool,
+    reasoning_bytes: usize,
     phase: Phase,
     timeout: StreamTimeout,
     terminal_error: bool,
@@ -43,14 +49,16 @@ impl StreamState {
     pub(in crate::api) fn new(
         events: EventStream,
         metadata: Metadata,
-        include_usage: bool,
+        output: StreamOutput,
         timeout: StreamTimeout,
         observer: Option<Observer>,
     ) -> Self {
         Self {
             events: Some(events),
             metadata,
-            include_usage,
+            include_usage: output.include_usage,
+            expose_reasoning: output.expose_reasoning,
+            reasoning_bytes: 0,
             phase: Phase::Start,
             timeout,
             terminal_error: false,
@@ -85,11 +93,31 @@ impl StreamState {
     }
 
     async fn next_event(mut self) -> Option<(Result<Bytes, Infallible>, Self)> {
-        let next = match self.events.as_mut() {
-            Some(events) => self.timeout.next(events).await,
-            None => return None,
-        };
-        let frame = match next {
+        loop {
+            let next = match self.events.as_mut() {
+                Some(events) => self.timeout.next(events).await,
+                None => return None,
+            };
+            if let Ok(Some(Ok(NormalizedEvent::ChatReasoningDelta { text }))) = next {
+                match self.reasoning(text) {
+                    Some(frame) => return Some((Ok(frame), self)),
+                    None if self.timeout.expired() => {
+                        let frame =
+                            self.fail(super::super::deadline::timeout(TimeoutPhase::Overall));
+                        return Some((Ok(frame), self));
+                    }
+                    None => continue,
+                }
+            }
+            return Some((Ok(self.frame(next)), self));
+        }
+    }
+
+    fn frame(
+        &mut self,
+        next: Result<Option<Result<NormalizedEvent, GatewayError>>, GatewayError>,
+    ) -> Bytes {
+        match next {
             Ok(Some(Ok(event))) => match self.encode_event(event) {
                 Ok(frame) => frame,
                 Err(error) => self.fail(error),
@@ -99,8 +127,21 @@ impl StreamState {
                 kind: ErrorKind::UpstreamFailure,
             }),
             Err(error) => self.fail(error),
-        };
-        Some((Ok(frame), self))
+        }
+    }
+
+    /// Drops reasoning on the public listener and past the size cap.
+    fn reasoning(&mut self, mut text: String) -> Option<Bytes> {
+        if !self.expose_reasoning || text.is_empty() {
+            return None;
+        }
+        let remaining = MAX_REASONING_BYTES.saturating_sub(self.reasoning_bytes);
+        super::super::serialization::truncate_at_char_boundary(&mut text, remaining);
+        if text.is_empty() {
+            return None;
+        }
+        self.reasoning_bytes += text.len();
+        Some(encoding::reasoning(&self.metadata, text))
     }
 
     fn encode_event(&mut self, event: NormalizedEvent) -> Result<Bytes, GatewayError> {
@@ -116,6 +157,7 @@ impl StreamState {
                 usage,
             } => self.completed(finish_reason, usage),
             NormalizedEvent::ChatStarted { .. } => Err(upstream_failure()),
+            NormalizedEvent::ChatReasoningDelta { .. } => Err(upstream_failure()),
         }
     }
 

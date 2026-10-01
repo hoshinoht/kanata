@@ -258,6 +258,7 @@ impl Adapter for PendingAdapter {
                 },
                 finish_reason: FinishReason::Stop,
                 usage: None,
+                reasoning: None,
             })))
         })
     }
@@ -397,6 +398,7 @@ pub fn completed() -> Event {
             input_tokens: 1,
             output_tokens: 1,
             total_tokens: 2,
+            reasoning_tokens: None,
         }),
     })
 }

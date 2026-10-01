@@ -13,6 +13,7 @@ The offline schema fixture used by the tests lives in `tests/fixtures/config/exa
 
 - **Routes** map an exact `(model_alias, operation)` pair to one adapter and upstream model. One alias can carry several operations. For example, a multimodal alias such as `omni` can be both `chat` (text plus inline audio) and `transcription` (native ASR). Each pair maps to exactly one backend, so a second backend for the same operation needs its own alias (e.g. `omni-transcribe`).
 - **Aliases** may not contain `:` except a Codex effort suffix (`gpt-6-sol:low`, `:high`). An unsuffixed Codex alias uses medium effort.
+- **Reasoning:** on the private listener, chat replies carry the backend's reasoning text as `message.reasoning_content` (streamed as `delta.reasoning_content`, at most 256 KiB per reply) and `usage.completion_tokens_details.reasoning_tokens` when the backend reports it. The public listener never returns reasoning text. Codex returns only a summary of its reasoning; `codex_reasoning_summary = "auto" | "concise" | "detailed"` on a Codex chat route asks for one explicitly.
 - **Keys** live in a separate file managed by the host `kanata key` CLI:
   ```toml
   [keys]

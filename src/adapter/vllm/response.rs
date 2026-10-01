@@ -68,10 +68,10 @@ struct MessagePayload {
     content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<ToolCallPayload>>,
-    #[serde(default, rename = "reasoning")]
-    _reasoning: Option<String>,
-    #[serde(default, rename = "reasoning_content")]
-    _reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
     // A refusal or audio without text content still fails as an empty reply.
     #[serde(default, rename = "refusal")]
     _refusal: Option<IgnoredAny>,
@@ -93,8 +93,14 @@ struct UsagePayload {
     total_tokens: u64,
     #[serde(default, rename = "prompt_tokens_details")]
     _prompt_tokens_details: Option<IgnoredAny>,
-    #[serde(default, rename = "completion_tokens_details")]
-    _completion_tokens_details: Option<IgnoredAny>,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct CompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -217,6 +223,11 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         return Err(upstream_failure());
     }
     let finish_reason = parse_finish_reason(&choice.finish_reason)?;
+    let reasoning = choice
+        .message
+        .reasoning
+        .or(choice.message.reasoning_content)
+        .filter(|text| !text.is_empty());
     let mut content = Vec::new();
     if let Some(text) = choice.message.content.filter(|text| !text.is_empty()) {
         content.push(ChatContent::Text { text });
@@ -259,6 +270,7 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         },
         finish_reason,
         usage,
+        reasoning,
     })
 }
 
@@ -324,6 +336,9 @@ fn normalize_usage(usage: UsagePayload) -> Result<Usage, GatewayError> {
         input_tokens: usage.prompt_tokens,
         output_tokens: usage.completion_tokens,
         total_tokens: usage.total_tokens,
+        reasoning_tokens: usage
+            .completion_tokens_details
+            .and_then(|details| details.reasoning_tokens),
     })
 }
 

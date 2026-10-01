@@ -43,6 +43,18 @@ pub(super) fn text(metadata: &Metadata, text: String) -> Bytes {
     )
 }
 
+pub(super) fn reasoning(metadata: &Metadata, text: String) -> Bytes {
+    chunk(
+        metadata,
+        json!([{
+            "index": 0,
+            "delta": {"reasoning_content": text},
+            "finish_reason": null
+        }]),
+        None,
+    )
+}
+
 pub(super) fn tool_initial(
     metadata: &Metadata,
     index: usize,

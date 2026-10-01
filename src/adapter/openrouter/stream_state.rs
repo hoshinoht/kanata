@@ -118,6 +118,10 @@ impl StreamState {
         if choice.delta.reasoning.is_some() || choice.delta.reasoning_details.is_some() {
             meaningful = true;
         }
+        if let Some(text) = choice.delta.reasoning.filter(|text| !text.is_empty()) {
+            self.start(&mut events);
+            events.push(NormalizedEvent::ChatReasoningDelta { text });
+        }
         if let Some(text) = choice.delta.content.filter(|text| !text.is_empty()) {
             meaningful = true;
             self.has_text = true;
@@ -331,6 +335,7 @@ mod tests {
                     input_tokens: 71,
                     output_tokens: 23,
                     total_tokens: 94,
+                    reasoning_tokens: Some(0),
                 }),
             })
         );

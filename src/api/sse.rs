@@ -15,6 +15,11 @@ use super::errors::{gateway_error_observed, upstream_failure_observed};
 use super::lifecycle;
 use super::stream_timeout::StreamTimeout;
 
+pub(super) struct StreamOutput {
+    pub(super) include_usage: bool,
+    pub(super) expose_reasoning: bool,
+}
+
 pub(super) struct StreamLifetime {
     pub(super) permit: AdmissionPermit,
     pub(super) observer: Option<Observer>,
@@ -23,7 +28,7 @@ pub(super) struct StreamLifetime {
 pub(super) async fn stream_response(
     mut events: EventStream,
     model: ModelAlias,
-    include_usage: bool,
+    output: StreamOutput,
     deadline: RequestDeadline,
     first_byte_ms: u64,
     idle_ms: u64,
@@ -49,7 +54,7 @@ pub(super) async fn stream_response(
     let state = state::StreamState::new(
         events,
         encoding::Metadata::new(model),
-        include_usage,
+        output,
         timeout,
         observer,
     );

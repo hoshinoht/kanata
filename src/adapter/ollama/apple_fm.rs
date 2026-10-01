@@ -38,6 +38,7 @@ pub(super) fn filtered_reply(model: ModelAlias) -> ChatResponse {
         },
         finish_reason: FinishReason::ContentFilter,
         usage: None,
+        reasoning: None,
     }
 }
 

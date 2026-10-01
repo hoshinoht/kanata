@@ -343,6 +343,7 @@ impl Adapter for PendingAdapter {
                 },
                 finish_reason: FinishReason::Stop,
                 usage: None,
+                reasoning: None,
             })))
         })
     }

@@ -1142,6 +1142,29 @@ fn codex_effort_aliases_are_exact_scoped_and_field_validated() {
         "config error at routes[0].codex_reasoning_effort: codex_only"
     );
 
+    let summary = check(personal_contents.replace(
+        "codex_reasoning_effort = \"low\"\n",
+        "codex_reasoning_effort = \"low\"\ncodex_reasoning_summary = \"detailed\"\n",
+    ))
+    .expect("Codex route accepts a reasoning summary");
+    let route = summary
+        .routes()
+        .iter()
+        .find(|route| route.identity().route_id == "codex-gpt-6-luna-low")
+        .expect("configured Codex effort route");
+    assert_eq!(
+        route.codex_reasoning_summary(),
+        Some(kanata::config::CodexReasoningSummary::Detailed)
+    );
+    let non_codex_summary = check(personal_contents.replace(
+        "upstream_id = \"qwen3:0.6b\"\nrequires_streaming_chat",
+        "upstream_id = \"qwen3:0.6b\"\ncodex_reasoning_summary = \"auto\"\nrequires_streaming_chat",
+    ));
+    assert_eq!(
+        non_codex_summary.unwrap_err(),
+        "config error at routes[0].codex_reasoning_summary: codex_only"
+    );
+
     let context = |value: &str| {
         check(personal_contents.replace(
             "upstream_id = \"qwen3:0.6b\"\nrequires_streaming_chat",

@@ -156,6 +156,7 @@ async fn stream_length_stop_without_visible_text_completes_empty() {
         events.as_slice(),
         [
             NormalizedEvent::ChatStarted { .. },
+            NormalizedEvent::ChatReasoningDelta { .. },
             NormalizedEvent::ChatCompleted {
                 finish_reason: FinishReason::Length,
                 ..

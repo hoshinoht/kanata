@@ -4,7 +4,9 @@
 
 ### Added
 
-- `routes[].max_output_tokens` (chat only, at most `context_tokens` when both are set) declares a route's output cap. It is shown on `/v1/models` as `kanata.max_output_tokens` (`null` when unset), and a larger `max_tokens`/`max_completion_tokens` is rejected with `400 invalid_request` naming that field.
+- Reasoning passthrough on the private listener: chat replies carry the backend's reasoning as `choices[0].message.reasoning_content`, streams send it as `delta.reasoning_content` chunks, and usage adds `completion_tokens_details.reasoning_tokens` when the backend reports it. Sources: Ollama `reasoning`, vLLM `reasoning` / `reasoning_content`, OpenRouter `reasoning` (not `reasoning_details`), and Codex reasoning summaries plus `output_tokens_details.reasoning_tokens`. Reasoning text is capped at 256 KiB per reply and is never returned on the public listener; reasoning token counts are returned on both. Ollama's OpenAI-compatible API reports no reasoning token count. Checked with fixtures and in-process tests only, not against live backends.
+- `routes[].codex_reasoning_summary` (`auto`, `concise` or `detailed`, Codex chat routes only) sends `reasoning.summary` to ask Codex for a reasoning summary.
+ (chat only, at most `context_tokens` when both are set) declares a route's output cap. It is shown on `/v1/models` as `kanata.max_output_tokens` (`null` when unset), and a larger `max_tokens`/`max_completion_tokens` is rejected with `400 invalid_request` naming that field.
 - The access line now carries `reasoning_effort` (the client's value, or the effort a Codex effort route pins) and, on the private listener only, `client_request_id`, the caller's validated `x-request-id` (`-` when not sent, and always `-` on the public listener). Previously the caller's id was kept out of all logs.
 - OpenRouter audio: an OpenRouter adapter can now declare `input_audio` (and `audio_streaming_chat`) to forward `input_audio` chat parts, and the `transcription` operation to use OpenRouter's `/audio/transcriptions` speech-to-text endpoint (e.g. `mistralai/voxtral-small-24b-2507` for audio chat, `mistralai/voxtral-small-24b-2507-stt` for transcription). Transcription accepts `language`; a `prompt` is rejected because the endpoint ignores it. Checked live against OpenRouter with Voxtral Small: audio chat (normal and streaming) and transcription.
 - vLLM on a remote host: a vLLM adapter may now use `trust_zone = "external"`, which requires a `secret_ref` sent as a bearer token (for vLLM's `--api-key`). Any vLLM adapter with a `secret_ref` must use an `https` `base_url`.
@@ -27,7 +29,8 @@
 - `kanata key new` no longer prints an `[[application_keys]]` block; it writes `keys.toml` (requires `--config` and `--expires`).
 - **BREAKING for every Compose deployment**, including un-migrated inline configs: `KANATA_KEYS_DIR` and `KANATA_STATE_DIR` are required and must be `<config dir>/keys` and `<config dir>/state`. The keys directory is mounted read-only at `/etc/kanata/keys`; `state/private` and `state/public` are mounted writable at `/etc/kanata/state`. `scripts/kanata.sh` checks the paths and creates missing directories (0700).
 - `scripts/kanata.sh key ...` now runs the host `kanata key ...` with `--config` set to the deployed config.
-- Ollama streams: the adapter now recognises Ollama's `reasoning` delta field (it previously looked only for `reasoning_content`, which Ollama doesn't send). Reasoning is still not forwarded.
+- Ollama streams: the adapter now recognises Ollama's `reasoning` delta field (it previously looked only for `reasoning_content`, which Ollama doesn't send).
+- Streamed reasoning now counts as stream activity for the first-byte and idle timeouts, on both listeners.
 
 ### Deprecated
 

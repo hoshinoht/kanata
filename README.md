@@ -54,6 +54,7 @@
 - **Bounds:** each field is validated and size-limited.
 - **Capability-gated:** if a route can't honour an option, the request gets **400 naming the parameter** instead of a silent drop.
 - **Tools pass through:** tool declarations, calls and results are forwarded. Kanata never executes tools.
+- **Reasoning (private listener only):** backend reasoning text is returned as `reasoning_content` (Codex gives a summary), with `completion_tokens_details.reasoning_tokens` when reported.
 
 ### 🔐 Keys and exposure
 - **Host key CLI:** `kanata key new|list|show|edit|rm|rotate|migrate` manages keys in `keys.toml` on the host (no network or admin endpoint). Keys are shown once and stored only as SHA-256 digests; every key has an expiry (1–60 days or `unlimited`). Changes apply within about 2 s, without a restart.

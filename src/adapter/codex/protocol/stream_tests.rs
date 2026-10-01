@@ -91,6 +91,7 @@ fn fixture_translates_fragmented_multiline_text_tools_and_collection() {
                     input_tokens: 4,
                     output_tokens: 3,
                     total_tokens: 7,
+                    reasoning_tokens: None,
                 }),
             },
         ]
@@ -121,6 +122,7 @@ fn fixture_translates_fragmented_multiline_text_tools_and_collection() {
             input_tokens: 4,
             output_tokens: 3,
             total_tokens: 7,
+            reasoning_tokens: None,
         })
     );
     assert!(parser.take_chat_response().is_none());
@@ -386,6 +388,7 @@ fn full_text_item_lifecycle_translates_and_collects_fragmented_multiline_sse() {
                 input_tokens: 5,
                 output_tokens: 2,
                 total_tokens: 7,
+                reasoning_tokens: None,
             }),
         })
     );
@@ -408,6 +411,7 @@ fn full_text_item_lifecycle_translates_and_collects_fragmented_multiline_sse() {
             input_tokens: 5,
             output_tokens: 2,
             total_tokens: 7,
+            reasoning_tokens: None,
         })
     );
 }
@@ -563,12 +567,16 @@ fn live_shape_stream_skips_extra_fields_and_events_and_tolerates_snapshot_model(
         input_tokens: 120,
         output_tokens: 48,
         total_tokens: 168,
+        reasoning_tokens: Some(32),
     });
     assert_eq!(
         events,
         vec![
             NormalizedEvent::ChatStarted {
                 model: ModelAlias("codex-chat".into()),
+            },
+            NormalizedEvent::ChatReasoningDelta {
+                text: "TEST_ONLY_SUMMARY_NOT_SECRET_0001".into(),
             },
             NormalizedEvent::ChatTextDelta {
                 text: "TEST_ONLY_LIVE_TEXT_".into(),
@@ -597,12 +605,16 @@ fn live_shape_stream_skips_extra_fields_and_events_and_tolerates_snapshot_model(
             },
         ]
     );
-    assert!(!format!("{events:?}").contains("SUMMARY"));
+    assert!(!format!("{events:?}").contains("ENCRYPTED"));
 
     let response = parser.take_chat_response().expect("collected response");
     assert_eq!(response.model, ModelAlias("codex-chat".into()));
     assert_eq!(response.finish_reason, FinishReason::ToolCalls);
     assert_eq!(response.usage, usage);
+    assert_eq!(
+        response.reasoning.as_deref(),
+        Some("TEST_ONLY_SUMMARY_NOT_SECRET_0001")
+    );
     assert_eq!(
         response.message.content,
         vec![
@@ -641,6 +653,9 @@ fn output_items_without_deltas_are_emitted_from_done_items() {
             NormalizedEvent::ChatStarted {
                 model: ModelAlias("codex-chat".into()),
             },
+            NormalizedEvent::ChatReasoningDelta {
+                text: "TEST_ONLY_SUMMARY_NOT_SECRET_0001".into(),
+            },
             NormalizedEvent::ChatTextDelta {
                 text: "TEST_ONLY_LIVE_TEXT_NOT_SECRET_0001".into(),
             },
@@ -655,6 +670,7 @@ fn output_items_without_deltas_are_emitted_from_done_items() {
                     input_tokens: 120,
                     output_tokens: 48,
                     total_tokens: 168,
+                    reasoning_tokens: Some(32),
                 }),
             },
         ]
