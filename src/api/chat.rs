@@ -48,10 +48,20 @@ pub(super) async fn chat_completions(
     if !has_json_content_type(request.headers()) {
         return invalid();
     }
-    let max_body_bytes = state.max_audio_chat_body_bytes();
-    let bytes = match deadline
-        .run(move || to_bytes(request.into_body(), max_body_bytes))
-        .await
+    let (_reservation, max_body_bytes) = match super::upload::reserve(
+        &state,
+        request.headers(),
+        state.max_audio_chat_body_bytes(),
+    ) {
+        Ok(value) => value,
+        Err(response) => return *response,
+    };
+    let bytes = match super::upload::read(
+        deadline,
+        state.upload_ms(),
+        to_bytes(request.into_body(), max_body_bytes),
+    )
+    .await
     {
         Ok(Ok(bytes)) => bytes,
         Ok(Err(_)) => return body_too_large(),
@@ -95,7 +105,7 @@ async fn dispatch_chat(
     state: ClientState,
     deadline: RequestDeadline,
     request_id: String,
-    chat: ChatRequest,
+    mut chat: ChatRequest,
     include_usage: bool,
     observer: Option<Observer>,
 ) -> Response {
@@ -132,6 +142,11 @@ async fn dispatch_chat(
     if chat.options.enable_thinking.is_some() && !route.provider_kind.accepts_enable_thinking() {
         return invalid_param("chat_template_kwargs");
     }
+    if let Some(cap) = route.max_output_tokens
+        && chat.options.max_output_tokens.is_none()
+    {
+        chat.options.max_output_tokens = Some(cap);
+    }
     let request = CoreRequest::Chat(chat);
     match check_supported(&route.capabilities, adapter.capabilities(), &request) {
         Ok(()) => {}
@@ -165,10 +180,16 @@ async fn dispatch_chat(
         Ok(value) => value,
         Err(_) => return invalid(),
     };
-    let mut permit = match deadline
+    if let Some(observer) = observer.as_ref() {
+        observer.begin_queue();
+    }
+    let admission = deadline
         .run(|| state.admission().acquire(route, auth.key_limits()))
-        .await
-    {
+        .await;
+    if let Some(observer) = observer.as_ref() {
+        observer.end_queue();
+    }
+    let mut permit = match admission {
         Ok(Ok(permit)) => permit,
         Ok(Err(error)) => {
             return admission_rejected_observed(
@@ -180,11 +201,17 @@ async fn dispatch_chat(
         Err(error) => return gateway_error_observed(error, observer.as_ref()),
     };
     if let Some(observer) = observer.as_ref() {
+        observer.begin_upstream();
         observer.annotate_adapter(&route.adapter_id, &provider_label(route));
     }
     // Reasoning stays on the private listener.
     let expose_reasoning = state.listener() == crate::telemetry::Listener::Private;
     let result = deadline.run(move || adapter.execute(routed)).await;
+    if !matches!(&result, Ok(Ok(AdapterOutput::Events(_))))
+        && let Some(observer) = observer.as_ref()
+    {
+        observer.end_upstream();
+    }
     if let Ok(outcome) = &result {
         permit.record_outcome(outcome);
     }

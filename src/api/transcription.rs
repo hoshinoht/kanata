@@ -44,9 +44,18 @@ pub(super) async fn transcriptions(
     };
     annotate_client_request_id(observer.as_ref(), request.headers(), &request_id);
     let max_audio_bytes = state.max_audio_bytes();
-    let wire = match deadline
-        .run(move || parse_multipart(request, max_audio_bytes))
-        .await
+    let maximum = max_audio_bytes.saturating_add(crate::core::MAX_TRANSCRIPTION_OVERHEAD_BYTES);
+    let (_reservation, body_limit) =
+        match super::upload::reserve(&state, request.headers(), maximum) {
+            Ok(value) => value,
+            Err(response) => return *response,
+        };
+    let wire = match super::upload::read(
+        deadline,
+        state.upload_ms(),
+        parse_multipart(request, max_audio_bytes, body_limit),
+    )
+    .await
     {
         Ok(Ok(value)) => value,
         Ok(Err(MultipartInputError::TooLarge)) => return body_too_large(),
@@ -100,10 +109,16 @@ pub(super) async fn transcriptions(
         Ok(value) => value,
         Err(_) => return invalid(),
     };
-    let mut permit = match deadline
+    if let Some(observer) = observer.as_ref() {
+        observer.begin_queue();
+    }
+    let admission = deadline
         .run(|| state.admission().acquire(route, auth.key_limits()))
-        .await
-    {
+        .await;
+    if let Some(observer) = observer.as_ref() {
+        observer.end_queue();
+    }
+    let mut permit = match admission {
         Ok(Ok(permit)) => permit,
         Ok(Err(error)) => {
             return admission_rejected_observed(
@@ -115,22 +130,33 @@ pub(super) async fn transcriptions(
         Err(error) => return gateway_error_observed(error, observer.as_ref()),
     };
     if let Some(observer) = observer.as_ref() {
+        observer.begin_upstream();
         observer.annotate_adapter(&route.adapter_id, &super::chat::provider_label(route));
     }
     let result = deadline.run(move || adapter.execute(routed)).await;
+    if !matches!(&result, Ok(Ok(AdapterOutput::Events(_))))
+        && let Some(observer) = observer.as_ref()
+    {
+        observer.end_upstream();
+    }
     if let Ok(outcome) = &result {
         permit.record_outcome(outcome);
     }
     match result {
         Ok(Ok(AdapterOutput::Complete(CoreResponse::Transcription(TranscriptionResponse {
             text,
-        })))) => match wire.response_format.as_deref() {
-            None | Some("json") => Json(json!({"text": text})).into_response(),
-            Some("text") => {
-                ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response()
+        })))) => {
+            if let Some(observer) = observer.as_ref() {
+                observer.first_content();
             }
-            _ => invalid(),
-        },
+            match wire.response_format.as_deref() {
+                None | Some("json") => Json(json!({"text": text})).into_response(),
+                Some("text") => {
+                    ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response()
+                }
+                _ => invalid(),
+            }
+        }
         Ok(Ok(_)) => upstream_failure_observed(observer.as_ref()),
         Ok(Err(error)) => gateway_error_observed(error, observer.as_ref()),
         Err(error) => gateway_error_observed(error, observer.as_ref()),

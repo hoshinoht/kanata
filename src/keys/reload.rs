@@ -48,6 +48,7 @@ impl KeyReloader {
         let applied = *sha256;
         // Startup already warned about a missing file.
         let last_warning = missing.then(|| (None, not_found().to_string()));
+        handle.record_reload(!missing);
         Some(Self {
             config,
             plane,
@@ -59,6 +60,13 @@ impl KeyReloader {
     }
 
     pub fn poll_once(&mut self) -> ReloadOutcome {
+        let outcome = self.poll();
+        self.handle
+            .record_reload(outcome != ReloadOutcome::Rejected);
+        outcome
+    }
+
+    fn poll(&mut self) -> ReloadOutcome {
         let bytes = match file::read(&self.path) {
             Ok(Some(bytes)) => bytes,
             Ok(None) => return self.reject(None, not_found()),

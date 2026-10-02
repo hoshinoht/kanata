@@ -116,6 +116,7 @@ permissions = [
 ]
 
 [limits]
+max_uploads = 64
 max_queue = 32
 max_in_flight = 8
 max_body_bytes = 1048576

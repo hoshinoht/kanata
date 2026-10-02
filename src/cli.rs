@@ -20,7 +20,7 @@ use crate::{
     keys::cli::{Exposure, RouteChoice},
 };
 
-const USAGE: &str = "usage: kanata check --config <path> [--plane all|private|public] | kanata serve --config <path> [--plane all|private|public] | kanata auth codex {login,status,logout} --config <path> | kanata key {new,list,show,edit,rm,rotate,migrate} ... (see `kanata key`) | kanata routes --config <path> [--json]";
+const USAGE: &str = "usage: kanata doctor --config <path> [--plane all|private|public] [--probe-backends] | kanata health --config <path> | kanata check --config <path> [--plane all|private|public] | kanata serve --config <path> [--plane all|private|public] | kanata auth codex {login,status,logout} --config <path> | kanata key {new,list,show,edit,rm,rotate,migrate} ... (see `kanata key`) | kanata routes --config <path> [--json]";
 
 pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>, String> {
     let arguments: Vec<_> = arguments.into_iter().collect();
@@ -178,6 +178,12 @@ where
     F: FnMut(String),
 {
     let arguments: Vec<_> = arguments.into_iter().collect();
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "doctor" || argument == "health")
+    {
+        return crate::diagnostics::run(&arguments).await.map(Some);
+    }
     if arguments.first().is_some_and(|argument| argument == "auth") {
         let (action, path) = parse_auth_command(&arguments)?;
         return run_auth_command(action, path, &mut output).await.map(Some);

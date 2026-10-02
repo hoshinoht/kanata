@@ -57,6 +57,10 @@ pub(super) fn chat_response(
         truncate_at_char_boundary(&mut reasoning, MAX_REASONING_BYTES);
         message["reasoning_content"] = Value::String(reasoning);
     }
+    if let Some(observer) = observer {
+        observer.first_content();
+        observer.record_usage(response.usage.clone());
+    }
     Json(json!({
         "id":next_chat_id(),
         "object":"chat.completion",

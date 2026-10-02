@@ -1,3 +1,6 @@
+#[path = "../../../../tests/support/template.rs"]
+mod template;
+
 use serde_json::{Value, json};
 
 use crate::config::{self, CodexReasoningEffort, CodexReasoningSummary};
@@ -93,7 +96,8 @@ fn simple_text_and_function_tool_match_sanitized_private_request_fixture() {
 
 #[test]
 fn configured_low_alias_maps_effort_and_explicit_upstream_id_verbatim() {
-    let config = config::load("config/personal.example.toml").expect("personal config validates");
+    let template = template::Template::new("personal.example.toml");
+    let config = config::load(&template.0).expect("personal config validates");
     let configured_route = config
         .routes()
         .iter()

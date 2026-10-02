@@ -34,6 +34,7 @@ pub(crate) struct Metrics {
     completions: [CompletionCell; CELL_COUNT],
     // Keys and aliases come only from configuration, which bounds cardinality.
     by_key_model: Mutex<BTreeMap<(String, String, usize), u64>>,
+    timings: [CompletionCell; 12],
 }
 
 impl Metrics {
@@ -43,6 +44,7 @@ impl Metrics {
             inflight: std::array::from_fn(|_| AtomicU64::new(0)),
             completions: std::array::from_fn(|_| CompletionCell::new()),
             by_key_model: Mutex::new(BTreeMap::new()),
+            timings: std::array::from_fn(|_| CompletionCell::new()),
         }
     }
 
@@ -73,12 +75,35 @@ impl Metrics {
     }
 
     pub(crate) fn finish_keyed(&self, key: &str, model: &str, status_class: StatusClass) {
-        *self
+        let mut counts = self
             .by_key_model
             .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let label = (key.to_owned(), model.to_owned(), status_class.index());
+        if counts.len() < 16_384 || counts.contains_key(&label) {
+            *counts.entry(label).or_insert(0) += 1;
+        }
+    }
+
+    pub(crate) fn retain_keys(&self, keys: &std::collections::BTreeSet<String>) {
+        self.by_key_model
+            .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .entry((key.to_owned(), model.to_owned(), status_class.index()))
-            .or_insert(0) += 1;
+            .retain(|(key, _, _), _| key == "-" || keys.contains(key));
+    }
+
+    pub(crate) fn timing(&self, endpoint: Endpoint, stage: usize, duration: Duration) {
+        let cell = &self.timings[endpoint.index() * 3 + stage];
+        cell.finished.fetch_add(1, Ordering::Relaxed);
+        cell.sum_nanos.fetch_add(
+            duration.as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+        for (bucket, limit) in cell.buckets.iter().zip(BUCKETS) {
+            if duration.as_secs_f64() <= limit {
+                bucket.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     pub(crate) fn render(&self, live: bool, ready: bool) -> String {
@@ -131,6 +156,7 @@ impl Metrics {
                     StatusClass::ServerError,
                 ] {
                     for phase in [
+                        Phase::Upload,
                         Phase::None,
                         Phase::Queue,
                         Phase::Connect,
@@ -145,6 +171,38 @@ impl Metrics {
             }
         }
 
+        for (stage, name) in ["queue_wait", "first_content", "upstream_duration"]
+            .into_iter()
+            .enumerate()
+        {
+            let _ = writeln!(output, "# TYPE kanata_{name}_seconds histogram");
+            for endpoint in Endpoint::ALL {
+                let cell = &self.timings[endpoint.index() * 3 + stage];
+                let count = cell.finished.load(Ordering::Relaxed);
+                if count == 0 {
+                    continue;
+                }
+                for (bucket, label) in cell.buckets.iter().zip(BUCKET_LABELS) {
+                    let _ = writeln!(
+                        output,
+                        "kanata_{name}_seconds_bucket{{endpoint=\"{}\",le=\"{label}\"}} {}",
+                        endpoint.as_str(),
+                        bucket.load(Ordering::Relaxed)
+                    );
+                }
+                let _ = writeln!(
+                    output,
+                    "kanata_{name}_seconds_count{{endpoint=\"{}\"}} {count}",
+                    endpoint.as_str()
+                );
+                let _ = writeln!(
+                    output,
+                    "kanata_{name}_seconds_sum{{endpoint=\"{}\"}} {}",
+                    endpoint.as_str(),
+                    cell.sum_nanos.load(Ordering::Relaxed) as f64 / 1e9
+                );
+            }
+        }
         let _ = writeln!(output, "# TYPE kanata_requests_by_key_model_total counter");
         let counts = self
             .by_key_model

@@ -141,17 +141,33 @@ impl StreamState {
             return None;
         }
         self.reasoning_bytes += text.len();
+        if let Some(observer) = &self.observer {
+            observer.first_content();
+        }
         Some(encoding::reasoning(&self.metadata, text))
     }
 
     fn encode_event(&mut self, event: NormalizedEvent) -> Result<Bytes, GatewayError> {
         match event {
-            NormalizedEvent::ChatTextDelta { text } => Ok(encoding::text(&self.metadata, text)),
+            NormalizedEvent::ChatTextDelta { text } => {
+                if !text.is_empty()
+                    && let Some(observer) = &self.observer
+                {
+                    observer.first_content();
+                }
+                Ok(encoding::text(&self.metadata, text))
+            }
             NormalizedEvent::ChatToolCallDelta {
                 call_id,
                 name,
                 arguments_delta,
-            } => self.tool_call(call_id, name, arguments_delta),
+            } => {
+                let frame = self.tool_call(call_id, name, arguments_delta)?;
+                if let Some(observer) = &self.observer {
+                    observer.first_content();
+                }
+                Ok(frame)
+            }
             NormalizedEvent::ChatCompleted {
                 finish_reason,
                 usage,
@@ -222,6 +238,10 @@ impl StreamState {
                 kind: ErrorKind::Cancelled,
             });
         };
+        if let Some(observer) = &self.observer {
+            observer.record_usage(usage.clone());
+            observer.end_upstream();
+        }
         self.events = None;
         self.phase = if self.include_usage {
             usage.map_or(Phase::Done, Phase::Usage)
@@ -234,6 +254,7 @@ impl StreamState {
     fn fail(&mut self, error: GatewayError) -> Bytes {
         if let Some(observer) = self.observer.as_ref() {
             observer.record_error(error);
+            observer.end_upstream();
         }
         self.events = None;
         self.phase = Phase::End;

@@ -130,8 +130,10 @@ fn chat_request_with_options(
     if let Some(request_id) = request_id {
         request = request.header("x-request-id", request_id);
     }
+    let body = body.to_string();
     request
-        .body(Body::from(body.to_string()))
+        .header("content-length", body.len())
+        .body(Body::from(body))
         .expect("chat request")
 }
 

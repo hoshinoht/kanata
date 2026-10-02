@@ -8,7 +8,7 @@ The examples use `api.example.com`; replace it with your own hostname. Pick a **
 
 ## Public listener rules
 
-- Every forwarded request without a valid key gets **403**, on any path, before routing.
+- `GET`/`HEAD` at exactly `/v1` or `/v1/` serve the generic API guide without a key. Every other forwarded request without a valid key gets **403** before routing. The guide’s optional key entry requests `/v1/models` with bearer authentication; it never exposes the complete route inventory.
 - A valid key sees and calls only models that are both in `publication.public_routes` **and** in that key's permissions. Everything else gets 403. Unknown paths get 404.
 - Codex can never be public, even with the owner key. `kanata check` rejects Codex entries in `public_routes`.
 - Cloudflare Access is optional extra protection; it never replaces bearer keys.

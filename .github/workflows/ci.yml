@@ -18,7 +18,11 @@ env:
 jobs:
   check:
     name: fmt, clippy, test
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       # Third-party actions are pinned to commit SHAs.
@@ -33,6 +37,19 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked --all-targets
+      - name: Guide source and highlighting
+        run: node --test tests/guide/code.test.mjs
       - name: Validate config templates
+        run: scripts/check-templates.sh
+      - name: Dependency advisories
+        if: runner.os == 'Linux'
         run: |
-          for f in config/*.example.toml; do cargo run --locked -q -- check --config "$f"; done
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit
+      - name: Parser mutation fuzzing
+        env:
+          KANATA_FUZZ_CASES: "20000"
+        run: cargo test --locked --lib parser_mutation_smoke
+      - name: Container smoke test
+        if: runner.os == 'Linux'
+        run: scripts/container-smoke.sh

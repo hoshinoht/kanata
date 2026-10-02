@@ -29,6 +29,7 @@ use crate::core::RouteSelector;
 use crate::keys::usage::UsageHandle;
 use crate::routing::{Registry, admission::Admission};
 
+mod guide;
 mod runtime;
 mod shutdown;
 
@@ -69,6 +70,8 @@ pub(crate) struct ClientState {
     admission: Arc<Admission>,
     adapters: Arc<BTreeMap<String, Arc<dyn Adapter>>>,
     public_routes: Option<Arc<Vec<RouteSelector>>>,
+    uploads: Arc<crate::routing::uploads::Uploads>,
+    upload_ms: u64,
     max_body_bytes: usize,
     max_audio_chat_body_bytes: usize,
     max_audio_bytes: usize,
@@ -82,6 +85,12 @@ pub(crate) struct ClientState {
 }
 
 impl ClientState {
+    pub(crate) fn uploads(&self) -> &Arc<crate::routing::uploads::Uploads> {
+        &self.uploads
+    }
+    pub(crate) fn upload_ms(&self) -> u64 {
+        self.upload_ms
+    }
     pub(crate) fn registry(&self) -> &Registry {
         &self.registry
     }
@@ -286,7 +295,13 @@ impl TwoPlaneServer {
             } => Some((usage_dir.clone(), path.clone())),
             _ => None,
         };
+        let uploads = Arc::new(crate::routing::uploads::Uploads::new(
+            config.limits().max_uploads(),
+            config.limits().max_buffered_bytes(),
+        ));
         let client_state = ClientState {
+            uploads: uploads.clone(),
+            upload_ms: config.timeouts().upload_ms(),
             keys: keys.clone(),
             usage: usage.clone(),
             registry: registry.clone(),
@@ -320,7 +335,13 @@ impl TwoPlaneServer {
             plan,
             client,
             public,
-            admin: admin_router(readiness.clone(), admission.clone(), telemetry),
+            admin: admin_router(
+                readiness.clone(),
+                admission.clone(),
+                telemetry,
+                uploads,
+                keys.clone(),
+            ),
             admission,
             readiness,
             keys,
@@ -428,6 +449,9 @@ impl FromRequestParts<ClientState> for Authenticated {
         // Counted here only, so public requests authenticated by middleware count once.
         if let Some(usage) = state.usage.get() {
             usage.record(context.key_identity());
+            if let Some(observer) = observer {
+                observer.attach_usage(usage.clone());
+            }
         }
         Ok(Self {
             context,
@@ -457,6 +481,7 @@ impl IntoResponse for ForbiddenResponse {
 fn client_router(routes: Router<ClientState>, state: ClientState) -> Router {
     let middleware_state = state.clone();
     client_route_tree(routes)
+        .layer(middleware::from_fn(guide::protect_discovery))
         .layer(middleware::from_fn_with_state(
             middleware_state,
             crate::telemetry::middleware,
@@ -466,6 +491,8 @@ fn client_router(routes: Router<ClientState>, state: ClientState) -> Router {
 
 fn client_route_tree(routes: Router<ClientState>) -> Router<ClientState> {
     Router::new()
+        .route("/v1", get(guide::page))
+        .route("/v1/", get(guide::page))
         .nest(
             "/v1",
             Router::new()
@@ -482,6 +509,7 @@ fn public_client_router(state: ClientState) -> PublicClientService {
     let router = client_route_tree(Router::new()).with_state(state);
     BoxCloneSyncService::new(
         ServiceBuilder::new()
+            .layer(middleware::from_fn(guide::protect_discovery))
             .layer(middleware::from_fn_with_state(
                 telemetry_state,
                 crate::telemetry::middleware,
@@ -499,6 +527,9 @@ async fn authenticate_public_request(
     mut request: Request<Body>,
     next: middleware::Next,
 ) -> Response {
+    if guide::is_page(request.method(), request.uri().path()) {
+        return next.run(request).await;
+    }
     let context = match state.keys.current().authenticate_headers(request.headers()) {
         Ok(context) => context,
         Err(AuthError::Invalid) => return ForbiddenResponse.into_response(),
@@ -515,6 +546,8 @@ async fn authenticate_public_request(
 
 #[derive(Clone)]
 struct AdminState {
+    keys: KeyHandle,
+    uploads: Arc<crate::routing::uploads::Uploads>,
     readiness: Readiness,
     admission: Arc<Admission>,
     telemetry: Arc<crate::telemetry::Telemetry>,
@@ -524,13 +557,18 @@ fn admin_router(
     readiness: Readiness,
     admission: Arc<Admission>,
     telemetry: Arc<crate::telemetry::Telemetry>,
+    uploads: Arc<crate::routing::uploads::Uploads>,
+    keys: KeyHandle,
 ) -> Router {
     Router::new()
         .route("/live", get(live))
         .route("/ready", get(ready))
         .route("/metrics", get(metrics))
+        .route("/status", get(status))
         .fallback(not_found)
         .with_state(AdminState {
+            keys,
+            uploads,
             readiness,
             admission,
             telemetry,
@@ -678,6 +716,15 @@ async fn ready(State(state): State<AdminState>) -> Response {
     }
 }
 
+async fn status(State(state): State<AdminState>) -> Response {
+    Json(json!({
+        "ready": state.readiness.is_ready() && !state.admission.is_closed(),
+        "key_reload": state.keys.reload_status(),
+        "version": crate::VERSION,
+    }))
+    .into_response()
+}
+
 async fn metrics(State(state): State<AdminState>) -> Response {
     (
         [(
@@ -685,10 +732,17 @@ async fn metrics(State(state): State<AdminState>) -> Response {
             "text/plain; version=0.0.4",
         )],
         {
+            state.telemetry.retain_keys(&state.keys.current().key_ids());
             let mut body = state.telemetry.render(
                 true,
                 state.readiness.is_ready() && !state.admission.is_closed(),
             );
+            let reload = state.keys.reload_status();
+            body.push_str(&format!("# TYPE kanata_key_reload_enabled gauge\nkanata_key_reload_enabled {}\n", u8::from(reload.enabled)));
+            body.push_str(&format!("# TYPE kanata_key_reload_failures_total counter\nkanata_key_reload_failures_total {}\n# TYPE kanata_key_reload_healthy gauge\nkanata_key_reload_healthy {}\n# TYPE kanata_key_reload_last_success_seconds gauge\nkanata_key_reload_last_success_seconds {}\n", reload.failures, u8::from(reload.healthy), reload.last_success));
+            let (uploads, bytes) = state.uploads.snapshot();
+            body.push_str(&format!("# TYPE kanata_requests_queued gauge\nkanata_requests_queued {}\n", state.admission.queued()));
+            body.push_str(&format!("# TYPE kanata_buffered_requests gauge\nkanata_buffered_requests {uploads}\n# TYPE kanata_reserved_request_bytes gauge\nkanata_reserved_request_bytes {bytes}\n"));
             body.push_str(&format!(
                 "# TYPE kanata_circuit_breakers_open gauge\nkanata_circuit_breakers_open {}\n",
                 state.admission.open_breakers()

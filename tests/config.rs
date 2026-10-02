@@ -1166,7 +1166,7 @@ fn codex_effort_aliases_are_exact_scoped_and_field_validated() {
     );
 
     let context = |value: &str| {
-        check(personal_contents.replace(
+        check(personal_contents.replacen("function_tools = false\n", "function_tools = false\nsampling_controls = true\n", 1).replace(
             "upstream_id = \"qwen3:0.6b\"\nrequires_streaming_chat",
             &format!(
                 "upstream_id = \"qwen3:0.6b\"\ncontext_tokens = {value}\nrequires_streaming_chat"
@@ -1192,7 +1192,7 @@ fn codex_effort_aliases_are_exact_scoped_and_field_validated() {
     );
 
     let output = |value: &str| {
-        check(personal_contents.replace(
+        check(personal_contents.replacen("function_tools = false\n", "function_tools = false\nsampling_controls = true\n", 1).replace(
             "upstream_id = \"qwen3:0.6b\"\nrequires_streaming_chat",
             &format!(
                 "upstream_id = \"qwen3:0.6b\"\ncontext_tokens = 8192\n{value}\nrequires_streaming_chat"
@@ -1699,4 +1699,38 @@ fn key_warnings_name_expired_and_soon_expiring_keys_only() {
             "key soon expires at 2026-10-02T00:00:00Z",
         ]
     );
+}
+
+#[test]
+fn upload_budget_bounds_and_unsupported_output_caps_are_rejected() {
+    for (find, replace, expected) in [
+        (
+            "max_uploads = 64",
+            "max_uploads = 0",
+            "limits.max_uploads: out_of_range",
+        ),
+        (
+            "[limits]",
+            "[limits]\nmax_buffered_bytes = 1024",
+            "limits.max_buffered_bytes: below_request_reservation",
+        ),
+        (
+            "[timeouts]",
+            "[timeouts]\nupload_ms = 60001",
+            "timeouts.upload_ms: out_of_range",
+        ),
+        (
+            "upstream_id = \"llama3.2:latest\"",
+            "upstream_id = \"llama3.2:latest\"\nmax_output_tokens = 100",
+            "routes[0].max_output_tokens: unsupported_output_cap",
+        ),
+    ] {
+        let source = example();
+        assert!(source.contains(find));
+        assert!(
+            check(source.replacen(find, replace, 1))
+                .unwrap_err()
+                .ends_with(expected)
+        );
+    }
 }

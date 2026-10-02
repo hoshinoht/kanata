@@ -1,3 +1,5 @@
+pub const MAX_TRANSCRIPTION_OVERHEAD_BYTES: usize = 104 * 1024;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -1216,6 +1218,7 @@ impl CapabilityError {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeoutPhase {
+    Upload,
     Queue,
     Connect,
     Headers,
@@ -1280,6 +1283,13 @@ impl ErrorKind {
                 status: 429,
                 code: "rate_limit_exceeded",
                 error_type: "rate_limit_error",
+            },
+            Self::Timeout {
+                phase: TimeoutPhase::Upload,
+            } => ErrorMapping {
+                status: 408,
+                code: "request_upload_timeout",
+                error_type: "invalid_request_error",
             },
             Self::Timeout { .. } => ErrorMapping {
                 status: 504,

@@ -1,3 +1,6 @@
+#[path = "support/template.rs"]
+mod template;
+
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -61,7 +64,8 @@ fn aliases_do_not_wildcard_or_suffix_match() {
 
 #[test]
 fn codex_effort_alias_routes_only_by_its_exact_selector_and_upstream_id() {
-    let config = config::load("config/personal.example.toml").expect("personal config validates");
+    let template = template::Template::new("personal.example.toml");
+    let config = config::load(&template.0).expect("personal config validates");
     let registry = Registry::from_validated(&config);
     let low = registry
         .resolve(&RouteSelector {

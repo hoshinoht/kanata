@@ -8,6 +8,7 @@ mod serialization;
 mod sse;
 mod stream_timeout;
 mod transcription;
+mod upload;
 mod wire;
 
 use axum::{Router, routing::post};
@@ -60,3 +61,6 @@ fn request_has_tool_history(request: &CoreRequest) -> bool {
         })
     })
 }
+
+#[cfg(test)]
+mod fuzz_tests;

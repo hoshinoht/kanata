@@ -18,6 +18,16 @@ You have been given access to a small, personally run, OpenAI-compatible API. It
   export KANATA_API_KEY='kanata_sk_...'
   ```
 
+## Browser reference
+
+Open the API base URL (for example, `https://api.example.com/v1`) in a browser for a public reference with placeholder examples. `/v1/` also works. Chat and transcription examples include cURL, JavaScript (Node.js), Python, Go and Rust, with setup instructions and copy buttons. Use the arrow keys, Home or End to change language tabs. Code uses a bundled Maple Mono font and local syntax highlighting; the guide loads no CDN assets. Both client listeners serve this same generic page; the admin listener does not.
+
+Choose **View my access** after entering a bearer key to load its permitted models and capabilities from `GET /v1/models`. The public listener also applies its route allowlist. A listed model means a configured, bound route; it does not confirm that its backend is healthy. No inference request is sent by the page.
+
+The page stores the key only in memory, clears the input after submission, and clears the key and model details on **Disconnect**, reload or navigation away. **Refresh access** rechecks permissions; failed refreshes clear the session. Examples always use `$KANATA_API_KEY`, never the entered secret. Keys are not accepted from query strings or fragments. Use HTTPS; browser key entry is disabled over plain HTTP except on localhost/loopback for development. Browser extensions and scripts that compromise the page can still read an in-memory key.
+
+Only `GET`/`HEAD` at the exact `/v1` and `/v1/` paths are unauthenticated. All discovery and inference endpoints retain bearer authentication. Guide and model-list responses carry `Cache-Control: no-store`; reverse proxies must honor this and must not inject third-party scripts or weaken the page's Content Security Policy. Cloudflare Access, when configured, still applies before the guide is reached.
+
 ## 1. Check access
 
 ```sh
@@ -132,6 +142,8 @@ console.log(reply.choices[0].message.content);
 | 429 | `rate_limit_exceeded` | The model backend is rate-limiting. Wait and retry with backoff |
 | 502 / 503 | `upstream_failure` / `upstream_unavailable` | The model backend is down or restarting. Try again later (after `Retry-After` seconds if present) |
 | 503 | `gateway_busy` | No slot freed up in time. Retry after the `Retry-After` seconds |
+| 503 | `gateway_upload_busy` | Request-buffer capacity is full. Retry after `Retry-After` seconds |
+| 408 | `request_upload_timeout` | The request body did not arrive before the upload deadline |
 | 504 | `upstream_timeout` | The model took too long |
 | 5xx page from Cloudflare | — | The gateway itself is offline, for example because the host is asleep or restarting |
 

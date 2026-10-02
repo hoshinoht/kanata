@@ -288,3 +288,22 @@ async fn reasoning_effort_outside_the_route_backend_range_is_rejected() {
         .expect("response");
     assert_eq!(accepted.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn route_cap_defaults_missing_tokens_and_preserves_smaller_values() {
+    let config = option_config();
+    let (server, requests) = server(&config);
+    for (options, expected) in [
+        (json!({}), 4096),
+        (json!({"max_tokens": 64}), 64),
+        (json!({"max_completion_tokens": 128}), 128),
+    ] {
+        let response = server
+            .client_oneshot(chat_request(&body("local-chat", options)))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let routed = take_request(&requests);
+        assert_eq!(core_chat(routed).options.max_output_tokens, Some(expected));
+    }
+}

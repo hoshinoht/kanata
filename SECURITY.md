@@ -19,6 +19,7 @@ You should get an acknowledgement within a week. Fixes are released as soon as p
 
 - Authentication bypass or key-scope escalation, including reaching Codex through the public listener.
 - Leaking keys, tokens, prompts or bodies through logs, metrics or error responses.
+- Leaking configured model inventory through the public guide, broadening its exact unauthenticated `GET`/`HEAD /v1` and `/v1/` exception, or persisting bearer keys in its browser storage. The generic reference page is intentionally public; personalized model discovery remains authenticated.
 - Request validation or bounds bypasses that cause unbounded resource use.
 - Container or Compose settings that expose ports or host resources contrary to the documentation.
 - Tampering with `keys.toml`, usage state or `audit.jsonl` through the container mounts (the keys directory is mounted read-only).

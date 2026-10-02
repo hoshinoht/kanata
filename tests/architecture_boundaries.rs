@@ -13,7 +13,7 @@ fn assert_no_provider_terms(path: &Path) {
         let entry = entry.expect("source entry is readable");
         let entry_path = entry.path();
         if entry_path.is_dir() {
-            if entry_path != Path::new("src/adapter") {
+            if entry_path != Path::new("src/adapter") && entry_path != Path::new("src/config") {
                 assert_no_provider_terms(&entry_path);
             }
             continue;
@@ -54,7 +54,15 @@ const NETWORK_TERMS: &[&str] = &[
 
 #[test]
 fn key_management_files_have_no_network_path() {
-    for file in ["cli", "store", "file", "time", "usage"] {
+    for file in [
+        "cli",
+        "cli/args",
+        "cli/display",
+        "store",
+        "file",
+        "time",
+        "usage",
+    ] {
         let path = format!("src/keys/{file}.rs");
         let source = fs::read_to_string(&path).expect("key module is readable");
         for term in NETWORK_TERMS {

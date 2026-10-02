@@ -84,6 +84,9 @@ level = "info"
 format = "text"
 
 [limits]
+# Shared request payload reservations per process; includes queued requests.
+max_uploads = 8
+max_buffered_bytes = 268435456
 max_queue = 32
 max_in_flight = 8
 max_body_bytes = 1048576
@@ -91,6 +94,7 @@ max_audio_bytes = 26214400
 max_extension_bytes = 8192
 
 [timeouts]
+upload_ms = 30000
 queue_ms = 1000
 connect_ms = 5000
 headers_ms = 120000

@@ -92,6 +92,9 @@ pub struct ApplicationAuth {
 }
 
 impl ApplicationAuth {
+    pub(crate) fn key_ids(&self) -> std::collections::BTreeSet<String> {
+        self.keys.iter().map(|key| key.identity.clone()).collect()
+    }
     pub fn from_validated(
         config: &ValidatedConfig,
         resolver: &impl SecretResolver,
@@ -188,13 +191,42 @@ impl ApplicationAuth {
 /// and is never held across `.await`.
 #[derive(Clone)]
 pub struct KeyHandle {
+    reload: Arc<RwLock<ReloadStatus>>,
     current: Arc<RwLock<Arc<ApplicationAuth>>>,
 }
 
+#[derive(Clone, Default, serde::Serialize)]
+pub(crate) struct ReloadStatus {
+    pub(crate) enabled: bool,
+    pub(crate) healthy: bool,
+    pub(crate) failures: u64,
+    pub(crate) last_attempt: u64,
+    pub(crate) last_success: u64,
+}
+
 impl KeyHandle {
+    pub(crate) fn reload_status(&self) -> ReloadStatus {
+        self.reload
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+    pub(crate) fn record_reload(&self, healthy: bool) {
+        let mut status = self.reload.write().unwrap_or_else(PoisonError::into_inner);
+        status.enabled = true;
+        status.healthy = healthy;
+        status.last_attempt = crate::keys::time::now();
+        if healthy {
+            status.last_success = status.last_attempt;
+        } else {
+            status.failures = status.failures.saturating_add(1);
+        }
+    }
+
     pub(crate) fn new(auth: ApplicationAuth) -> Self {
         Self {
             current: Arc::new(RwLock::new(Arc::new(auth))),
+            reload: Arc::new(RwLock::new(ReloadStatus::default())),
         }
     }
 

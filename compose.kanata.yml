@@ -16,6 +16,12 @@ services:
     pids_limit: 64
     cpus: 1.0
     mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/kanata", "health", "--config", "/etc/kanata/config.toml"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     stop_grace_period: 35s
     restart: unless-stopped
     tmpfs:
