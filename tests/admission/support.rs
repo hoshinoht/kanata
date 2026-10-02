@@ -130,8 +130,10 @@ fn chat_request_with_options(
     if let Some(request_id) = request_id {
         request = request.header("x-request-id", request_id);
     }
+    let body = body.to_string();
     request
-        .body(Body::from(body.to_string()))
+        .header("content-length", body.len())
+        .body(Body::from(body))
         .expect("chat request")
 }
 
@@ -258,6 +260,7 @@ impl Adapter for PendingAdapter {
                 },
                 finish_reason: FinishReason::Stop,
                 usage: None,
+                reasoning: None,
             })))
         })
     }
@@ -397,6 +400,7 @@ pub fn completed() -> Event {
             input_tokens: 1,
             output_tokens: 1,
             total_tokens: 2,
+            reasoning_tokens: None,
         }),
     })
 }

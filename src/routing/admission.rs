@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -21,6 +21,7 @@ use super::{
 };
 
 pub(crate) struct Admission {
+    queued: AtomicU64,
     routes: BTreeMap<String, RouteAdmission>,
     adapters: BTreeMap<String, AdapterAdmission>,
     limits: AdmissionLimits,
@@ -137,12 +138,17 @@ impl Admission {
             .collect::<Result<_, AdmissionBuildError>>()?;
 
         Ok(Self {
+            queued: AtomicU64::new(0),
             routes,
             adapters,
             limits,
             queue_timeout: Duration::from_millis(limits.queue_ms),
             closed: AtomicBool::new(false),
         })
+    }
+
+    pub(crate) fn queued(&self) -> u64 {
+        self.queued.load(Ordering::Relaxed)
     }
 
     pub(crate) fn limits(&self) -> AdmissionLimits {
@@ -229,6 +235,8 @@ impl Admission {
         if self.is_closed() {
             return Err(AdmissionError::Closed);
         }
+        self.queued.fetch_add(1, Ordering::Relaxed);
+        let waiting = QueueGuard(&self.queued);
         let wait = async {
             let active = route_admission.active.clone().acquire_owned().await?;
             let adapter = match &adapter.active {
@@ -245,6 +253,7 @@ impl Admission {
         if self.is_closed() {
             return Err(AdmissionError::Closed);
         }
+        drop(waiting);
         Ok(AdmissionPermit {
             breaker,
             _adapter: adapter,
@@ -371,6 +380,13 @@ fn try_acquire(
             TryAcquireError::NoPermits => exhausted,
             TryAcquireError::Closed => AdmissionError::Closed,
         })
+}
+
+struct QueueGuard<'a>(&'a AtomicU64);
+impl Drop for QueueGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]

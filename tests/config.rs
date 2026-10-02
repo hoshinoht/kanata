@@ -1142,8 +1142,31 @@ fn codex_effort_aliases_are_exact_scoped_and_field_validated() {
         "config error at routes[0].codex_reasoning_effort: codex_only"
     );
 
+    let summary = check(personal_contents.replace(
+        "codex_reasoning_effort = \"low\"\n",
+        "codex_reasoning_effort = \"low\"\ncodex_reasoning_summary = \"detailed\"\n",
+    ))
+    .expect("Codex route accepts a reasoning summary");
+    let route = summary
+        .routes()
+        .iter()
+        .find(|route| route.identity().route_id == "codex-gpt-6-luna-low")
+        .expect("configured Codex effort route");
+    assert_eq!(
+        route.codex_reasoning_summary(),
+        Some(kanata::config::CodexReasoningSummary::Detailed)
+    );
+    let non_codex_summary = check(personal_contents.replace(
+        "upstream_id = \"qwen3:0.6b\"\nrequires_streaming_chat",
+        "upstream_id = \"qwen3:0.6b\"\ncodex_reasoning_summary = \"auto\"\nrequires_streaming_chat",
+    ));
+    assert_eq!(
+        non_codex_summary.unwrap_err(),
+        "config error at routes[0].codex_reasoning_summary: codex_only"
+    );
+
     let context = |value: &str| {
-        check(personal_contents.replace(
+        check(personal_contents.replacen("function_tools = false\n", "function_tools = false\nsampling_controls = true\n", 1).replace(
             "upstream_id = \"qwen3:0.6b\"\nrequires_streaming_chat",
             &format!(
                 "upstream_id = \"qwen3:0.6b\"\ncontext_tokens = {value}\nrequires_streaming_chat"
@@ -1166,6 +1189,24 @@ fn codex_effort_aliases_are_exact_scoped_and_field_validated() {
         transcription_context
             .unwrap_err()
             .ends_with(".context_tokens: chat_only")
+    );
+
+    let output = |value: &str| {
+        check(personal_contents.replacen("function_tools = false\n", "function_tools = false\nsampling_controls = true\n", 1).replace(
+            "upstream_id = \"qwen3:0.6b\"\nrequires_streaming_chat",
+            &format!(
+                "upstream_id = \"qwen3:0.6b\"\ncontext_tokens = 8192\n{value}\nrequires_streaming_chat"
+            ),
+        ))
+    };
+    assert!(output("max_output_tokens = 8192").is_ok());
+    assert_eq!(
+        output("max_output_tokens = 8193").unwrap_err(),
+        "config error at routes[0].max_output_tokens: exceeds_context_tokens"
+    );
+    assert_eq!(
+        output("max_output_tokens = 0").unwrap_err(),
+        "config error at routes[0].max_output_tokens: out_of_range"
     );
 
     let transcription_effort = check(personal_contents.replace(
@@ -1658,4 +1699,38 @@ fn key_warnings_name_expired_and_soon_expiring_keys_only() {
             "key soon expires at 2026-10-02T00:00:00Z",
         ]
     );
+}
+
+#[test]
+fn upload_budget_bounds_and_unsupported_output_caps_are_rejected() {
+    for (find, replace, expected) in [
+        (
+            "max_uploads = 64",
+            "max_uploads = 0",
+            "limits.max_uploads: out_of_range",
+        ),
+        (
+            "[limits]",
+            "[limits]\nmax_buffered_bytes = 1024",
+            "limits.max_buffered_bytes: below_request_reservation",
+        ),
+        (
+            "[timeouts]",
+            "[timeouts]\nupload_ms = 60001",
+            "timeouts.upload_ms: out_of_range",
+        ),
+        (
+            "upstream_id = \"llama3.2:latest\"",
+            "upstream_id = \"llama3.2:latest\"\nmax_output_tokens = 100",
+            "routes[0].max_output_tokens: unsupported_output_cap",
+        ),
+    ] {
+        let source = example();
+        assert!(source.contains(find));
+        assert!(
+            check(source.replacen(find, replace, 1))
+                .unwrap_err()
+                .ends_with(expected)
+        );
+    }
 }

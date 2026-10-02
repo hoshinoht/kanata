@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::core::{
     ChatContent, ChatMessage, ChatResponse, ChatRole, ErrorKind, FinishReason, GatewayError,
-    ModelAlias, Usage,
+    MAX_REASONING_BYTES, ModelAlias, Usage,
 };
 use crate::telemetry::Observer;
 
@@ -19,6 +19,7 @@ static NEXT_CHAT_ID: AtomicU64 = AtomicU64::new(1);
 pub(super) fn chat_response(
     response: ChatResponse,
     public_model: &ModelAlias,
+    expose_reasoning: bool,
     observer: Option<&Observer>,
 ) -> Response {
     if response.model != *public_model || response.message.role != ChatRole::Assistant {
@@ -46,10 +47,20 @@ pub(super) fn chat_response(
         response.finish_reason,
         FinishReason::Length | FinishReason::ContentFilter
     );
-    let message = match response_message(&response.message, allow_empty) {
+    let mut message = match response_message(&response.message, allow_empty) {
         Some(value) => value,
         None => return upstream_failure_observed(observer),
     };
+    if expose_reasoning
+        && let Some(mut reasoning) = response.reasoning.filter(|text| !text.is_empty())
+    {
+        truncate_at_char_boundary(&mut reasoning, MAX_REASONING_BYTES);
+        message["reasoning_content"] = Value::String(reasoning);
+    }
+    if let Some(observer) = observer {
+        observer.first_content();
+        observer.record_usage(response.usage.clone());
+    }
     Json(json!({
         "id":next_chat_id(),
         "object":"chat.completion",
@@ -103,11 +114,25 @@ fn response_message(message: &ChatMessage, allow_empty: bool) -> Option<Value> {
 }
 
 pub(super) fn usage(value: Usage) -> Value {
-    json!({
+    let mut usage = json!({
         "prompt_tokens":value.input_tokens,
         "completion_tokens":value.output_tokens,
         "total_tokens":value.total_tokens
-    })
+    });
+    if let Some(tokens) = value.reasoning_tokens {
+        usage["completion_tokens_details"] = json!({"reasoning_tokens":tokens});
+    }
+    usage
+}
+
+pub(super) fn truncate_at_char_boundary(text: &mut String, max_bytes: usize) {
+    if text.len() > max_bytes {
+        let mut end = max_bytes;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
 }
 
 pub(super) fn finish(value: FinishReason) -> Option<&'static str> {

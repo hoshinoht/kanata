@@ -8,7 +8,7 @@ use crate::{
     adapter::transport::sse::{SseFramer, SseRecord},
     core::{
         ChatContent, ChatMessage, ChatResponse, ChatRole, ErrorKind, FinishReason, GatewayError,
-        ModelAlias, NormalizedEvent, ToolCall, Usage,
+        MAX_REASONING_BYTES, ModelAlias, NormalizedEvent, ToolCall, Usage,
     },
 };
 
@@ -90,6 +90,10 @@ pub(crate) struct ResponsesStreamParser {
     messages: BTreeMap<usize, MessageState>,
     tool_call_ids: BTreeSet<String>,
     untagged_text: bool,
+    reasoning: String,
+    reasoning_full: bool,
+    reasoning_items: BTreeSet<String>,
+    last_reasoning_part: Option<(String, u64)>,
     last_sequence_number: Option<u64>,
     output_bytes: usize,
     collected_response: Option<ChatResponse>,
@@ -114,6 +118,10 @@ impl ResponsesStreamParser {
             messages: BTreeMap::new(),
             tool_call_ids: BTreeSet::new(),
             untagged_text: false,
+            reasoning: String::new(),
+            reasoning_full: false,
+            reasoning_items: BTreeSet::new(),
+            last_reasoning_part: None,
             last_sequence_number: None,
             output_bytes: 0,
             collected_response: None,
@@ -204,10 +212,11 @@ impl ResponsesStreamParser {
             "response.output_item.added" => self.output_item_added(value),
             "response.output_item.done" => self.output_item_done(value),
             "response.output_text.delta" => self.text_delta(value),
+            "response.reasoning_summary_text.delta" => Ok(self.reasoning_delta(value)),
             "response.function_call_arguments.delta" => self.tool_arguments_delta(value),
             "response.function_call_arguments.done" => self.tool_arguments_done(value),
             "response.completed" => self.completed(value),
-            // Lifecycle, metadata, reasoning, and unknown events carry nothing Kanata exposes.
+            // Lifecycle, metadata, and unknown events carry nothing Kanata exposes.
             _ => Ok(Vec::new()),
         }
     }
@@ -368,8 +377,75 @@ impl ResponsesStreamParser {
                 self.add_output_bytes(text.len())?;
                 Ok(self.emit_text(text))
             }
+            "reasoning" => Ok(self.reasoning_item_done(event.item)),
             _ => Ok(Vec::new()),
         }
+    }
+
+    /// Malformed reasoning is dropped rather than failing the reply.
+    fn reasoning_delta(&mut self, value: Value) -> Vec<NormalizedEvent> {
+        let Ok(event) = parse_event::<ReasoningDeltaEvent>(value) else {
+            return Vec::new();
+        };
+        let item_id = event.item_id.unwrap_or_default();
+        if !item_id.is_empty() {
+            self.reasoning_items.insert(item_id.clone());
+        }
+        self.emit_reasoning(item_id, event.summary_index.unwrap_or(0), event.delta)
+    }
+
+    /// Emits summaries whose text never arrived as deltas.
+    fn reasoning_item_done(&mut self, item: Value) -> Vec<NormalizedEvent> {
+        let Ok(item) = parse_event::<ReasoningItem>(item) else {
+            return Vec::new();
+        };
+        let item_id = item.id.unwrap_or_default();
+        if !item_id.is_empty() && self.reasoning_items.contains(&item_id) {
+            return Vec::new();
+        }
+        let mut events = Vec::new();
+        for (index, part) in item.summary.iter().enumerate() {
+            if part.get("type").and_then(Value::as_str) != Some("summary_text") {
+                continue;
+            }
+            let Some(text) = part.get("text").and_then(Value::as_str) else {
+                continue;
+            };
+            let index = u64::try_from(index).unwrap_or(u64::MAX);
+            events.append(&mut self.emit_reasoning(item_id.clone(), index, text.to_owned()));
+        }
+        events
+    }
+
+    /// Separates summary parts with a blank line and drops text past the cap.
+    fn emit_reasoning(
+        &mut self,
+        item_id: String,
+        index: u64,
+        text: String,
+    ) -> Vec<NormalizedEvent> {
+        if text.is_empty() || self.reasoning_full {
+            return Vec::new();
+        }
+        let part = (item_id, index);
+        let separated = self
+            .last_reasoning_part
+            .as_ref()
+            .is_some_and(|last| *last != part);
+        self.last_reasoning_part = Some(part);
+        let text = if separated {
+            format!("\n\n{text}")
+        } else {
+            text
+        };
+        if self.reasoning.len().saturating_add(text.len()) > MAX_REASONING_BYTES {
+            self.reasoning_full = true;
+            return Vec::new();
+        }
+        self.reasoning.push_str(&text);
+        let mut events = self.start_event();
+        events.push(NormalizedEvent::ChatReasoningDelta { text });
+        events
     }
 
     fn tool_arguments_delta(&mut self, value: Value) -> Result<Vec<NormalizedEvent>, ()> {
@@ -433,6 +509,7 @@ impl ResponsesStreamParser {
             },
             finish_reason,
             usage: usage.clone(),
+            reasoning: (!self.reasoning.is_empty()).then(|| self.reasoning.clone()),
         });
         self.done = true;
         Ok(vec![NormalizedEvent::ChatCompleted {
@@ -610,6 +687,9 @@ fn normalize_usage(usage: ResponsesUsage) -> Result<Usage, ()> {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
         total_tokens: usage.total_tokens,
+        reasoning_tokens: usage
+            .output_tokens_details
+            .and_then(|details| details.reasoning_tokens),
     })
 }
 
@@ -649,6 +729,29 @@ struct ResponsesUsage {
     input_tokens: u64,
     output_tokens: u64,
     total_tokens: u64,
+    #[serde(default)]
+    output_tokens_details: Option<OutputTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct OutputTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct ReasoningDeltaEvent {
+    #[serde(default)]
+    delta: String,
+    item_id: Option<String>,
+    summary_index: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct ReasoningItem {
+    id: Option<String>,
+    #[serde(default)]
+    summary: Vec<Value>,
 }
 
 #[derive(Deserialize)]

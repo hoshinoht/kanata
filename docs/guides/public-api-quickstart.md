@@ -18,6 +18,16 @@ You have been given access to a small, personally run, OpenAI-compatible API. It
   export KANATA_API_KEY='kanata_sk_...'
   ```
 
+## Browser reference
+
+Open the API base URL (for example, `https://api.example.com/v1`) in a browser for a public reference with placeholder examples. `/v1/` also works. Chat and transcription examples include cURL, JavaScript (Node.js), Python, Go and Rust, with setup instructions and copy buttons. Use the arrow keys, Home or End to change language tabs. The Material 3 Expressive layout places request details beside examples on wide screens and stacks them on mobile. Code uses a bundled Maple Mono font and local syntax highlighting; the guide loads no CDN assets. Both client listeners serve this same generic page; the admin listener does not.
+
+Choose **View my access** after entering a bearer key to load its permitted models and capabilities from `GET /v1/models`. The public listener also applies its route allowlist. A listed model means a configured, bound route; it does not confirm that its backend is healthy. No inference request is sent by the page.
+
+The page stores the key only in memory, clears the input after submission, and clears the key and model details on **Disconnect**, reload or navigation away. **Refresh access** rechecks permissions; failed refreshes clear the session. Examples always use `$KANATA_API_KEY`, never the entered secret. Keys are not accepted from query strings or fragments. Use HTTPS; browser key entry is disabled over plain HTTP except on localhost/loopback for development. Browser extensions and scripts that compromise the page can still read an in-memory key.
+
+Only `GET`/`HEAD` at the exact `/v1` and `/v1/` paths are unauthenticated. All discovery and inference endpoints retain bearer authentication. Guide and model-list responses carry `Cache-Control: no-store`; reverse proxies must honor this and must not inject third-party scripts or weaken the page's Content Security Policy. Cloudflare Access, when configured, still applies before the guide is reached.
+
 ## 1. Check access
 
 ```sh
@@ -51,7 +61,7 @@ You receive `data: {...}` server-sent events, ending with `data: [DONE]`. Add `"
 
 ## 4. Speech (models that list `transcription` or `input_audio`)
 
-`GET /v1/models` shows each model's `kanata.operations` and `kanata.input_audio`. Audio is WAV or MP3, up to 25 MiB; 16 kHz mono 16-bit WAV works best.
+`GET /v1/models` shows each model's `kanata.operations` and `kanata.input_audio` (and, where declared, `kanata.context_tokens` and `kanata.max_output_tokens`). Audio is WAV or MP3, up to 25 MiB; 16 kHz mono 16-bit WAV works best.
 
 ```sh
 curl -s https://api.example.com/v1/audio/transcriptions \
@@ -109,11 +119,12 @@ console.log(reply.choices[0].message.content);
   | `temperature` | 0–2 |
   | `top_p` | above 0, up to 1 |
   | `seed` | integer |
-  | `max_tokens` or `max_completion_tokens` | 1 – 1,048,576 |
+  | `max_tokens` or `max_completion_tokens` | 1 – 1,048,576, and no more than the model's `kanata.max_output_tokens` when set |
   | `response_format` | `{"type":"json_object"}` or `{"type":"json_schema","json_schema":{"name":…,"schema":{…},"strict":true}}` (schema ≤ 64 KiB, nesting ≤ 32 levels) |
   | `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (the model decides which it honours) |
   | `chat_template_kwargs` | only `{"enable_thinking": true\|false}`, on vLLM-served models (e.g. `omnilion`) |
 - **Strictness:** Kanata returns `400 invalid_request` for fields it doesn't support or a model can't honour, rather than silently ignoring them. The error's `param` names the field.
+- **Reasoning:** this listener never returns a model's reasoning text. `usage.completion_tokens_details.reasoning_tokens` is included when the backend reports it.
 - **Not available:** embeddings, images, the Responses/Assistants APIs, fine-tuning and files.
 
 ## Errors
@@ -131,6 +142,8 @@ console.log(reply.choices[0].message.content);
 | 429 | `rate_limit_exceeded` | The model backend is rate-limiting. Wait and retry with backoff |
 | 502 / 503 | `upstream_failure` / `upstream_unavailable` | The model backend is down or restarting. Try again later (after `Retry-After` seconds if present) |
 | 503 | `gateway_busy` | No slot freed up in time. Retry after the `Retry-After` seconds |
+| 503 | `gateway_upload_busy` | Request-buffer capacity is full. Retry after `Retry-After` seconds |
+| 408 | `request_upload_timeout` | The request body did not arrive before the upload deadline |
 | 504 | `upstream_timeout` | The model took too long |
 | 5xx page from Cloudflare | — | The gateway itself is offline, for example because the host is asleep or restarting |
 

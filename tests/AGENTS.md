@@ -14,10 +14,18 @@
 ## Fixtures and config variants
 - `fixtures/config/example.toml` is the schema fixture every suite starts from. Make variants by string `replace` on it, write a unique temp file, `kanata::config::load` it, then delete it (`support/gateway.rs`, `tests/config.rs` `check`). Assert that the replacement actually changed the text (`assert_ne!` or `contains`).
 - Provider payloads live in `fixtures/{openai,ollama,openrouter,vllm,codex}/`, contract JSON in `fixtures/contracts/`, and Codex auth flows in `fixtures/codex_login/`, `fixtures/codex_token/`.
-- `tests/config.rs` also validates the `config/*.example.toml` templates, so template edits must keep them valid.
+- `support/template.rs` isolates example templates and explicit empty key files.
+
+`tests/config.rs` also validates the `config/*.example.toml` templates, so template edits must keep them valid.
 
 ## Timing
 - Prefer `#[tokio::test(start_paused = true)]` with `tokio::time::advance` and `poll_once` for queue and timeout logic when no real sockets are involved. With real sockets, paused time races auto-advance; use short real timeouts instead (see `metrics/socket.rs`, which uses `BoundTwoPlaneServer::with_header_read_timeout`).
 
 ## Live tests
 - `ollama_live.rs` and one `serve_smoke.rs` case are `#[ignore]` and need real services (local Ollama `qwen3:0.6b`; `KANATA_TEST_PUBLIC_BIND`). Run them only when asked, with `-- --ignored`.
+
+- `api_guide.rs`: exact public page exception, static page non-disclosure, CSP hashes, authenticated discovery and cache headers.
+- `uploads.rs`: upload slots, byte reservations, cancellation and phase timing. `diagnostics.rs`: native health/doctor HTTP contracts.
+- Parser mutation fuzzing is `cargo test --lib parser_mutation_smoke` (`KANATA_FUZZ_CASES` controls its bounded case count). The manual transport benchmark is the single ignored `connection_reuse_benchmark` unit test; it uses only loopback fixtures.
+
+- `guide/code.test.mjs`: run with `node --test tests/guide/code.test.mjs`; checks highlighted text preservation and code-literal escaping.

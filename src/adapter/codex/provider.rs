@@ -160,7 +160,11 @@ impl Adapter for CodexAdapter {
                 return Box::pin(async { Err(unsupported_operation()) });
             }
         };
-        let payload = match protocol::to_responses_request(&routed, reasoning_effort) {
+        let payload = match protocol::to_responses_request(
+            &routed,
+            reasoning_effort,
+            binding.reasoning_summary(),
+        ) {
             Ok(payload) => payload,
             Err(error) => return Box::pin(async move { Err(error) }),
         };

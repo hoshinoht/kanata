@@ -52,9 +52,9 @@ struct MessagePayload {
     // A refusal without content still fails as an empty reply.
     #[serde(default, rename = "refusal")]
     _refusal: Option<String>,
-    // Reasoning is accepted and not forwarded.
-    #[serde(default, rename = "reasoning")]
-    _reasoning: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
+    // Structured reasoning is accepted and not forwarded.
     #[serde(default, rename = "reasoning_details")]
     _reasoning_details: Option<serde_json::Value>,
     #[serde(default)]
@@ -91,8 +91,8 @@ pub(super) struct UsagePayload {
     _cost_details: Option<IgnoredAny>,
     #[serde(default, rename = "prompt_tokens_details")]
     _prompt_tokens_details: Option<IgnoredAny>,
-    #[serde(default, rename = "completion_tokens_details")]
-    _completion_tokens_details: Option<IgnoredAny>,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
     #[serde(default, rename = "is_byok")]
     _is_byok: Option<IgnoredAny>,
     #[serde(default, rename = "server_tool_use_details")]
@@ -125,6 +125,7 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         return Err(upstream_failure());
     }
     let finish_reason = parse_finish_reason(&choice.finish_reason)?;
+    let reasoning = choice.message.reasoning.filter(|text| !text.is_empty());
     let mut content = Vec::new();
     if let Some(text) = choice.message.content.filter(|text| !text.is_empty()) {
         content.push(ChatContent::Text { text });
@@ -166,6 +167,7 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         },
         finish_reason,
         usage,
+        reasoning,
     })
 }
 
@@ -197,7 +199,16 @@ pub(super) fn normalize_usage(usage: UsagePayload) -> Result<Usage, GatewayError
         input_tokens: usage.prompt_tokens,
         output_tokens: usage.completion_tokens,
         total_tokens: usage.total_tokens,
+        reasoning_tokens: usage
+            .completion_tokens_details
+            .and_then(|details| details.reasoning_tokens),
     })
+}
+
+#[derive(Deserialize)]
+pub(super) struct CompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
 }
 
 pub(super) fn parse_finish_reason(value: &str) -> Result<FinishReason, GatewayError> {

@@ -1,6 +1,9 @@
+#[path = "../../../../tests/support/template.rs"]
+mod template;
+
 use serde_json::{Value, json};
 
-use crate::config::{self, CodexReasoningEffort};
+use crate::config::{self, CodexReasoningEffort, CodexReasoningSummary};
 use crate::core::{
     ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, Extensions, FunctionTool,
     InputAudioFormat, ModelAlias, Operation, Request, RequestContext, RouteIdentity, RoutedRequest,
@@ -50,7 +53,7 @@ fn route(chat: ChatRequest, context: RequestContext) -> RoutedRequest {
 }
 
 fn to_responses_request(routed: &RoutedRequest) -> Result<Value, crate::core::GatewayError> {
-    map_responses_request(routed, CodexReasoningEffort::Medium)
+    map_responses_request(routed, CodexReasoningEffort::Medium, None)
 }
 
 fn error_kind(result: Result<Value, crate::core::GatewayError>) -> ErrorKind {
@@ -87,13 +90,14 @@ fn simple_text_and_function_tool_match_sanitized_private_request_fixture() {
         .find(|route| route.identity().route_id == "codex-chat")
         .and_then(|route| route.codex_reasoning_effort())
         .expect("unsuffixed Codex route defaults to medium");
-    let actual = map_responses_request(&routed, reasoning_effort).expect("text chat maps");
+    let actual = map_responses_request(&routed, reasoning_effort, None).expect("text chat maps");
     assert_eq!(actual, fixture["body"]);
 }
 
 #[test]
 fn configured_low_alias_maps_effort_and_explicit_upstream_id_verbatim() {
-    let config = config::load("config/personal.example.toml").expect("personal config validates");
+    let template = template::Template::new("personal.example.toml");
+    let config = config::load(&template.0).expect("personal config validates");
     let configured_route = config
         .routes()
         .iter()
@@ -110,11 +114,16 @@ fn configured_low_alias_maps_effort_and_explicit_upstream_id_verbatim() {
     let mut chat = chat(vec![message(ChatRole::User, "question")]);
     chat.model = ModelAlias("gpt-6-luna:low".into());
 
-    let actual = map_responses_request(&route(chat, request_context), reasoning_effort)
-        .expect("low-effort chat maps");
+    let actual = map_responses_request(
+        &route(chat, request_context),
+        reasoning_effort,
+        Some(CodexReasoningSummary::Auto),
+    )
+    .expect("low-effort chat maps");
 
     assert_eq!(actual["model"], "gpt-6-luna");
     assert_eq!(actual["reasoning"]["effort"], "low");
+    assert_eq!(actual["reasoning"]["summary"], "auto");
     assert_ne!(actual["model"], "gpt-6-luna:low");
 }
 

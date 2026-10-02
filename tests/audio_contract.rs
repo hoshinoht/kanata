@@ -1,3 +1,6 @@
+#[path = "support/template.rs"]
+mod template;
+
 #[path = "support/gateway.rs"]
 mod support;
 
@@ -192,7 +195,8 @@ fn audio_stream_and_tool_history_need_independent_capabilities() {
 
 #[tokio::test]
 async fn text_only_ollama_and_vllm_reject_audio_before_network_dispatch() {
-    let config = config::load("config/personal.example.toml").expect("text-only config");
+    let template = template::Template::new("personal.example.toml");
+    let config = config::load(&template.0).expect("text-only config");
     let routes = ["local-chat", "private-chat-a"];
     for (adapter_index, route_alias) in [(0, routes[0]), (1, routes[1])] {
         let adapter_config = &config.adapters()[adapter_index];

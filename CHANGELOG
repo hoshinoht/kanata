@@ -2,8 +2,25 @@
 
 ## [Unreleased]
 
+## [1.0.0-beta.5] - 2026-10-03
+
+Scoped browser documentation, bounded uploads, output-cap enforcement, usage accounting and operational diagnostics.
+
 ### Added
 
+- Material 3 Expressive API guide with the Relay logo and embedded favicon, responsive tonal panels, outlined SVG brand assets and desktop/mobile README screenshots. The favicon uses a data URI allowed by `img-src data:`; no new public asset paths were added. Checked locally with fixture keys; this design has not been deployed.
+- Refined API guide with bundled Maple Mono, syntax highlighting and keyboard-accessible cURL/JavaScript/Python/Go/Rust tabs for chat and transcription, including dependency and run instructions. Examples were checked against a local mock server; this visual update has not been deployed.
+- Embedded API reference at `GET /v1` and `/v1/` on both client listeners. Generic documentation is public; optional key entry fetches the existing authenticated `/v1/models` listing to show permitted models, operations, capabilities and request examples. Browser keys stay in memory and are cleared on disconnect or navigation. Verified with fixtures, local browser checks and deployed guide/authentication smoke checks; no live-provider inference is implied.
+- Shared input payload reservations and upload-slot limits, acquired before reading chat or transcription bodies and held through queueing and dispatch. Configure `limits.max_uploads` and `limits.max_buffered_bytes`; exhausted capacity returns `503 gateway_upload_busy` with `Retry-After`. `timeouts.upload_ms` adds a dedicated body deadline (`408 request_upload_timeout`). Reservations bound payload capacity, not total process memory.
+- Queue-wait, first-content and upstream-duration histograms; queue/buffer occupancy and key-reload health metrics. Loopback `/status` reports readiness and key-reload health. Key/model metric series are pruned against current keys when scraped and capped at 16,384 series per process.
+- Per-key reported input/output/reasoning token totals and explicit missing-usage counts for upstream attempts, including streams without client-requested usage chunks. Usage state v2 reads v1 files; token history starts when this instrumentation is enabled. JSON key listings and `key show` expose the totals.
+- `kanata doctor --config <path> [--plane ...] [--probe-backends]` for config, key permissions and loopback status; optional probes check TCP only. `kanata health --config <path>` supplies a native readiness probe for the distroless image and Compose health checks.
+- Linux/macOS CI matrix, pinned dependency-audit tooling, isolated template validation, a container lifecycle smoke test, deterministic parser mutation fuzzing, and a manual loopback connection-reuse benchmark. These are test facilities, not claims of live provider availability or deployment.
+
+- Reasoning passthrough on the private listener: chat replies carry the backend's reasoning as `choices[0].message.reasoning_content`, streams send it as `delta.reasoning_content` chunks, and usage adds `completion_tokens_details.reasoning_tokens` when the backend reports it. Sources: Ollama `reasoning`, vLLM `reasoning` / `reasoning_content`, OpenRouter `reasoning` (not `reasoning_details`), and Codex reasoning summaries plus `output_tokens_details.reasoning_tokens`. Reasoning text is capped at 256 KiB per reply and is never returned on the public listener; reasoning token counts are returned on both. Ollama's OpenAI-compatible API reports no reasoning token count. Checked with fixtures and in-process tests only, not against live backends.
+- `routes[].codex_reasoning_summary` (`auto`, `concise` or `detailed`, Codex chat routes only) sends `reasoning.summary` to ask Codex for a reasoning summary.
+- `routes[].max_output_tokens` (chat only, at most `context_tokens` when both are set) declares a route's output cap. It is shown on `/v1/models` as `kanata.max_output_tokens` (`null` when unset), and a larger `max_tokens`/`max_completion_tokens` is rejected with `400 invalid_request` naming that field.
+- The access line now carries `reasoning_effort` (the client's value, or the effort a Codex effort route pins) and, on the private listener only, `client_request_id`, the caller's validated `x-request-id` (`-` when not sent, and always `-` on the public listener). Previously the caller's id was kept out of all logs.
 - OpenRouter audio: an OpenRouter adapter can now declare `input_audio` (and `audio_streaming_chat`) to forward `input_audio` chat parts, and the `transcription` operation to use OpenRouter's `/audio/transcriptions` speech-to-text endpoint (e.g. `mistralai/voxtral-small-24b-2507` for audio chat, `mistralai/voxtral-small-24b-2507-stt` for transcription). Transcription accepts `language`; a `prompt` is rejected because the endpoint ignores it. Checked live against OpenRouter with Voxtral Small: audio chat (normal and streaming) and transcription.
 - vLLM on a remote host: a vLLM adapter may now use `trust_zone = "external"`, which requires a `secret_ref` sent as a bearer token (for vLLM's `--api-key`). Any vLLM adapter with a `secret_ref` must use an `https` `base_url`.
 - Opt-in `compose.kanata.omnilion.yml` passes an OmniLion API key file to both the private and public containers as a Compose secret (`file:/run/secrets/omnilion-api-key`), for a remote vLLM adapter reachable on the public plane.
@@ -22,9 +39,20 @@
 
 ### Changed
 
+- Route output caps now supply the upstream limit when clients omit `max_tokens`/`max_completion_tokens`. Cap configurations require declared sampling controls and a supporting provider; Codex caps are rejected.
+- Configuration schema, validation and plane filtering now live in separate modules; key CLI argument parsing and display code are separated.
+
 - `kanata key new` no longer prints an `[[application_keys]]` block; it writes `keys.toml` (requires `--config` and `--expires`).
 - **BREAKING for every Compose deployment**, including un-migrated inline configs: `KANATA_KEYS_DIR` and `KANATA_STATE_DIR` are required and must be `<config dir>/keys` and `<config dir>/state`. The keys directory is mounted read-only at `/etc/kanata/keys`; `state/private` and `state/public` are mounted writable at `/etc/kanata/state`. `scripts/kanata.sh` checks the paths and creates missing directories (0700).
 - `scripts/kanata.sh key ...` now runs the host `kanata key ...` with `--config` set to the deployed config.
+- Ollama streams: the adapter now recognises Ollama's `reasoning` delta field (it previously looked only for `reasoning_content`, which Ollama doesn't send).
+- Streamed reasoning now counts as stream activity for the first-byte and idle timeouts, on both listeners.
+
+### Fixed
+
+- Updated the yanked transitive `yoke-derive` dependency from 0.8.3 to compatible 0.8.4.
+
+- Template-based provider/routing tests no longer read local operator keys.
 
 ### Deprecated
 
@@ -33,6 +61,7 @@
 
 ### Security
 
+- Only `GET`/`HEAD` on the exact guide paths bypass public-listener authentication. Model discovery and inference remain authenticated and scoped; the static page contains no deployment inventory. Guide and model-list responses use `Cache-Control: no-store`; the guide embeds its assets with a hash-based Content Security Policy and makes only same-origin, non-redirecting discovery requests.
 - Key management has no network path: `kanata key` runs only on the host (or over SSH), and no listener or admin endpoint exposes it.
 - `keys.toml` (and the lock, audit and `--key-out` files) are written 0600; the server and CLI reject a group- or world-writable keys file.
 - Revoked keys are indistinguishable from unknown keys (private `401 invalid_api_key`, public `403`).

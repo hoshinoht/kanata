@@ -253,6 +253,7 @@ async fn stream_text_is_demand_driven_and_normalizes_fragmented_utf8_sse() {
                     input_tokens: 11,
                     output_tokens: 7,
                     total_tokens: 18,
+                    reasoning_tokens: None,
                 })
             }
         ]
@@ -476,12 +477,13 @@ async fn sse_bom_comments_and_multiline_data_are_normalized() {
         events.as_slice(),
         [
             NormalizedEvent::ChatStarted { .. },
+            NormalizedEvent::ChatReasoningDelta { text: reasoning },
             NormalizedEvent::ChatTextDelta { text },
             NormalizedEvent::ChatCompleted {
                 finish_reason: FinishReason::Stop,
                 usage: None
             }
-        ] if text == "visible"
+        ] if reasoning == "hidden" && text == "visible"
     ));
     mock.finish().await;
 }

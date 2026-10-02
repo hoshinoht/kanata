@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::{Plane, valid_identifier};
 use crate::keys::{file, time};
 
-pub const USAGE_FILE_VERSION: u32 = 1;
+pub const USAGE_FILE_VERSION: u32 = 2;
 pub const FLUSH_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_USAGE_FILE_BYTES: u64 = 1024 * 1024;
 
@@ -21,13 +21,40 @@ const MAX_USAGE_FILE_BYTES: u64 = 1024 * 1024;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct KeyUsage {
     pub requests: u64,
+    pub tokens: TokenUsage,
     /// Unix seconds.
     pub last_used_at: u64,
+}
+
+/// Totals include only reported usage; missing counts are explicit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenUsage {
+    pub reported: u64,
+    pub missing: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub reasoning_reported: u64,
+}
+
+impl TokenUsage {
+    fn merge(&mut self, other: Self) {
+        self.reported = self.reported.saturating_add(other.reported);
+        self.missing = self.missing.saturating_add(other.missing);
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.reasoning_tokens = self.reasoning_tokens.saturating_add(other.reasoning_tokens);
+        self.reasoning_reported = self
+            .reasoning_reported
+            .saturating_add(other.reasoning_reported);
+    }
 }
 
 impl KeyUsage {
     fn merge(&mut self, other: KeyUsage) {
         self.requests = self.requests.saturating_add(other.requests);
+        self.tokens.merge(other.tokens);
         self.last_used_at = self.last_used_at.max(other.last_used_at);
     }
 }
@@ -43,6 +70,8 @@ struct RawUsageFile {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RawKeyUsage {
+    #[serde(default)]
+    tokens: TokenUsage,
     requests: u64,
     last_used_at: String,
 }
@@ -73,7 +102,7 @@ fn read_file(path: &Path) -> Result<Option<BTreeMap<String, KeyUsage>>, ()> {
 
 fn parse(bytes: &[u8]) -> Result<BTreeMap<String, KeyUsage>, ()> {
     let raw: RawUsageFile = serde_json::from_slice(bytes).map_err(|_| ())?;
-    if raw.version != USAGE_FILE_VERSION
+    if !matches!(raw.version, 1 | USAGE_FILE_VERSION)
         || Plane::parse(&raw.plane).is_none()
         || raw.keys.len() > file::MAX_KEY_RECORDS
     {
@@ -88,6 +117,7 @@ fn parse(bytes: &[u8]) -> Result<BTreeMap<String, KeyUsage>, ()> {
                 id,
                 KeyUsage {
                     requests: usage.requests,
+                    tokens: usage.tokens,
                     last_used_at,
                 },
             ))
@@ -106,6 +136,7 @@ fn render(plane: Plane, keys: &BTreeMap<String, KeyUsage>) -> Vec<u8> {
                     id.clone(),
                     RawKeyUsage {
                         requests: usage.requests,
+                        tokens: usage.tokens,
                         last_used_at: time::format(usage.last_used_at),
                     },
                 )
@@ -224,10 +255,35 @@ impl UsageHandle {
                 key_id.to_owned(),
                 KeyUsage {
                     requests: 1,
+                    tokens: TokenUsage::default(),
                     last_used_at: now,
                 },
             );
         }
+        state.dirty = true;
+    }
+
+    /// Records the final usage of an upstream attempt, including missing reports.
+    pub fn record_tokens(&self, key_id: &str, usage: Option<&crate::core::Usage>) {
+        let mut state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(key) = state.keys.get_mut(key_id) else {
+            return;
+        };
+        let totals = match usage {
+            Some(usage) => TokenUsage {
+                reported: 1,
+                missing: 0,
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                reasoning_tokens: usage.reasoning_tokens.unwrap_or(0),
+                reasoning_reported: u64::from(usage.reasoning_tokens.is_some()),
+            },
+            None => TokenUsage {
+                missing: 1,
+                ..TokenUsage::default()
+            },
+        };
+        key.tokens.merge(totals);
         state.dirty = true;
     }
 
@@ -345,12 +401,13 @@ mod tests {
             "alpha".to_owned(),
             KeyUsage {
                 requests: 3,
+                tokens: TokenUsage::default(),
                 last_used_at: 1_790_000_000,
             },
         )]);
         assert_eq!(parse(&render(Plane::Public, &keys)), Ok(keys));
         for invalid in [
-            r#"{"version":2,"plane":"all","keys":{}}"#,
+            r#"{"version":3,"plane":"all","keys":{}}"#,
             r#"{"version":1,"plane":"other","keys":{}}"#,
             r#"{"version":1,"plane":"all","keys":{"a b":{"requests":1,"last_used_at":"2026-01-01T00:00:00Z"}}}"#,
             r#"{"version":1,"plane":"all","keys":{"a":{"requests":1,"last_used_at":"yesterday"}}}"#,

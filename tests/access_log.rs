@@ -124,6 +124,8 @@ async fn private_request_logs_key_and_model_but_not_secrets_or_client_ip() {
             "stream=false",
             "adapter=\"vllm-private\"",
             "client_ip=-",
+            "client_request_id=\"-\"",
+            "reasoning_effort=\"-\"",
         ],
     );
     let text = capture.text();
@@ -136,6 +138,74 @@ async fn private_request_logs_key_and_model_but_not_secrets_or_client_ip() {
     ] {
         assert!(!text.contains(secret), "leaked {secret}: {text}");
     }
+}
+
+#[tokio::test]
+async fn caller_request_id_and_route_pinned_reasoning_effort_are_logged() {
+    let config = support::config();
+    let (server, _) = support::server_with(
+        &config,
+        vec![support::adapter_spec(
+            "codex-private",
+            support::capabilities(&config, "codex-private"),
+            support::chat_outcome("SYNTHETIC_OUTPUT"),
+        )],
+    );
+    let body = r#"{"model":"codex-chat","messages":[{"role":"user","content":"x"}]}"#;
+    let capture = captured(async {
+        server
+            .client_oneshot(support::chat_request_with(
+                body,
+                Some(support::CHAT_CONTENT_TYPE),
+                Some("Bearer test-key"),
+                &["caller-42"],
+            ))
+            .await
+            .expect("response")
+    })
+    .await;
+    assert_fields(
+        &capture.access_line(),
+        &[
+            "status=200",
+            "client_request_id=\"caller-42\"",
+            "reasoning_effort=\"medium\"",
+        ],
+    );
+}
+
+#[tokio::test]
+async fn public_request_does_not_log_the_caller_request_id() {
+    let config = support::config_with_public_routes(&[("private-chat", "chat")]);
+    let (server, _) = support::server_with(
+        &config,
+        vec![support::adapter_spec(
+            "vllm-private",
+            support::capabilities(&config, "vllm-private"),
+            support::chat_outcome("SYNTHETIC_OUTPUT"),
+        )],
+    );
+    let capture = captured(async {
+        server
+            .public_oneshot(support::chat_request_with(
+                &chat_body(),
+                Some(support::CHAT_CONTENT_TYPE),
+                Some("Bearer test-key"),
+                &["caller-42"],
+            ))
+            .await
+            .expect("public router")
+    })
+    .await;
+    assert_fields(
+        &capture.access_line(),
+        &[
+            "listener=\"public\"",
+            "status=200",
+            "client_request_id=\"-\"",
+        ],
+    );
+    assert!(!capture.text().contains("caller-42"));
 }
 
 #[tokio::test]

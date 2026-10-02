@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Kanata · API guide</title>
+  <meta name="theme-color" content="#f6f7ff">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,{{FAVICON}}">
+  <style>{{STYLE}}</style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="topbar">
+    <a class="brand" href="/v1"><span class="mark" aria-hidden="true">{{LOGO}}</span> kanata <span class="divider">/</span> <span class="brand-sub">developer guide</span></a>
+    <span class="connection" id="connection">Public reference</span>
+  </header>
+  <div class="layout">
+    <aside aria-label="Guide navigation">
+      <div class="eyebrow">GATEWAY</div>
+      <p class="host" id="host"></p>
+      <nav>
+        <a href="#main">Overview</a>
+        <a href="#access">Your access</a>
+        <a href="#reference">API reference</a>
+      </nav>
+      <div class="sidebar-note">Authentication<p>Send your key as an <code>Authorization: Bearer</code> header on every API request.</p></div>
+    </aside>
+    <main id="main">
+      <div class="overview-grid">
+      <section class="intro">
+        <div class="eyebrow">DEVELOPER REFERENCE</div>
+        <h1>Build with<br><em>Kanata.</em></h1>
+        <p class="lede">From your first request to streaming responses. Explore the API, or connect a key to see exactly what you can use.</p>
+        <div class="base"><span>BASE URL</span><code id="base-url"></code></div>
+      </section>
+      <section class="auth panel" aria-labelledby="connect-title">
+        <div><h2 id="connect-title">Explore your access</h2><p>Your key stays in this tab’s memory until you disconnect or leave. Connecting requests model information and does not run inference.</p></div>
+        <form id="key-form" autocomplete="off">
+          <label for="api-key">Bearer key</label>
+          <div class="input-row"><input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your API key" maxlength="4096" required aria-describedby="status"><button id="connect" type="submit">View my access <span aria-hidden="true">↗</span></button></div>
+        </form>
+        <div id="session" hidden><button id="refresh" class="secondary" type="button">Refresh access</button><button id="disconnect" class="text-button" type="button">Disconnect</button></div>
+        <p id="status" role="status" aria-live="polite"></p>
+        <noscript><p>Enable JavaScript to display the guide. API clients can use GET /v1/models with an Authorization: Bearer header.</p></noscript>
+      </section>
+      </div>
+      <section id="access" aria-labelledby="access-title">
+        <div class="section-heading"><h2 id="access-title">Available models</h2><span id="model-count" class="count">KEY REQUIRED</span></div>
+        <div id="models"><p class="empty">Connect a key to see its models and supported operations.</p></div>
+      </section>
+      <section id="reference" aria-labelledby="reference-title">
+        <div class="section-heading"><h2 id="reference-title">API reference</h2></div>
+        <div id="reference-content">
+          <div id="model-picker" hidden><label for="model-select">Model</label><select id="model-select"></select></div>
+          <p class="muted">Examples use <code>$KANATA_API_KEY</code>. Set it in your local environment. Your key is never included in copied examples.</p>
+          <p id="scope-note" class="muted">Generic examples use placeholder aliases. Endpoint availability and optional features depend on your key and the configured routes.</p>
+          <div id="model-guide"><p class="muted">POST /v1/chat/completions accepts JSON with model and messages. POST /v1/audio/transcriptions accepts multipart form data with model and file. Both require an Authorization: Bearer header.</p></div>
+          <details class="panel"><summary>List models · GET /v1/models</summary><p>Returns only configured, bound routes allowed by your key and this listener. Listing a model does not confirm backend health. Refresh access after a key or route change.</p><pre><code id="models-example"></code></pre></details>
+          <details class="panel"><summary>Errors and request limits</summary><p>Errors use <code>{"error":{"message":"…","type":"…","param":null,"code":"…"}}</code>. A field error may name the rejected parameter.</p><dl class="errors"><dt>400</dt><dd>Invalid or unsupported input. Check the error’s <code>param</code>.</dd><dt>401 / 403</dt><dd>Invalid, expired or revoked key, or access denied for this model and operation.</dd><dt>408 / 413</dt><dd>Upload timed out or the request exceeded the configured size limit.</dd><dt>429 / 503</dt><dd>Key, queue or upload capacity reached, or backend unavailable. Honor <code>Retry-After</code> when present.</dd><dt>502 / 504</dt><dd>Backend response failure or timeout.</dd></dl><p>Unknown request fields are rejected. Permissions and limits are enforced on every API request.</p></details>
+        </div>
+      </section>
+      <footer>kanata <span>Scoped by your key. Served from this gateway.</span></footer>
+      <details class="font-license"><summary>Maple Mono · font license</summary><pre>{{FONT_LICENSE}}</pre></details>
+    </main>
+  </div>
+  <script>{{SCRIPT}}</script>
+</body>
+</html>

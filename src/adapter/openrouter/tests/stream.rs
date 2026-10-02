@@ -139,6 +139,7 @@ async fn verified_https_stream_normalizes_fragmented_sse_usage_and_utf8() {
                     input_tokens: 11,
                     output_tokens: 7,
                     total_tokens: 18,
+                    reasoning_tokens: Some(0),
                 })
             }
         ]
@@ -350,6 +351,7 @@ fn length_stop_without_text_completes_empty_and_stop_does_not() {
             events.as_slice(),
             [
                 NormalizedEvent::ChatStarted { .. },
+                NormalizedEvent::ChatReasoningDelta { .. },
                 NormalizedEvent::ChatCompleted {
                     finish_reason: FinishReason::Length,
                     ..

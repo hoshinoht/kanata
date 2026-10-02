@@ -1,5 +1,6 @@
 pub(crate) mod admission;
 pub(crate) mod breaker;
+pub(crate) mod uploads;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,6 +21,8 @@ pub struct RouteEntry {
     pub requires_streaming_chat: bool,
     pub requires_function_tools: bool,
     pub context_tokens: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub pinned_reasoning_effort: Option<&'static str>,
 }
 
 #[derive(Clone, Debug)]
@@ -77,5 +80,7 @@ fn entry(route: &ValidatedRoute, adapter: &ValidatedAdapter) -> RouteEntry {
         requires_streaming_chat: route.requires_streaming_chat(),
         requires_function_tools: route.requires_function_tools(),
         context_tokens: route.context_tokens(),
+        max_output_tokens: route.max_output_tokens(),
+        pinned_reasoning_effort: route.pinned_reasoning_effort(),
     }
 }

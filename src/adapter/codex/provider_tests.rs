@@ -585,6 +585,7 @@ async fn live_shape_stream_without_content_type_collects_and_streams() {
                             assert_eq!(model, ModelAlias(MEDIUM_MODEL.into()));
                         }
                         NormalizedEvent::ChatTextDelta { text: delta } => text.push_str(&delta),
+                        NormalizedEvent::ChatReasoningDelta { .. } => {}
                         NormalizedEvent::ChatToolCallDelta {
                             arguments_delta, ..
                         } => arguments.push_str(&arguments_delta),
@@ -623,6 +624,7 @@ async fn live_shape_stream_without_content_type_collects_and_streams() {
                 input_tokens: 120,
                 output_tokens: 48,
                 total_tokens: 168,
+                reasoning_tokens: Some(32),
             })
         );
         assert_eq!(
@@ -733,6 +735,7 @@ async fn verified_https_request_uses_exact_codex_wire_and_collects_tool_response
             input_tokens: 4,
             output_tokens: 3,
             total_tokens: 7,
+            reasoning_tokens: None,
         })
     );
 
@@ -802,7 +805,8 @@ async fn named_fragmented_sse_stream_relays_text_tools_and_usage_without_executi
             usage: Some(Usage {
                 input_tokens: 4,
                 output_tokens: 3,
-                total_tokens: 7
+                total_tokens: 7,
+                reasoning_tokens: None
             })
         }
     )));

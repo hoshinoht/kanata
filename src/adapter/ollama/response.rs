@@ -32,6 +32,10 @@ struct MessagePayload {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
+    reasoning: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
     tool_calls: Option<Vec<ToolCallPayload>>,
 }
 
@@ -54,6 +58,14 @@ struct UsagePayload {
     prompt_tokens: u64,
     completion_tokens: u64,
     total_tokens: u64,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct CompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
 }
 
 pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatResponse, GatewayError> {
@@ -71,6 +83,11 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         return Err(upstream_failure());
     }
     let finish_reason = parse_finish_reason(&choice.finish_reason)?;
+    let reasoning = choice
+        .message
+        .reasoning
+        .or(choice.message.reasoning_content)
+        .filter(|text| !text.is_empty());
     let mut content = Vec::new();
     if let Some(text) = choice.message.content
         && !text.is_empty()
@@ -111,6 +128,9 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         input_tokens: usage.prompt_tokens,
         output_tokens: usage.completion_tokens,
         total_tokens: usage.total_tokens,
+        reasoning_tokens: usage
+            .completion_tokens_details
+            .and_then(|details| details.reasoning_tokens),
     });
     Ok(ChatResponse {
         model: public_model,
@@ -120,6 +140,7 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         },
         finish_reason,
         usage,
+        reasoning,
     })
 }
 

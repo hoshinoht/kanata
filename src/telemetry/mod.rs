@@ -10,7 +10,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU16, Ordering},
 };
 use std::task::{Context, Poll};
-use std::time::Instant;
+use tokio::time::Instant;
 
 use axum::{
     body::Body,
@@ -68,6 +68,13 @@ struct Annotations {
     provider: Option<String>,
     error_code: Option<&'static str>,
     response_code: Option<&'static str>,
+    reasoning_effort: Option<&'static str>,
+    client_request_id: Option<String>,
+    queue_started: Option<Instant>,
+    upstream_started: Option<Instant>,
+    first_content: bool,
+    usage_recorder: Option<crate::keys::usage::UsageHandle>,
+    usage: Option<crate::core::Usage>,
 }
 
 #[derive(Clone)]
@@ -101,6 +108,10 @@ impl Telemetry {
         }
     }
 
+    pub(crate) fn retain_keys(&self, keys: &std::collections::BTreeSet<String>) {
+        self.metrics.retain_keys(keys);
+    }
+
     pub(crate) fn render(&self, live: bool, ready: bool) -> String {
         self.metrics.render(live, ready)
     }
@@ -124,7 +135,50 @@ struct Observation {
 }
 
 impl Observer {
+    pub(crate) fn attach_usage(&self, recorder: crate::keys::usage::UsageHandle) {
+        self.annotations().usage_recorder = Some(recorder);
+    }
+    pub(crate) fn record_usage(&self, usage: Option<crate::core::Usage>) {
+        self.annotations().usage = usage;
+    }
+    pub(crate) fn begin_queue(&self) {
+        self.annotations().queue_started = Some(Instant::now());
+    }
+    pub(crate) fn end_queue(&self) {
+        if let Some(at) = self.annotations().queue_started.take() {
+            self.state
+                .metrics
+                .timing(self.state.endpoint, 0, at.elapsed());
+        }
+    }
+    pub(crate) fn begin_upstream(&self) {
+        let mut annotations = self.annotations();
+        if let Some(at) = annotations.queue_started.take() {
+            self.state
+                .metrics
+                .timing(self.state.endpoint, 0, at.elapsed());
+        }
+        annotations.upstream_started = Some(Instant::now());
+    }
+    pub(crate) fn first_content(&self) {
+        let mut annotations = self.annotations();
+        if !annotations.first_content {
+            annotations.first_content = true;
+            self.state
+                .metrics
+                .timing(self.state.endpoint, 1, self.state.started.elapsed());
+        }
+    }
+    pub(crate) fn end_upstream(&self) {
+        if let Some(at) = self.annotations().upstream_started.take() {
+            self.state
+                .metrics
+                .timing(self.state.endpoint, 2, at.elapsed());
+        }
+    }
+
     pub(crate) fn record_error(&self, error: GatewayError) {
+        self.end_upstream();
         let (outcome, phase) = error_labels(error);
         if !self.record(outcome, phase) {
             return;
@@ -175,6 +229,18 @@ impl Observer {
         annotations.provider = Some(provider.to_owned());
     }
 
+    /// `id` must already be validated as a safe caller-supplied `x-request-id`.
+    /// Recorded on the private listener only.
+    pub(crate) fn annotate_client_request_id(&self, id: &str) {
+        if self.state.meta.listener == Listener::Private {
+            self.annotations().client_request_id = Some(id.to_owned());
+        }
+    }
+
+    pub(crate) fn annotate_reasoning_effort(&self, effort: &'static str) {
+        self.annotations().reasoning_effort = Some(effort);
+    }
+
     fn annotations(&self) -> std::sync::MutexGuard<'_, Annotations> {
         self.state
             .annotations
@@ -215,7 +281,20 @@ impl Observer {
         self.state
             .metrics
             .finish(self.state.endpoint, outcome, status_class, phase, duration);
-        let annotations = self.annotations();
+        self.end_upstream();
+        let mut annotations = self.annotations();
+        if let Some(at) = annotations.queue_started.take() {
+            self.state
+                .metrics
+                .timing(self.state.endpoint, 0, at.elapsed());
+        }
+        if let (Some(recorder), Some(key), Some(_)) = (
+            &annotations.usage_recorder,
+            &annotations.key,
+            &annotations.adapter,
+        ) {
+            recorder.record_tokens(key, annotations.usage.as_ref());
+        }
         let key = annotations.key.as_deref().unwrap_or(UNSET);
         let model = annotations.model.as_deref().unwrap_or(UNSET);
         self.state.metrics.finish_keyed(key, model, status_class);
@@ -223,6 +302,7 @@ impl Observer {
         tracing::info!(
             target: "kanata::access",
             request_id = %self.state.request_id,
+            client_request_id = annotations.client_request_id.as_deref().unwrap_or(UNSET),
             listener = meta.listener.as_str(),
             method = %meta.method,
             endpoint = self.state.endpoint.as_str(),
@@ -238,6 +318,7 @@ impl Observer {
             model,
             operation = annotations.operation.unwrap_or(UNSET),
             stream = annotations.stream,
+            reasoning_effort = annotations.reasoning_effort.unwrap_or(UNSET),
             adapter = annotations.adapter.as_deref().unwrap_or(UNSET),
             client_ip = %meta.client_ip.map_or_else(|| UNSET.to_owned(), |ip| ip.to_string()),
             "request completed",
@@ -278,6 +359,7 @@ impl Observer {
             4 => Phase::FirstByte,
             5 => Phase::Idle,
             6 => Phase::Overall,
+            7 => Phase::Upload,
             _ => return None,
         };
         Some((outcome, phase))

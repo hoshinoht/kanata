@@ -453,3 +453,49 @@ fn inline_keys_have_no_reloader() {
     let server = support::server_without_adapters(&config);
     assert!(KeyReloader::new(config, Plane::All, server.key_handle()).is_none());
 }
+
+#[tokio::test]
+async fn reload_health_and_metric_retention_follow_the_current_key_set() {
+    let scratch = Scratch::new(false, &keys(&[record("alpha", &[LOCAL], "")]));
+    let config = scratch.load();
+    let (server, _) = support::server_with(&config, Vec::new());
+    let mut reload = KeyReloader::new(config, Plane::All, server.key_handle()).expect("reload");
+    parts(
+        server
+            .client_oneshot(models("alpha"))
+            .await
+            .expect("response"),
+    )
+    .await;
+    let server_ref = &server;
+    let scrape = |path: &'static str| async move {
+        let server = server_ref;
+        let response = server
+            .admin_oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        String::from_utf8(parts(response).await.2.to_vec()).expect("text")
+    };
+    assert!(scrape("/metrics").await.contains("key=\"alpha\""));
+    scratch.write_keys("not a keys file", 0o600);
+    assert_eq!(reload.poll_once(), ReloadOutcome::Rejected);
+    let status: serde_json::Value = serde_json::from_str(&scrape("/status").await).expect("status");
+    assert_eq!(status["key_reload"]["healthy"], false);
+    assert_eq!(status["key_reload"]["failures"], 1);
+    scratch.write_keys(&keys(&[record("beta", &[LOCAL], "")]), 0o600);
+    assert_eq!(reload.poll_once(), ReloadOutcome::Applied);
+    assert!(!scrape("/metrics").await.contains("key=\"alpha\""));
+    let status: serde_json::Value = serde_json::from_str(&scrape("/status").await).expect("status");
+    assert_eq!(status["key_reload"]["healthy"], true);
+    assert!(
+        status["key_reload"]["last_success"]
+            .as_u64()
+            .expect("timestamp")
+            > 0
+    );
+}

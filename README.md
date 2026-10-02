@@ -1,12 +1,14 @@
 <div align="center">
 
+<img src="src/server/guide/relay.svg" alt="Kanata Relay logo" width="80" height="80">
+
 # Kanata
 
 **A lightweight Rust inference gateway: one OpenAI-compatible API in front of your local and remote models.**
 
 *Built for homelabs. Designed as the model gateway for [kanade](https://github.com/hoshinoht/kanade-bot).*
 
-[![Version](https://img.shields.io/badge/version-1.0.0--beta.1-orange)](CHANGELOG)
+[![Version](https://img.shields.io/badge/version-1.0.0--beta.5-orange)](CHANGELOG)
 [![Rust](https://img.shields.io/badge/rust-1.98%2B-b7410e?logo=rust)](Cargo.toml)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![OpenAI compatible](https://img.shields.io/badge/API-OpenAI%20compatible-412991)](#api)
@@ -20,7 +22,7 @@
 > Model execution, batching, tokenization, GPU scheduling and model loading belong to runtimes such as Ollama, vLLM and hosted providers. Kanata owns the application-facing boundary: keys, routing, validation, limits and a safe public edge.
 
 > [!NOTE]
-> **Beta (`1.0.0-beta.4`).** Kanata targets single-host personal deployments. Interfaces may still change before 1.0.
+> **Beta (`1.0.0-beta.5`).** Kanata targets single-host personal deployments. Interfaces may still change before 1.0.
 
 ## At a glance
 
@@ -32,11 +34,29 @@
 | **Listeners** | Private (behind your tailnet proxy) · optional public (Cloudflare tunnel) · loopback admin |
 | **Deploy** | Distroless, non-root, read-only container; Compose profiles publish **no** host ports |
 
+## Browser guide
+
+A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md), Maple Mono code and highlighted examples in five languages. Open `/v1` to browse, then connect a key to see its permitted models and operations.
+
+![Kanata API guide on desktop](docs/images/api-guide-desktop.png)
+
+<details>
+<summary>Code examples and mobile layout</summary>
+
+![Highlighted JavaScript example](docs/images/api-guide-code.png)
+
+<img src="docs/images/api-guide-mobile.png" alt="Kanata API guide on a 390-pixel mobile viewport" width="390">
+
+</details>
+
+*Captured from the local public-reference preview. Model aliases in examples are placeholders, not a live model inventory.*
+
 ## Features
 
 ### 🧭 Routing
 - **Exact routing:** each `(model alias, operation)` maps to one adapter and upstream model, with no wildcards, fallbacks or silent rewrites.
 - **Multi-modal aliases:** one alias can serve several operations, e.g. chat and transcription.
+- **Browser guide:** open `/v1` for public API documentation. Connect a key to see its permitted models, capabilities and examples on that listener. The page keeps the key only in memory; disconnect or navigate away to clear it. Examples include highlighted cURL, JavaScript, Python, Go and Rust, rendered in bundled Maple Mono. Use HTTPS outside localhost.
 - **Scoped listing:** `/v1/models` lists only what the caller's key may use, and each entry includes a `kanata` capability object.
 
 ### 🔌 Adapters
@@ -54,18 +74,19 @@
 - **Bounds:** each field is validated and size-limited.
 - **Capability-gated:** if a route can't honour an option, the request gets **400 naming the parameter** instead of a silent drop.
 - **Tools pass through:** tool declarations, calls and results are forwarded. Kanata never executes tools.
+- **Reasoning (private listener only):** backend reasoning text is returned as `reasoning_content` (Codex gives a summary), with `completion_tokens_details.reasoning_tokens` when reported.
 
 ### 🔐 Keys and exposure
 - **Host key CLI:** `kanata key new|list|show|edit|rm|rotate|migrate` manages keys in `keys.toml` on the host (no network or admin endpoint). Keys are shown once and stored only as SHA-256 digests; every key has an expiry (1–60 days or `unlimited`). Changes apply within about 2 s, without a restart.
-- **Usage and audit:** the server records per-key request counts and last use; the CLI appends every change to `keys/audit.jsonl` (never secrets).
+- **Usage and audit:** the server records per-key request counts, last use and reported token totals; the CLI appends every change to `keys/audit.jsonl` (never secrets).
 - **Owner key:** only one key may be the owner. Any key may be given Codex scopes, but Codex is never served publicly, and with the public profile the public container never loads the owner key or any key with Codex scopes, so use a separate key for public routes.
-- **Public listener:** its allowlist is empty by default. Missing or invalid keys get 403 on **every** path, and it never serves Codex.
+- **Public listener:** its allowlist is empty by default. Missing or invalid keys get 403 except on the exact public guide paths (`GET`/`HEAD /v1` and `/v1/`); it never serves Codex.
 
 ### 📈 Operations
-- **Admission and limits:** bounded admission, request bodies and uploads, and phased timeouts.
+- **Admission and limits:** bounded admission, shared request-buffer reservations, upload concurrency limits and a dedicated upload deadline.
 - **Lifecycle:** cancellation on client disconnect and graceful drain.
-- **Logs:** one access line per request (key id, model, status, timing), and upstream-failure diagnostics that never include keys, prompts or bodies.
-- **Metrics:** Prometheus-style `/metrics` with per-key and per-model counters.
+- **Logs:** one access line per request (key id, model, status, timing, reasoning effort, and on the private listener the caller's `x-request-id` when sent), and upstream-failure diagnostics that never include keys, prompts or bodies.
+- **Metrics:** Prometheus-style `/metrics` with per-key/model counters, queue and upstream timing, first-content latency, buffer occupancy and key-reload health. See [operations](docs/guides/operations.md).
 
 ## Architecture
 
@@ -163,12 +184,13 @@ curl https://kanata.example.com/v1/chat/completions \
     "input_audio": false,
     "trust_zone": "external",
     "context_tokens": null,
+    "max_output_tokens": null,
     "admission": { "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000, "adapter_max_in_flight": null }
   }
 }
 ```
 
-`context_tokens` is the route's declared context window, or `null` for the provider's full window (cloud models). For local Ollama models, see [context length](config/README.md#concepts). `admission` shows the per-route limits from `[limits]` and `[timeouts]`, plus the backend's shared cap (`null` if uncapped), and appears only on the private listener. When a route or backend is full, Kanata answers `429 gateway_queue_full`, or `503 gateway_busy` if no slot frees up within `queue_ms`. Per-key limits answer `429 gateway_key_busy` or `429 gateway_key_rate_limited`, and a backend whose circuit breaker is open answers `503 upstream_unavailable` straight away. All of these carry `Retry-After` and are separate from an upstream `429 rate_limit_exceeded` or `504 upstream_timeout`. See [capacity](config/README.md#concepts).
+`context_tokens` is the route's declared context window, or `null` for the provider's full window (cloud models). For local Ollama models, see [context length](config/README.md#concepts). `max_output_tokens` is the route's declared output cap (`null` if none); a larger `max_tokens` is rejected, and omitted limits inherit the cap. `admission` shows the per-route limits from `[limits]` and `[timeouts]`, plus the backend's shared cap (`null` if uncapped), and appears only on the private listener. When a route or backend is full, Kanata answers `429 gateway_queue_full`, or `503 gateway_busy` if no slot frees up within `queue_ms`. Per-key limits answer `429 gateway_key_busy` or `429 gateway_key_rate_limited`, and a backend whose circuit breaker is open answers `503 upstream_unavailable` straight away. All of these carry `Retry-After` and are separate from an upstream `429 rate_limit_exceeded` or `504 upstream_timeout`. See [capacity](config/README.md#concepts).
 
 Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you give keys to.
 
@@ -183,6 +205,7 @@ Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you
 > [!CAUTION]
 > **Codex** uses ChatGPT's private backend with *your* sign-in; it may change without notice. OpenAI's [Terms of Use](https://openai.com/policies/terms-of-use/) forbid sharing account access, so never expose Codex to other people.
 
+- **Public documentation:** only `GET`/`HEAD /v1` and `/v1/` serve a generic page without authentication. `/v1/models` and inference endpoints still require a key. No configured models, backend addresses or credentials are embedded in the public page. Scripts and styles are embedded with a restrictive Content Security Policy; personalized discovery responses are not cached.
 - **Host isolation:** Docker bridges alone don't isolate containers from each other or from the host, so use a host firewall.
 - **Cloudflare Access** on the public route is optional defence in depth, never a replacement for keys.
 - **Key management is host-only:** `kanata key` edits `keys.toml` directly (0600, one writer at a time) and has no network path. The server rejects a group- or world-writable keys file and keeps the previous keys when a reload fails. Expired keys get `401 key_expired`; revoked keys are treated exactly like unknown keys.
@@ -196,7 +219,7 @@ Requires Rust **1.98+**.
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets
-cargo run -q -- check --config config/container.example.toml
+scripts/check-templates.sh
 ```
 
 <details>

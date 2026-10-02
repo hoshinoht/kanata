@@ -33,6 +33,11 @@ fn option_config() -> ValidatedConfig {
             CODEX_CAPABILITIES_END,
             "function_tools = true\nreasoning_control = true\n\n[[routes]]",
             1,
+        )
+        .replacen(
+            "upstream_id = \"llama3.2:latest\"\n",
+            "upstream_id = \"llama3.2:latest\"\nmax_output_tokens = 4096\n",
+            1,
         );
     let path = std::env::temp_dir().join(format!(
         "kanata-chat-options-{}-{}.toml",
@@ -231,6 +236,36 @@ async fn options_without_a_declared_capability_are_rejected_before_dispatch() {
 }
 
 #[tokio::test]
+async fn output_above_the_route_cap_is_rejected_under_its_wire_name() {
+    let config = option_config();
+    let (server, requests) = server(&config);
+    assert_rejected(
+        &server,
+        "local-chat",
+        json!({"max_tokens": 4097}),
+        json!("max_tokens"),
+    )
+    .await;
+    assert_rejected(
+        &server,
+        "local-chat",
+        json!({"max_completion_tokens": 4097}),
+        json!("max_completion_tokens"),
+    )
+    .await;
+    assert_eq!(recorded_len(&requests), 0);
+
+    let accepted = server
+        .client_oneshot(chat_request(&body(
+            "local-chat",
+            json!({"max_tokens": 4096}),
+        )))
+        .await
+        .expect("response");
+    assert_eq!(accepted.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn reasoning_effort_outside_the_route_backend_range_is_rejected() {
     let config = option_config();
     let (server, requests) = server(&config);
@@ -252,4 +287,23 @@ async fn reasoning_effort_outside_the_route_backend_range_is_rejected() {
         .await
         .expect("response");
     assert_eq!(accepted.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn route_cap_defaults_missing_tokens_and_preserves_smaller_values() {
+    let config = option_config();
+    let (server, requests) = server(&config);
+    for (options, expected) in [
+        (json!({}), 4096),
+        (json!({"max_tokens": 64}), 64),
+        (json!({"max_completion_tokens": 128}), 128),
+    ] {
+        let response = server
+            .client_oneshot(chat_request(&body("local-chat", options)))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let routed = take_request(&requests);
+        assert_eq!(core_chat(routed).options.max_output_tokens, Some(expected));
+    }
 }

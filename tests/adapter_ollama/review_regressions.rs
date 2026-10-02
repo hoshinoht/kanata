@@ -102,6 +102,7 @@ fn choice_chunk(delta: Value, finish_reason: Option<&str>) -> Value {
 async fn stream_completion_requires_visible_text_or_a_tool_call() {
     for delta in [
         json!({"role":"assistant"}),
+        json!({"role":"assistant","reasoning":"hidden"}),
         json!({"role":"assistant","reasoning_content":"hidden"}),
     ] {
         let body = format!(
@@ -155,6 +156,7 @@ async fn stream_length_stop_without_visible_text_completes_empty() {
         events.as_slice(),
         [
             NormalizedEvent::ChatStarted { .. },
+            NormalizedEvent::ChatReasoningDelta { .. },
             NormalizedEvent::ChatCompleted {
                 finish_reason: FinishReason::Length,
                 ..

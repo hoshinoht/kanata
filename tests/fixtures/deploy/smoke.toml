@@ -1,0 +1,41 @@
+# Container lifecycle fixture; no inference requests or credentials.
+[listeners.client]
+bind = "127.0.0.1"
+port = 8080
+[listeners.admin]
+bind = "127.0.0.1"
+port = 9090
+[publication]
+tailnet_addresses = ["100.64.0.10"]
+[[adapters]]
+id = "fixture"
+kind = "ollama"
+base_url = "http://127.0.0.1:11434"
+trust_zone = "local"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = false
+function_tools = false
+[[routes]]
+id = "fixture"
+model_alias = "fixture"
+operation = "chat"
+adapter_id = "fixture"
+upstream_id = "fixture"
+requires_streaming_chat = false
+requires_function_tools = false
+[keys]
+file = "keys/keys.toml"
+[limits]
+max_queue = 1
+max_in_flight = 1
+max_body_bytes = 1048576
+max_audio_bytes = 1048576
+max_extension_bytes = 8192
+[timeouts]
+queue_ms = 1000
+connect_ms = 1000
+headers_ms = 1000
+first_byte_ms = 1000
+idle_ms = 1000
+overall_ms = 5000

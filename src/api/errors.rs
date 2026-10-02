@@ -27,6 +27,19 @@ pub(super) fn request_id(headers: &HeaderMap, state: &ClientState) -> Option<Str
     .then(|| value.into())
 }
 
+/// Logs `id` only when the caller supplied it; `id` comes from [`request_id`].
+pub(super) fn annotate_client_request_id(
+    observer: Option<&Observer>,
+    headers: &HeaderMap,
+    id: &str,
+) {
+    if let Some(observer) = observer
+        && headers.contains_key("x-request-id")
+    {
+        observer.annotate_client_request_id(id);
+    }
+}
+
 pub(super) fn gateway_error(error: GatewayError) -> Response {
     let mapping = error.kind.mapping();
     let status = StatusCode::from_u16(mapping.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -51,6 +64,9 @@ fn gateway_message(kind: ErrorKind) -> &'static str {
         ErrorKind::NotFound => "Not found",
         ErrorKind::Conflict => "Conflict",
         ErrorKind::RateLimited => "Rate limit exceeded",
+        ErrorKind::Timeout {
+            phase: crate::core::TimeoutPhase::Upload,
+        } => "Request upload timed out",
         ErrorKind::Timeout { .. } => "Upstream timeout",
         ErrorKind::Cancelled => "Request cancelled",
         ErrorKind::UpstreamUnavailable => "Upstream unavailable",
@@ -206,4 +222,17 @@ pub(super) fn body_too_large() -> Response {
         "invalid_request_error",
         "invalid_request",
     )
+}
+
+pub(super) fn upload_busy() -> Response {
+    let mut response = error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Request buffer capacity exhausted",
+        "api_error",
+        "gateway_upload_busy",
+    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    response
 }

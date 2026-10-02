@@ -186,7 +186,7 @@ async fn counts_only_authenticated_requests_and_writes_ids_only() {
     assert_eq!(usage.flush_now(), FlushOutcome::Clean);
     let path = scratch.state().join("usage-all.json");
     let json = usage_file(&path);
-    assert_eq!(json["version"], 1);
+    assert_eq!(json["version"], 2);
     assert_eq!(json["plane"], "all");
     let keys = json["keys"].as_object().expect("keys");
     assert_eq!(keys.keys().collect::<Vec<_>>(), ["alpha"]);
@@ -329,9 +329,107 @@ fn merged_reader_sums_planes_across_subdirectories() {
     assert_eq!(
         merged["alpha"],
         KeyUsage {
+            tokens: Default::default(),
             requests: 7,
             last_used_at: kanata::keys::time::parse("2026-04-01T00:00:00Z").expect("time"),
         }
     );
     assert!(read_merged(&state.join("missing")).is_empty());
+}
+
+#[tokio::test]
+async fn tokens_are_recorded_for_complete_and_streamed_replies_with_missing_usage_explicit() {
+    use kanata::{
+        adapter::{Adapter, AdapterFuture, AdapterOutput},
+        core::*,
+    };
+    struct Metered {
+        caps: Capabilities,
+    }
+    impl Adapter for Metered {
+        fn id(&self) -> &str {
+            "ollama-local"
+        }
+        fn capabilities(&self) -> &Capabilities {
+            &self.caps
+        }
+        fn execute(&self, request: RoutedRequest) -> AdapterFuture {
+            let Request::Chat(chat) = request.request() else {
+                unreachable!()
+            };
+            let model = chat.model.clone();
+            let stream = chat.stream;
+            let missing = chat
+                .messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .any(|part| matches!(part, ChatContent::Text { text } if text == "missing"));
+            let usage = (!missing).then_some(Usage {
+                input_tokens: 10,
+                output_tokens: 3,
+                total_tokens: 13,
+                reasoning_tokens: Some(2),
+            });
+            Box::pin(async move {
+                if stream {
+                    Ok(AdapterOutput::Events(Box::pin(futures_util::stream::iter(
+                        [
+                            Ok(NormalizedEvent::ChatStarted { model }),
+                            Ok(NormalizedEvent::ChatTextDelta {
+                                text: "hello".into(),
+                            }),
+                            Ok(NormalizedEvent::ChatCompleted {
+                                finish_reason: FinishReason::Stop,
+                                usage,
+                            }),
+                        ],
+                    ))))
+                } else {
+                    Ok(AdapterOutput::Complete(Response::Chat(ChatResponse {
+                        model,
+                        message: support::assistant_text("hello"),
+                        finish_reason: FinishReason::Stop,
+                        usage,
+                        reasoning: None,
+                    })))
+                }
+            })
+        }
+    }
+    let scratch = Scratch::new(false);
+    let config = scratch.load();
+    let server = kanata::server::TwoPlaneServer::from_validated_with_adapters(
+        &config,
+        &support::Resolver,
+        kanata::server::Readiness::new(true),
+        vec![Arc::new(Metered {
+            caps: support::capabilities(&config, "ollama-local"),
+        })],
+    )
+    .expect("server");
+    let usage = server.open_usage(Plane::All).expect("usage");
+    for (stream, text) in [(false, "reported"), (true, "reported"), (false, "missing")] {
+        let body = serde_json::json!({"model":"local-chat","messages":[{"role":"user","content":text}],"stream":stream}).to_string();
+        let request = support::chat_request_with(
+            &body,
+            Some("application/json"),
+            Some(&format!("Bearer {}", token("alpha"))),
+            &[],
+        );
+        let response = server.client_oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        support::response_body(response).await;
+    }
+    assert_eq!(usage.flush_now(), FlushOutcome::Written);
+    let totals = read_merged(&scratch.state())["alpha"].tokens;
+    assert_eq!((totals.reported, totals.missing), (2, 1));
+    assert_eq!(
+        (
+            totals.input_tokens,
+            totals.output_tokens,
+            totals.reasoning_tokens
+        ),
+        (20, 6, 4)
+    );
+    assert_eq!(totals.reasoning_reported, 2);
 }

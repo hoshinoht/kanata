@@ -1,3 +1,4 @@
+mod benchmark;
 mod encoding;
 mod fixture;
 mod lifecycle;

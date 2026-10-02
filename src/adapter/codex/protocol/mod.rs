@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 
-use crate::config::CodexReasoningEffort;
+use crate::config::{CodexReasoningEffort, CodexReasoningSummary};
 use crate::core::{
     ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, GatewayError, Request,
     RoutedRequest, ToolChoice, TrustZone,
@@ -24,6 +24,7 @@ const MAX_TOOL_NAME_BYTES: usize = 64;
 pub(super) fn to_responses_request(
     routed: &RoutedRequest,
     reasoning_effort: CodexReasoningEffort,
+    reasoning_summary: Option<CodexReasoningSummary>,
 ) -> Result<Value, GatewayError> {
     let context = routed.context();
     let request = routed.request();
@@ -51,6 +52,9 @@ pub(super) fn to_responses_request(
         "store": false,
         "stream": true,
     });
+    if let Some(summary) = reasoning_summary {
+        payload["reasoning"]["summary"] = json!(summary.as_str());
+    }
     if !instructions.is_empty() {
         payload["instructions"] = json!(instructions.join("\n\n"));
     }

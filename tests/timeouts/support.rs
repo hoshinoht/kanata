@@ -171,6 +171,7 @@ impl Adapter for TestAdapter {
                         },
                         finish_reason: FinishReason::Stop,
                         usage: None,
+                        reasoning: None,
                     })))
                 })
             }

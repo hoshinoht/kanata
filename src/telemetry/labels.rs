@@ -137,6 +137,7 @@ impl StatusClass {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum Phase {
+    Upload,
     None,
     Queue,
     Connect,
@@ -147,10 +148,11 @@ pub(crate) enum Phase {
 }
 
 impl Phase {
-    pub(crate) const COUNT: usize = 7;
+    pub(crate) const COUNT: usize = 8;
 
     pub(crate) const fn index(self) -> usize {
         match self {
+            Self::Upload => 7,
             Self::None => 0,
             Self::Queue => 1,
             Self::Connect => 2,
@@ -163,6 +165,7 @@ impl Phase {
 
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::Upload => "upload",
             Self::None => "none",
             Self::Queue => "queue",
             Self::Connect => "connect",
@@ -175,6 +178,7 @@ impl Phase {
 
     pub(crate) const fn from_timeout(value: TimeoutPhase) -> Self {
         match value {
+            TimeoutPhase::Upload => Self::Upload,
             TimeoutPhase::Queue => Self::Queue,
             TimeoutPhase::Connect => Self::Connect,
             TimeoutPhase::Headers => Self::Headers,

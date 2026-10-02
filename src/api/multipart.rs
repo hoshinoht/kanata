@@ -3,8 +3,6 @@ use axum::{extract::Request, http::header};
 use crate::core::{Extensions, ValidatedFile};
 
 const MAX_TEXT_FIELD_BYTES: usize = 8 * 1024;
-const MAX_TEXT_FIELD_COUNT: usize = 5;
-const MAX_MULTIPART_METADATA_BYTES: usize = 64 * 1024;
 
 pub(super) struct MultipartWire {
     pub(super) model: String,
@@ -24,13 +22,10 @@ pub(super) enum MultipartInputError {
 pub(super) async fn parse_multipart(
     request: Request,
     max_audio: usize,
+    body_limit: usize,
 ) -> Result<MultipartWire, MultipartInputError> {
-    let max_text_bytes = MAX_TEXT_FIELD_BYTES
-        .checked_mul(MAX_TEXT_FIELD_COUNT)
-        .ok_or(MultipartInputError::TooLarge)?;
     let max_envelope_bytes = max_audio
-        .checked_add(max_text_bytes)
-        .and_then(|bytes| bytes.checked_add(MAX_MULTIPART_METADATA_BYTES))
+        .checked_add(crate::core::MAX_TRANSCRIPTION_OVERHEAD_BYTES)
         .ok_or(MultipartInputError::TooLarge)?;
     let max_envelope =
         u64::try_from(max_envelope_bytes).map_err(|_| MultipartInputError::TooLarge)?;
@@ -48,7 +43,7 @@ pub(super) async fn parse_multipart(
     let boundary =
         multer::parse_boundary(content_type).map_err(|_| MultipartInputError::Invalid)?;
     let limits = multer::SizeLimit::new()
-        .whole_stream(max_envelope)
+        .whole_stream(max_envelope.min(body_limit as u64))
         .per_field(MAX_TEXT_FIELD_BYTES as u64)
         .for_field("file", max_audio_limit);
     let constraints = multer::Constraints::new()
