@@ -219,6 +219,9 @@ struct FlushState {
 }
 
 impl UsageHandle {
+    pub(crate) fn daily_ledger(&self) -> super::quota::DailyLedger {
+        super::quota::DailyLedger::new(self.0.path.parent().expect("usage directory"), self.0.plane)
+    }
     /// Loads this plane's file from `usage_dir`; an invalid file is replaced on the next flush.
     pub fn open(usage_dir: &Path, keys_path: &Path, plane: Plane) -> Self {
         let path = usage_dir.join(file_name(plane));

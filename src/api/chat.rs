@@ -17,8 +17,8 @@ use super::{
     deadline::RequestDeadline,
     errors::{
         admission_rejected_observed, annotate_client_request_id, body_too_large, forbidden,
-        gateway_error_observed, invalid, invalid_param, request_id, server_draining_observed,
-        unavailable, upstream_failure_observed,
+        gateway_error_observed, invalid, invalid_param, quota_rejected, request_id, reserve_usage,
+        server_draining_observed, unavailable, upstream_failure_observed,
     },
     serialization,
     sse::{StreamLifetime, StreamOutput, stream_response},
@@ -31,6 +31,21 @@ pub(super) async fn chat_completions(
     auth: Authenticated,
     State(state): State<ClientState>,
     request: Request,
+) -> Response {
+    handle_chat(auth, state, request, OutputFormat::Chat).await
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum OutputFormat {
+    Chat,
+    Responses,
+}
+
+pub(super) async fn handle_chat(
+    auth: Authenticated,
+    state: ClientState,
+    request: Request,
+    output_format: OutputFormat,
 ) -> Response {
     let observer = request.extensions().get::<Observer>().cloned();
     if state.admission().is_closed() {
@@ -68,12 +83,15 @@ pub(super) async fn chat_completions(
         Err(error) => return gateway_error_observed(error, observer.as_ref()),
     };
     let raw_body_len = bytes.len();
-    let wire: ChatWire = match serde_json::from_slice(&bytes) {
-        Ok(wire) => wire,
-        Err(_) => return invalid(),
+    let parsed = match output_format {
+        OutputFormat::Chat => match serde_json::from_slice::<ChatWire>(&bytes) {
+            Ok(wire) => wire.into_core(state.max_audio_bytes()),
+            Err(_) => return invalid(),
+        },
+        OutputFormat::Responses => super::responses::parse(&bytes, state.max_audio_bytes()),
     };
     drop(bytes);
-    let (request, include_usage) = match wire.into_core(state.max_audio_bytes()) {
+    let (request, include_usage) = match parsed {
         Ok(request) => request,
         Err(super::wire::ChatWireError::Invalid) => return invalid(),
         Err(super::wire::ChatWireError::InvalidParam(param)) => return invalid_param(param),
@@ -96,10 +114,12 @@ pub(super) async fn chat_completions(
         request,
         include_usage,
         observer,
+        output_format,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_chat(
     auth: Authenticated,
     state: ClientState,
@@ -108,6 +128,7 @@ async fn dispatch_chat(
     mut chat: ChatRequest,
     include_usage: bool,
     observer: Option<Observer>,
+    output_format: OutputFormat,
 ) -> Response {
     let response_model = chat.model.clone();
     let stream = chat.stream;
@@ -147,6 +168,8 @@ async fn dispatch_chat(
     {
         chat.options.max_output_tokens = Some(cap);
     }
+    let response_options = matches!(output_format, OutputFormat::Responses)
+        .then(|| super::responses::Options::new(&chat));
     let request = CoreRequest::Chat(chat);
     match check_supported(&route.capabilities, adapter.capabilities(), &request) {
         Ok(()) => {}
@@ -200,6 +223,14 @@ async fn dispatch_chat(
         }
         Err(error) => return gateway_error_observed(error, observer.as_ref()),
     };
+    match deadline
+        .run(|| reserve_usage(&auth, observer.as_ref()))
+        .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return quota_rejected(error, observer.as_ref()),
+        Err(error) => return gateway_error_observed(error, observer.as_ref()),
+    }
     if let Some(observer) = observer.as_ref() {
         observer.begin_upstream();
         observer.annotate_adapter(&route.adapter_id, &provider_label(route));
@@ -217,6 +248,9 @@ async fn dispatch_chat(
     }
     match result {
         Ok(Ok(AdapterOutput::Complete(CoreResponse::Chat(response)))) if !stream => {
+            if let Some(options) = response_options {
+                return super::responses::complete(response, options, observer.as_ref());
+            }
             serialization::chat_response(
                 response,
                 &response_model,
@@ -225,6 +259,18 @@ async fn dispatch_chat(
             )
         }
         Ok(Ok(AdapterOutput::Events(events))) if stream => {
+            if let Some(options) = response_options {
+                return super::responses::stream_response(
+                    events,
+                    response_model,
+                    options,
+                    deadline,
+                    state.first_byte_ms(),
+                    state.idle_ms(),
+                    StreamLifetime { permit, observer },
+                )
+                .await;
+            }
             stream_response(
                 events,
                 response_model,
@@ -245,7 +291,7 @@ async fn dispatch_chat(
     }
 }
 
-fn has_json_content_type(headers: &HeaderMap) -> bool {
+pub(super) fn has_json_content_type(headers: &HeaderMap) -> bool {
     let mut values = headers.get_all(header::CONTENT_TYPE).iter();
     let Some(value) = values.next() else {
         return false;

@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod file;
+pub mod quota;
 pub mod reload;
 pub mod store;
 pub mod time;

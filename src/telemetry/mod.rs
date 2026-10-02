@@ -75,6 +75,7 @@ struct Annotations {
     first_content: bool,
     usage_recorder: Option<crate::keys::usage::UsageHandle>,
     usage: Option<crate::core::Usage>,
+    daily_reservation: Option<crate::keys::quota::Reservation>,
 }
 
 #[derive(Clone)]
@@ -135,6 +136,49 @@ struct Observation {
 }
 
 impl Observer {
+    pub(crate) async fn reserve_usage(
+        &self,
+        quota: Option<crate::keys::quota::DailyQuota>,
+    ) -> Result<(), crate::keys::quota::QuotaError> {
+        let inputs = {
+            let annotations = self.annotations();
+            match (
+                &annotations.usage_recorder,
+                &annotations.key,
+                &annotations.model,
+                annotations.operation,
+            ) {
+                (Some(recorder), Some(key), Some(model), Some(operation)) => Some((
+                    recorder.daily_ledger(),
+                    key.clone(),
+                    model.clone(),
+                    operation,
+                )),
+                _ => None,
+            }
+        };
+        let Some((ledger, key, model, operation)) = inputs else {
+            return if quota.is_some() {
+                Err(crate::keys::quota::QuotaError::Unavailable)
+            } else {
+                Ok(())
+            };
+        };
+        let result = tokio::task::spawn_blocking(move || {
+            ledger.reserve(&key, &model, operation, quota, crate::keys::time::now())
+        })
+        .await
+        .map_err(|_| crate::keys::quota::QuotaError::Unavailable)?;
+        match result {
+            Ok(reservation) => self.annotations().daily_reservation = Some(reservation),
+            Err(error) if quota.is_some() => return Err(error),
+            Err(_) => {
+                tracing::warn!(target: "kanata::keys", "daily usage unavailable; request has no daily quota")
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn attach_usage(&self, recorder: crate::keys::usage::UsageHandle) {
         self.annotations().usage_recorder = Some(recorder);
     }
@@ -216,10 +260,7 @@ impl Observer {
     pub(crate) fn annotate_route(&self, model: &str, operation: Operation, stream: bool) {
         let mut annotations = self.annotations();
         annotations.model = Some(model.to_owned());
-        annotations.operation = Some(match operation {
-            Operation::Chat => "chat",
-            Operation::Transcription => "transcription",
-        });
+        annotations.operation = Some(operation.as_str());
         annotations.stream = stream;
     }
 
@@ -294,6 +335,14 @@ impl Observer {
             &annotations.adapter,
         ) {
             recorder.record_tokens(key, annotations.usage.as_ref());
+        }
+        if let Some(reservation) = annotations.daily_reservation.take() {
+            let usage = annotations.usage.clone();
+            tokio::task::spawn_blocking(move || {
+                if reservation.complete(usage.as_ref()).is_err() {
+                    tracing::warn!(target: "kanata::keys", "daily usage reconciliation failed; reservation retained");
+                }
+            });
         }
         let key = annotations.key.as_deref().unwrap_or(UNSET);
         let model = annotations.model.as_deref().unwrap_or(UNSET);

@@ -109,6 +109,21 @@ const reply = await client.chat.completions.create({
 console.log(reply.choices[0].message.content);
 ```
 
+## Text embeddings
+
+An alias with the `embeddings` operation accepts `POST /v1/embeddings`:
+
+```sh
+curl https://kanata.example.com/v1/embeddings \
+  -H "Authorization: Bearer $KANATA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"your-embedding-model","input":["A document","A search query"],"encoding_format":"float"}'
+```
+
+`input` is a non-empty string or 1–128 non-empty strings. The configured JSON body limit applies. `encoding_format` is `float` (default) or `base64` (little-endian float32). Optional `dimensions` must be 1–16,384 and supported by the model; the batch has a maximum of 262,144 output values. Token arrays and streaming are unsupported. The response contains `object: "list"`, your model alias and ordered `data` entries with `object: "embedding"`, `index` and `embedding`. `usage.prompt_tokens` and `usage.total_tokens` appear when reported upstream.
+
+Embedding permissions are separate from chat permissions. `/v1/models` lists `embeddings` only for aliases your key can use on that listener. Its `kanata.embeddings` object describes request and output bounds. Model token limits are enforced by the upstream runtime.
+
 ## What is supported
 
 - **Request fields:** `model`, `messages` (`system` / `user` / `assistant` / `tool` roles with text content, plus assistant `tool_calls` and user `input_audio` parts), `stream`, `stream_options.include_usage`, and `tools` / `tool_choice` on models that support tools.
@@ -125,7 +140,16 @@ console.log(reply.choices[0].message.content);
   | `chat_template_kwargs` | only `{"enable_thinking": true\|false}`, on vLLM-served models (e.g. `omnilion`) |
 - **Strictness:** Kanata returns `400 invalid_request` for fields it doesn't support or a model can't honour, rather than silently ignoring them. The error's `param` names the field.
 - **Reasoning:** this listener never returns a model's reasoning text. `usage.completion_tokens_details.reasoning_tokens` is included when the backend reports it.
-- **Not available:** embeddings, images, the Responses/Assistants APIs, fine-tuning and files.
+- **Responses:** `/v1/responses` supports stateless text, function calls/results and typed SSE through chat routes and scopes. Send full history with `store: false`. See the [supported subset](responses.md).
+- **Not available:** stored Responses/conversations, Assistants, fine-tuning and files.
+
+## Speech output
+
+Use `POST /v1/audio/speech` with a separately permitted speech model, text and a declared voice. It returns MP3/WAV bytes, up to 8 MiB. Authenticated model discovery lists `kanata.speech` formats, voices and limits. See [speech request examples](speech-output.md).
+
+## Image input
+
+When `/v1/models` declares `kanata.input_images`, user messages can include inline PNG/JPEG `image_url` data URLs. `kanata.images` lists the limits. Remote image URLs and `detail` options are rejected. See [image request examples and limits](image-input.md).
 
 ## Errors
 
@@ -136,9 +160,11 @@ console.log(reply.choices[0].message.content);
 | 403 | `permission_denied` | Missing, invalid or revoked key, or a model your key may not use publicly |
 | 404 | `not_found` | Wrong path. Use `/v1/models`, `/v1/chat/completions` or `/v1/audio/transcriptions` |
 | 408 | `request_cancelled` | The request was cancelled, for example because the client disconnected |
-| 413 | `invalid_request` | Request body larger than 1 MiB |
+| 413 | `invalid_request` | Request body or image count, file bytes, dimensions or total pixels exceed gateway limits |
 | 429 | `gateway_queue_full` | The gateway queue for this model is full. Retry after the `Retry-After` seconds |
 | 429 | `gateway_key_busy` / `gateway_key_rate_limited` | Your key has too many requests running, or sent too many recently. Retry after the `Retry-After` seconds |
+| 429 | `daily_quota_exceeded` | Your key has exhausted its daily request allowance, or another full token reservation does not fit. `Retry-After` points to the next UTC midnight |
+| 503 | `quota_unavailable` | The gateway cannot durably reserve your daily allowance, or its clock moved to an earlier UTC day. Contact the operator |
 | 429 | `rate_limit_exceeded` | The model backend is rate-limiting. Wait and retry with backoff |
 | 502 / 503 | `upstream_failure` / `upstream_unavailable` | The model backend is down or restarting. Try again later (after `Retry-After` seconds if present) |
 | 503 | `gateway_busy` | No slot freed up in time. Retry after the `Retry-After` seconds |

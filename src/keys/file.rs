@@ -114,6 +114,7 @@ pub struct StoredKey {
     permissions: Vec<RouteSelector>,
     max_in_flight: Option<u64>,
     rate_limit: Option<KeyRateLimit>,
+    daily_quota: Option<super::quota::DailyQuota>,
     created_at: u64,
     expires_at: Option<u64>,
     rotated_at: Option<u64>,
@@ -139,6 +140,7 @@ impl StoredKey {
             permissions,
             max_in_flight,
             rate_limit,
+            daily_quota: None,
             created_at,
             expires_at,
             rotated_at: None,
@@ -187,6 +189,13 @@ impl StoredKey {
     pub fn rate_limit(&self) -> Option<KeyRateLimit> {
         self.rate_limit
     }
+    pub fn daily_quota(&self) -> Option<super::quota::DailyQuota> {
+        self.daily_quota
+    }
+    pub fn set_daily_quota(&mut self, quota: Option<super::quota::DailyQuota>) {
+        self.daily_quota = quota;
+    }
+
     pub fn created_at(&self) -> u64 {
         self.created_at
     }
@@ -230,6 +239,7 @@ impl StoredKey {
                 requests: limit.requests,
                 per_ms: limit.per_ms,
             }),
+            daily_quota: self.daily_quota,
             created_at: time::format(self.created_at),
             expires_at: self.expires_at.map(time::format),
             rotated_at: self.rotated_at.map(time::format),
@@ -259,6 +269,8 @@ struct RawStoredKey {
     max_in_flight: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rate_limit: Option<RawRateLimit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    daily_quota: Option<super::quota::DailyQuota>,
     created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     expires_at: Option<String>,
@@ -329,6 +341,11 @@ fn parse_inner(bytes: &[u8], routes: Option<&[ValidatedRoute]>) -> Result<KeysFi
         let permissions = validate_permissions(&key.permissions, &path, route_check)?;
         let (max_in_flight, rate_limit) =
             validate_key_limits(key.max_in_flight, key.rate_limit, &path)?;
+        if let Some(quota) = key.daily_quota {
+            quota
+                .validate()
+                .map_err(|class| ConfigError::new(format!("{path}.daily_quota"), class))?;
+        }
         records.push(StoredKey {
             id: key.id,
             digest,
@@ -336,6 +353,7 @@ fn parse_inner(bytes: &[u8], routes: Option<&[ValidatedRoute]>) -> Result<KeysFi
             permissions,
             max_in_flight,
             rate_limit,
+            daily_quota: key.daily_quota,
             created_at,
             expires_at,
             rotated_at,

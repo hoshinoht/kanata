@@ -1,5 +1,7 @@
 pub(crate) mod admission;
 pub(crate) mod breaker;
+pub(crate) mod explain;
+pub(crate) mod probe;
 pub(crate) mod uploads;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,6 +18,7 @@ pub struct RouteEntry {
     pub base_url: Url,
     pub trust_zone: TrustZone,
     pub capabilities: Capabilities,
+    pub speech: Option<crate::core::SpeechPolicy>,
     pub extension_allowlist: BTreeSet<ExtensionKey>,
     pub adapter_extension_allowlist: BTreeSet<ExtensionKey>,
     pub requires_streaming_chat: bool,
@@ -65,6 +68,7 @@ impl Registry {
 fn entry(route: &ValidatedRoute, adapter: &ValidatedAdapter) -> RouteEntry {
     let mut capabilities = adapter.capabilities().clone();
     capabilities.input_audio &= route.allows_input_audio();
+    capabilities.input_images &= route.allows_input_images();
     capabilities.audio_streaming_chat &= route.allows_audio_streaming_chat();
     capabilities.audio_function_tools &= route.allows_audio_function_tools();
 
@@ -75,6 +79,7 @@ fn entry(route: &ValidatedRoute, adapter: &ValidatedAdapter) -> RouteEntry {
         base_url: adapter.base_url().clone(),
         trust_zone: adapter.trust_zone(),
         capabilities,
+        speech: route.speech().cloned(),
         extension_allowlist: route.extension_allowlist().clone(),
         adapter_extension_allowlist: adapter.extension_allowlist().clone(),
         requires_streaming_chat: route.requires_streaming_chat(),

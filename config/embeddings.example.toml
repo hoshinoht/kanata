@@ -1,0 +1,54 @@
+# Native Ollama embedding gateway. Install an embedding model in the runtime first.
+# Replace the upstream model ID and sample tailnet address.
+[listeners.client]
+bind = "127.0.0.1"
+port = 8080
+
+[listeners.admin]
+bind = "127.0.0.1"
+port = 9090
+
+[publication]
+tailnet_addresses = ["100.64.0.10"]
+
+[[adapters]]
+id = "ollama-embeddings"
+kind = "ollama"
+base_url = "http://127.0.0.1:11434/v1"
+trust_zone = "local"
+[adapters.capabilities]
+operations = ["embeddings"]
+streaming_chat = false
+function_tools = false
+
+[[routes]]
+id = "local-embeddings"
+model_alias = "local-embed"
+operation = "embeddings"
+adapter_id = "ollama-embeddings"
+upstream_id = "replace-with-installed-embedding-model"
+requires_streaming_chat = false
+requires_function_tools = false
+
+# kanata key new --config <path> --id search --embeddings local-embed --expires 30
+[keys]
+file = "keys/keys.toml"
+usage_dir = "state"
+
+[limits]
+max_uploads = 8
+max_buffered_bytes = 268435456
+max_queue = 32
+max_in_flight = 8
+max_body_bytes = 1048576
+max_audio_bytes = 26214400
+max_extension_bytes = 8192
+
+[timeouts]
+upload_ms = 30000
+queue_ms = 1000
+connect_ms = 5000
+headers_ms = 10000
+first_byte_ms = 15000
+idle_ms = 30000
+overall_ms = 60000

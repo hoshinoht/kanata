@@ -78,10 +78,13 @@ impl ChatWire {
             .into_core(&tools)
             .map_err(|_| ChatWireError::Invalid)?;
         let mut total_audio_bytes = 0;
+        let mut image_budget = crate::core::ImageBudget::default();
         let messages = self
             .messages
             .into_iter()
-            .map(|message| message.into_core(max_audio_bytes, &mut total_audio_bytes))
+            .map(|message| {
+                message.into_core(max_audio_bytes, &mut total_audio_bytes, &mut image_budget)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let include_usage = self
             .stream_options

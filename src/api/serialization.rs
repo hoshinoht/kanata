@@ -97,7 +97,9 @@ fn response_message(message: &ChatMessage, allow_empty: bool) -> Option<Value> {
                     "function":{"name":call.name,"arguments":call.arguments}
                 }));
             }
-            ChatContent::ToolResult { .. } | ChatContent::InputAudio { .. } => return None,
+            ChatContent::ToolResult { .. }
+            | ChatContent::InputAudio { .. }
+            | ChatContent::InputImage { .. } => return None,
         }
     }
     if text.is_empty() && calls.is_empty() {

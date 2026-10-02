@@ -47,3 +47,8 @@ target
 
 # macOS
 .DS_Store
+
+# Host account credentials
+chatgpt-v1.json
+chatgpt.lock
+.chatgpt-tmp-*

@@ -1,7 +1,7 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
@@ -12,7 +12,7 @@ use tokio::{
     time::Instant,
 };
 
-use crate::config::{KeyRateLimit, ValidatedConfig};
+use crate::config::{CircuitBreakerPolicy, KeyRateLimit, ValidatedConfig};
 use crate::core::{ErrorKind, GatewayError};
 
 use super::{
@@ -22,8 +22,7 @@ use super::{
 
 pub(crate) struct Admission {
     queued: AtomicU64,
-    routes: BTreeMap<String, RouteAdmission>,
-    adapters: BTreeMap<String, AdapterAdmission>,
+    pools: Mutex<AdmissionPools>,
     limits: AdmissionLimits,
     queue_timeout: Duration,
     closed: AtomicBool,
@@ -37,12 +36,21 @@ pub(crate) struct AdmissionLimits {
     pub(crate) queue_ms: u64,
 }
 
+struct AdmissionPools {
+    routes: BTreeMap<String, RouteAdmission>,
+    adapters: BTreeMap<String, AdapterAdmission>,
+    current_adapters: BTreeSet<String>,
+}
+
+#[derive(Clone)]
 struct RouteAdmission {
     tickets: Arc<Semaphore>,
     active: Arc<Semaphore>,
 }
 
+#[derive(Clone)]
 struct AdapterAdmission {
+    policy: CircuitBreakerPolicy,
     max_in_flight: Option<u64>,
     active: Option<Arc<Semaphore>>,
     breaker: Arc<Breaker>,
@@ -126,6 +134,7 @@ impl Admission {
                 Ok((
                     adapter.id().to_owned(),
                     AdapterAdmission {
+                        policy: adapter.circuit_breaker(),
                         max_in_flight: adapter.max_in_flight(),
                         active,
                         breaker: Arc::new(Breaker::new(
@@ -139,12 +148,71 @@ impl Admission {
 
         Ok(Self {
             queued: AtomicU64::new(0),
-            routes,
-            adapters,
+            pools: Mutex::new(AdmissionPools {
+                routes,
+                current_adapters: config
+                    .adapters()
+                    .iter()
+                    .map(|adapter| adapter.id().to_owned())
+                    .collect(),
+                adapters,
+            }),
             limits,
             queue_timeout: Duration::from_millis(limits.queue_ms),
             closed: AtomicBool::new(false),
         })
+    }
+
+    fn pools(&self) -> MutexGuard<'_, AdmissionPools> {
+        self.pools.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn extend(
+        &self,
+        registry: &Registry,
+        config: &ValidatedConfig,
+    ) -> Result<(), AdmissionBuildError> {
+        let next = Self::from_config(registry, config)?;
+        if next.limits != self.limits {
+            return Err(AdmissionBuildError);
+        }
+        let next = next
+            .pools
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut pools = self.pools();
+        if self.is_closed() {
+            return Err(AdmissionBuildError);
+        }
+        if next.adapters.iter().any(|(id, adapter)| {
+            pools.adapters.get(id).is_some_and(|old| {
+                old.max_in_flight != adapter.max_in_flight || old.policy != adapter.policy
+            })
+        }) {
+            return Err(AdmissionBuildError);
+        }
+        let count = pools.routes.len() + pools.adapters.len();
+        let added = next
+            .routes
+            .keys()
+            .filter(|id| !pools.routes.contains_key(*id))
+            .count()
+            + next
+                .adapters
+                .keys()
+                .filter(|id| !pools.adapters.contains_key(*id))
+                .count();
+        if count + added > 4096.max(count) {
+            return Err(AdmissionBuildError);
+        }
+        for (id, route) in next.routes {
+            pools.routes.entry(id).or_insert(route);
+        }
+        for (id, adapter) in next.adapters {
+            pools.adapters.entry(id).or_insert(adapter);
+        }
+        pools.current_adapters = next.current_adapters;
+        Ok(())
     }
 
     pub(crate) fn queued(&self) -> u64 {
@@ -156,15 +224,20 @@ impl Admission {
     }
 
     pub(crate) fn adapter_max_in_flight(&self, adapter_id: &str) -> Option<u64> {
-        self.adapters
+        self.pools()
+            .adapters
             .get(adapter_id)
             .and_then(|adapter| adapter.max_in_flight)
     }
 
     pub(crate) fn open_breakers(&self) -> usize {
-        self.adapters
-            .values()
-            .filter(|adapter| adapter.breaker.is_open())
+        let pools = self.pools();
+        pools
+            .adapters
+            .iter()
+            .filter(|(id, adapter)| {
+                pools.current_adapters.contains(*id) && adapter.breaker.is_open()
+            })
             .count()
     }
 
@@ -191,12 +264,13 @@ impl Admission {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
-        for route in self.routes.values() {
+        let pools = self.pools();
+        for route in pools.routes.values() {
             route.tickets.close();
             route.active.close();
         }
         // Key semaphores are try-acquired only after the closed check, so they stay open.
-        for semaphore in self
+        for semaphore in pools
             .adapters
             .values()
             .filter_map(|adapter| adapter.active.as_ref())
@@ -213,10 +287,14 @@ impl Admission {
         if self.is_closed() {
             return Err(AdmissionError::Closed);
         }
-        let (Some(route_admission), Some(adapter)) = (
-            self.routes.get(&route.identity.route_id),
-            self.adapters.get(&route.adapter_id),
-        ) else {
+        let selected = {
+            let pools = self.pools();
+            (
+                pools.routes.get(&route.identity.route_id).cloned(),
+                pools.adapters.get(&route.adapter_id).cloned(),
+            )
+        };
+        let (Some(route_admission), Some(adapter)) = selected else {
             return Err(AdmissionError::UnknownRoute);
         };
         let breaker = adapter

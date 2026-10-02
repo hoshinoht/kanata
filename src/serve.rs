@@ -1,11 +1,11 @@
+mod reload;
+
 use std::{future::Future, path::PathBuf, sync::Arc};
 
 use crate::{
     adapter::Adapter,
     auth::EnvironmentSecretResolver,
     config::{self, Plane, ValidatedConfig},
-    core::Operation,
-    keys::reload::{KeyReloader, POLL_INTERVAL},
     keys::usage::{FLUSH_INTERVAL, UsageHandle},
     server::{DEFAULT_SHUTDOWN_GRACE, Readiness, TwoPlaneServer},
 };
@@ -16,9 +16,12 @@ pub(crate) async fn run<B>(
     build_adapters: B,
 ) -> Result<(), String>
 where
-    B: FnOnce(&ValidatedConfig, &EnvironmentSecretResolver) -> Result<Vec<Arc<dyn Adapter>>, ()>,
+    B: Fn(&ValidatedConfig, &EnvironmentSecretResolver) -> Result<Vec<Arc<dyn Adapter>>, ()>
+        + Send
+        + Sync
+        + 'static,
 {
-    let full_config = config::load(config_path).map_err(|error| error.to_string())?;
+    let full_config = config::load(&config_path).map_err(|error| error.to_string())?;
     let config = full_config
         .for_plane(plane)
         .map_err(|error| error.to_string())?;
@@ -36,7 +39,14 @@ where
         adapters,
     )
     .map_err(|_| "server initialization failed".to_owned())?;
-    let reloader = KeyReloader::new(full_config, plane, server.key_handle());
+    let reloader = reload::Reloader::new(
+        config_path,
+        full_config,
+        plane,
+        server.configuration_handle(),
+        build_adapters,
+    );
+    let reload_signal = reload::signal().map_err(str::to_owned)?;
     let usage = server.open_usage(plane);
     let signal = shutdown_signal().map_err(str::to_owned)?;
     let (stop_reload, reload_stopped) = tokio::sync::oneshot::channel::<()>();
@@ -50,7 +60,7 @@ where
         .bind()
         .await
         .map_err(|_| "listener binding failed".to_owned())?;
-    let reload_task = reloader.map(|reloader| tokio::spawn(reload_keys(reloader, reload_stopped)));
+    let reload_task = tokio::spawn(reloader.run(reload_signal, reload_stopped));
     let flush_task = usage
         .clone()
         .map(|usage| tokio::spawn(flush_usage(usage, flush_stopped)));
@@ -59,16 +69,14 @@ where
         .public_routes()
         .iter()
         .map(|selector| {
-            let operation = match selector.operation {
-                Operation::Chat => "chat",
-                Operation::Transcription => "transcription",
-            };
+            let operation = selector.operation.as_str();
             format!("{}:{operation}", selector.model_alias.0)
         })
         .collect();
     tracing::info!(
         target: "kanata::lifecycle",
         version = crate::VERSION,
+        pid = std::process::id(),
         plane = plane.as_str(),
         private = %bound.client_addr(),
         public = %bound.public_addr().map_or_else(|| "-".to_owned(), |address| address.to_string()),
@@ -81,9 +89,7 @@ where
         .serve_until(shutdown, DEFAULT_SHUTDOWN_GRACE)
         .await
         .map_err(|_| "server runtime failed".to_owned());
-    if let Some(task) = reload_task {
-        task.abort();
-    }
+    reload_task.abort();
     if let Some(task) = flush_task {
         let _ = task.await;
     }
@@ -98,29 +104,6 @@ where
         }
     }
     result
-}
-
-/// Polls the keys file until shutdown begins.
-async fn reload_keys(mut reloader: KeyReloader, mut stop: tokio::sync::oneshot::Receiver<()>) {
-    let mut interval = tokio::time::interval(POLL_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    interval.tick().await;
-    loop {
-        tokio::select! {
-            _ = &mut stop => return,
-            _ = interval.tick() => {}
-        }
-        // File IO stays off the runtime thread.
-        reloader = match tokio::task::spawn_blocking(move || {
-            reloader.poll_once();
-            reloader
-        })
-        .await
-        {
-            Ok(reloader) => reloader,
-            Err(_) => return,
-        };
-    }
 }
 
 /// Writes usage state every [`FLUSH_INTERVAL`] until shutdown begins.

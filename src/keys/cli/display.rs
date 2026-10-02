@@ -21,6 +21,23 @@ pub(super) fn format_rate_limit(limit: Option<KeyRateLimit>) -> String {
     )
 }
 
+pub(super) fn format_daily_quota(quota: Option<crate::keys::quota::DailyQuota>) -> String {
+    quota.map_or_else(
+        || "unlimited".into(),
+        |quota| {
+            let value = |limit: Option<u64>| {
+                limit.map_or_else(|| "unset".into(), |limit| limit.to_string())
+            };
+            format!(
+                "requests {}, tokens {}, reservation {}",
+                value(quota.requests),
+                value(quota.tokens),
+                value(quota.reservation_tokens)
+            )
+        },
+    )
+}
+
 pub(super) fn rate_limit_json(limit: Option<KeyRateLimit>) -> Value {
     limit.map_or(
         Value::Null,
@@ -57,6 +74,7 @@ pub(super) fn key_json(
         "last_used_at": used.filter(|used| used.last_used_at > 0).map(|used| time::format(used.last_used_at)),
         "requests": usage.map(|_| used.map_or(0, |used| used.requests)),
         "tokens": used.map(|used| used.tokens),
+        "daily_quota": record.daily_quota(),
     }) else {
         unreachable!("object literal")
     };
@@ -240,6 +258,7 @@ pub(super) fn show(arguments: &[String]) -> Result<String, String> {
                 .map_or("-".into(), |value| value.to_string()),
         ),
         ("rate_limit", format_rate_limit(record.rate_limit())),
+        ("daily_quota", format_daily_quota(record.daily_quota())),
         (
             "tokens (input/output/reasoning)",
             used.map_or("-".into(), |used| {

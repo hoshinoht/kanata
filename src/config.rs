@@ -1,6 +1,7 @@
 pub(crate) use raw::{RawPermission, RawRateLimit};
 mod plane;
 mod raw;
+mod reload;
 mod validation;
 use raw::*;
 use std::collections::BTreeSet;
@@ -36,6 +37,7 @@ pub struct ValidatedConfig {
     listeners: ValidatedListeners,
     publication: ValidatedPublication,
     codex_auth: Option<ValidatedCodexAuth>,
+    chatgpt_auth: Option<ValidatedChatgptAuth>,
     adapters: Vec<ValidatedAdapter>,
     routes: Vec<ValidatedRoute>,
     application_keys: Vec<ValidatedApplicationKey>,
@@ -71,6 +73,9 @@ impl ValidatedConfig {
     pub fn codex_auth(&self) -> Option<&ValidatedCodexAuth> {
         self.codex_auth.as_ref()
     }
+    pub fn chatgpt_auth(&self) -> Option<&ValidatedChatgptAuth> {
+        self.chatgpt_auth.as_ref()
+    }
     pub fn adapters(&self) -> &[ValidatedAdapter] {
         &self.adapters
     }
@@ -93,6 +98,12 @@ impl ValidatedConfig {
         else {
             return Err(ConfigError::new("keys", "required"));
         };
+        if usage_dir.is_none() && file.active().any(|key| key.daily_quota().is_some()) {
+            return Err(ConfigError::new(
+                "keys.usage_dir",
+                "required_for_daily_quota",
+            ));
+        }
         let application_keys = application_keys_from_file(file, &self.routes)?;
         Ok(Self {
             application_keys,
@@ -214,7 +225,7 @@ impl ValidatedLogging {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedListeners {
     client: ValidatedListener,
     admin: ValidatedListener,
@@ -232,7 +243,7 @@ impl ValidatedListeners {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedListener {
     bind: IpAddr,
     port: u16,
@@ -317,7 +328,7 @@ impl CodexReasoningSummary {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedCodexAuth {
     store: CodexAuthStore,
     state_dir: PathBuf,
@@ -326,6 +337,16 @@ impl ValidatedCodexAuth {
     pub fn store(&self) -> CodexAuthStore {
         self.store
     }
+    pub fn state_dir(&self) -> &Path {
+        &self.state_dir
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedChatgptAuth {
+    state_dir: PathBuf,
+}
+impl ValidatedChatgptAuth {
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
     }
@@ -444,6 +465,8 @@ pub struct ValidatedRoute {
     requires_streaming_chat: bool,
     requires_function_tools: bool,
     allows_input_audio: bool,
+    allows_input_images: bool,
+    speech: Option<crate::core::SpeechPolicy>,
     allows_audio_streaming_chat: bool,
     allows_audio_function_tools: bool,
     context_tokens: Option<u32>,
@@ -472,6 +495,14 @@ impl ValidatedRoute {
     pub fn requires_function_tools(&self) -> bool {
         self.requires_function_tools
     }
+    pub fn speech(&self) -> Option<&crate::core::SpeechPolicy> {
+        self.speech.as_ref()
+    }
+
+    pub fn allows_input_images(&self) -> bool {
+        self.allows_input_images
+    }
+
     pub fn allows_input_audio(&self) -> bool {
         self.allows_input_audio
     }
@@ -508,9 +539,13 @@ pub struct ValidatedApplicationKey {
     permissions: Vec<RouteSelector>,
     max_in_flight: Option<u64>,
     rate_limit: Option<KeyRateLimit>,
+    daily_quota: Option<crate::keys::quota::DailyQuota>,
     expires_at: Option<u64>,
 }
 impl ValidatedApplicationKey {
+    pub fn daily_quota(&self) -> Option<crate::keys::quota::DailyQuota> {
+        self.daily_quota
+    }
     /// Unix seconds; `None` never expires (always for inline keys).
     pub fn expires_at(&self) -> Option<u64> {
         self.expires_at
@@ -538,7 +573,7 @@ impl ValidatedApplicationKey {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedLimits {
     max_uploads: u64,
     max_buffered_bytes: u64,
@@ -576,7 +611,7 @@ impl ValidatedLimits {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedTimeouts {
     upload_ms: u64,
     queue_ms: u64,
@@ -617,16 +652,22 @@ pub enum ProviderKind {
     Vllm,
     Openrouter,
     Codex,
+    Chatgpt,
     /// Apple Foundation Models through macOS `fm serve`.
     AppleFm,
+    Speech,
 }
 
 impl ProviderKind {
+    pub fn is_private_only(self) -> bool {
+        matches!(self, Self::Codex | Self::Chatgpt)
+    }
+
     pub fn accepts_reasoning_effort(self, effort: ReasoningEffort) -> bool {
         match self {
             Self::Codex => CodexReasoningEffort::from_request(effort).is_some(),
             Self::Ollama | Self::Vllm | Self::Openrouter => true,
-            Self::AppleFm => false,
+            Self::AppleFm | Self::Speech | Self::Chatgpt => false,
         }
     }
 
@@ -642,7 +683,9 @@ impl ProviderKind {
             Self::Vllm => "vllm",
             Self::Openrouter => "openrouter",
             Self::Codex => "codex",
+            Self::Chatgpt => "chatgpt",
             Self::AppleFm => "apple_fm",
+            Self::Speech => "speech",
         }
     }
 
@@ -672,6 +715,7 @@ impl ProviderKind {
             Self::Vllm => (true, true, false),
             Self::Codex => (false, false, true),
             Self::AppleFm => (true, true, false),
+            Self::Speech | Self::Chatgpt => (false, false, false),
         }
     }
 }

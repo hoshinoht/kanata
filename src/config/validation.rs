@@ -20,11 +20,15 @@ pub(super) fn validate(
             ));
         }
         let base_url = validate_url(&adapter, &path)?;
-        let secret_ref = if adapter.kind == ProviderKind::Codex {
+        let secret_ref = if adapter.kind.is_private_only() {
             if adapter.secret_ref.is_some() {
                 return Err(ConfigError::new(
                     format!("{path}.secret_ref"),
-                    "codex_secret_ref_unsupported",
+                    if adapter.kind == ProviderKind::Codex {
+                        "codex_secret_ref_unsupported"
+                    } else {
+                        "chatgpt_secret_ref_unsupported"
+                    },
                 ));
             }
             None
@@ -35,13 +39,14 @@ pub(super) fn validate(
                 false,
             )?)
         } else if adapter.kind == ProviderKind::Openrouter
-            || (adapter.kind == ProviderKind::Vllm && adapter.trust_zone == TrustZone::External)
+            || (matches!(adapter.kind, ProviderKind::Vllm | ProviderKind::Speech)
+                && adapter.trust_zone == TrustZone::External)
         {
             return Err(ConfigError::new(format!("{path}.secret_ref"), "required"));
         } else {
             None
         };
-        if adapter.kind == ProviderKind::Vllm
+        if matches!(adapter.kind, ProviderKind::Vllm | ProviderKind::Speech)
             && secret_ref.is_some()
             && base_url.scheme() != "https"
         {
@@ -70,6 +75,48 @@ pub(super) fn validate(
                 format!("{path}.capabilities.operations"),
                 "empty",
             ));
+        }
+        if operations.contains(&Operation::Speech) != (adapter.kind == ProviderKind::Speech) {
+            return Err(ConfigError::new(
+                format!("{path}.capabilities.operations"),
+                "speech_adapter_required",
+            ));
+        }
+        if adapter.kind == ProviderKind::Speech
+            && (operations.len() != 1
+                || adapter.capabilities.streaming_chat
+                || adapter.capabilities.function_tools)
+        {
+            return Err(ConfigError::new(
+                format!("{path}.capabilities"),
+                "speech_only",
+            ));
+        }
+        if operations.contains(&Operation::Embeddings) && adapter.kind != ProviderKind::Ollama {
+            return Err(ConfigError::new(
+                format!("{path}.capabilities.operations"),
+                "embeddings_unsupported_by_adapter_kind",
+            ));
+        }
+        if adapter.kind == ProviderKind::Chatgpt {
+            if operations != BTreeSet::from([Operation::Chat]) || adapter.capabilities.input_audio {
+                return Err(ConfigError::new(
+                    format!("{path}.capabilities"),
+                    "chatgpt_text_chat_only",
+                ));
+            }
+            if base_url.as_str() != "https://api.openai.com/v1" {
+                return Err(ConfigError::new(
+                    format!("{path}.base_url"),
+                    "chatgpt_pinned_origin_required",
+                ));
+            }
+            if !extension_allowlist.is_empty() {
+                return Err(ConfigError::new(
+                    format!("{path}.extension_allowlist"),
+                    "unsupported_by_adapter_kind",
+                ));
+            }
         }
         if adapter.kind == ProviderKind::AppleFm {
             if operations.contains(&Operation::Transcription) {
@@ -130,6 +177,23 @@ pub(super) fn validate(
             }
             (_, None) => None,
         };
+        if adapter.capabilities.input_images {
+            if !matches!(
+                adapter.kind,
+                ProviderKind::Ollama | ProviderKind::Vllm | ProviderKind::Openrouter
+            ) {
+                return Err(ConfigError::new(
+                    format!("{path}.capabilities.input_images"),
+                    "unsupported_by_adapter_kind",
+                ));
+            }
+            if !operations.contains(&Operation::Chat) {
+                return Err(ConfigError::new(
+                    format!("{path}.capabilities.input_images"),
+                    "chat_operation_required",
+                ));
+            }
+        }
         if adapter.capabilities.input_audio && !operations.contains(&Operation::Chat) {
             return Err(ConfigError::new(
                 format!("{path}.capabilities.input_audio"),
@@ -202,6 +266,7 @@ pub(super) fn validate(
                 streaming_chat: adapter.capabilities.streaming_chat,
                 function_tools: adapter.capabilities.function_tools,
                 input_audio: adapter.capabilities.input_audio,
+                input_images: adapter.capabilities.input_images,
                 audio_streaming_chat: adapter.capabilities.audio_streaming_chat,
                 audio_function_tools: adapter.capabilities.audio_function_tools,
                 structured_output: adapter.capabilities.structured_output,
@@ -222,6 +287,35 @@ pub(super) fn validate(
         (true, Some(auth)) => Some(validate_codex_auth(auth)?),
         (true, None) => return Err(ConfigError::new("codex_auth", "required")),
         (false, Some(_)) => return Err(ConfigError::new("codex_auth", "without_codex_adapter")),
+        (false, None) => None,
+    };
+
+    let has_chatgpt_adapter = adapters
+        .iter()
+        .any(|adapter| adapter.kind == ProviderKind::Chatgpt);
+    let chatgpt_auth = match (has_chatgpt_adapter, raw.chatgpt_auth) {
+        (true, Some(auth)) => {
+            let state_dir = PathBuf::from(&auth.state_dir);
+            if auth.state_dir.chars().any(char::is_control)
+                || !state_dir.is_absolute()
+                || state_dir
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+                || !state_dir
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::Normal(_)))
+            {
+                return Err(ConfigError::new(
+                    "chatgpt_auth.state_dir",
+                    "invalid_absolute_path",
+                ));
+            }
+            Some(ValidatedChatgptAuth { state_dir })
+        }
+        (true, None) => return Err(ConfigError::new("chatgpt_auth", "required")),
+        (false, Some(_)) => {
+            return Err(ConfigError::new("chatgpt_auth", "without_chatgpt_adapter"));
+        }
         (false, None) => None,
     };
 
@@ -351,6 +445,14 @@ pub(super) fn validate(
                 "unsupported_by_adapter",
             ));
         }
+        if route.allows_input_images
+            && (route.operation != Operation::Chat || !adapter.capabilities.input_images)
+        {
+            return Err(ConfigError::new(
+                format!("{path}.allows_input_images"),
+                "unsupported_by_adapter",
+            ));
+        }
         if route.allows_input_audio
             && (route.operation != Operation::Chat || !adapter.capabilities.input_audio)
         {
@@ -424,6 +526,37 @@ pub(super) fn validate(
                 ));
             }
         }
+        let speech = if route.operation == Operation::Speech {
+            let voices: BTreeSet<_> = route.speech_voices.iter().cloned().collect();
+            let formats: BTreeSet<_> = route.speech_formats.iter().copied().collect();
+            if voices.is_empty()
+                || voices.len() > 128
+                || voices.len() != route.speech_voices.len()
+                || voices
+                    .iter()
+                    .any(|voice| !crate::core::valid_speech_voice(voice))
+            {
+                return Err(ConfigError::new(
+                    format!("{path}.speech_voices"),
+                    "invalid_allowlist",
+                ));
+            }
+            if formats.is_empty() || formats.len() != route.speech_formats.len() {
+                return Err(ConfigError::new(
+                    format!("{path}.speech_formats"),
+                    "invalid_allowlist",
+                ));
+            }
+            Some(crate::core::SpeechPolicy { voices, formats })
+        } else {
+            if !route.speech_voices.is_empty() || !route.speech_formats.is_empty() {
+                return Err(ConfigError::new(
+                    format!("{path}.speech_voices"),
+                    "speech_only",
+                ));
+            }
+            None
+        };
         let extension_allowlist = validate_extension_allowlist(
             route.extension_allowlist,
             &format!("{path}.extension_allowlist"),
@@ -441,6 +574,8 @@ pub(super) fn validate(
             requires_streaming_chat: route.requires_streaming_chat,
             requires_function_tools: route.requires_function_tools,
             allows_input_audio: route.allows_input_audio,
+            allows_input_images: route.allows_input_images,
+            speech,
             allows_audio_streaming_chat: route.allows_audio_streaming_chat,
             allows_audio_function_tools: route.allows_audio_function_tools,
             context_tokens: route.context_tokens,
@@ -472,6 +607,7 @@ pub(super) fn validate(
         listeners,
         publication,
         codex_auth,
+        chatgpt_auth,
         adapters,
         routes,
         application_keys,
@@ -720,8 +856,15 @@ pub(super) fn validate_public_routes(
         {
             return Err(ConfigError::new(path, "unsupported_by_adapter"));
         }
-        if adapter.kind == ProviderKind::Codex {
-            return Err(ConfigError::new(path, "codex_not_public"));
+        if adapter.kind.is_private_only() {
+            return Err(ConfigError::new(
+                path,
+                if adapter.kind == ProviderKind::Codex {
+                    "codex_not_public"
+                } else {
+                    "chatgpt_not_public"
+                },
+            ));
         }
         validated.push(RouteSelector {
             model_alias: ModelAlias(selector.model_alias.clone()),
@@ -769,8 +912,10 @@ pub(super) fn validate_url(adapter: &RawAdapter, path: &str) -> Result<Url, Conf
 
 pub(super) fn validate_provider_zone(adapter: &RawAdapter, path: &str) -> Result<(), ConfigError> {
     let valid = match adapter.kind {
-        ProviderKind::Openrouter | ProviderKind::Codex => adapter.trust_zone == TrustZone::External,
-        ProviderKind::Vllm => true,
+        ProviderKind::Openrouter | ProviderKind::Codex | ProviderKind::Chatgpt => {
+            adapter.trust_zone == TrustZone::External
+        }
+        ProviderKind::Vllm | ProviderKind::Speech => true,
         ProviderKind::Ollama | ProviderKind::AppleFm => matches!(
             adapter.trust_zone,
             TrustZone::Local | TrustZone::PrivateNetwork
@@ -828,6 +973,7 @@ pub(super) fn validate_application_keys(
             secret_ref,
             permissions,
             expires_at: None,
+            daily_quota: None,
         });
     }
     if ids.is_empty() {
@@ -926,6 +1072,12 @@ pub(super) fn load_key_file(
         ));
     };
     let file = keys::file::parse(&bytes, routes)?;
+    if usage_dir.is_none() && file.active().any(|key| key.daily_quota().is_some()) {
+        return Err(ConfigError::new(
+            "keys.usage_dir",
+            "required_for_daily_quota",
+        ));
+    }
     Ok((
         application_keys_from_file(&file, routes)?,
         KeySource::File {
@@ -977,6 +1129,7 @@ pub(super) fn application_keys_from_file(
             max_in_flight: record.max_in_flight(),
             rate_limit: record.rate_limit(),
             expires_at: record.expires_at(),
+            daily_quota: record.daily_quota(),
         });
     }
     Ok(keys)

@@ -26,6 +26,7 @@ pub(super) fn validate(
         return Err(invalid_request());
     }
     match request {
+        Request::Speech(_) => Err(unsupported_operation()),
         Request::Chat(chat) => {
             if !capabilities.function_tools
                 && chat.messages.iter().any(|message| {
@@ -42,6 +43,7 @@ pub(super) fn validate(
             validate_chat(chat)
         }
         Request::Transcription(_) => Err(unsupported_operation()),
+        Request::Embeddings(request) => request.validate().map_err(|_| invalid_request()),
     }
 }
 
@@ -77,6 +79,7 @@ fn validate_chat(chat: &crate::core::ChatRequest) -> Result<(), GatewayError> {
             return Err(invalid_request());
         }
         let mut text = false;
+        let mut image = false;
         let mut calls = 0;
         let mut result = 0;
         for content in &message.content {
@@ -101,7 +104,10 @@ fn validate_chat(chat: &crate::core::ChatRequest) -> Result<(), GatewayError> {
                         return Err(invalid_request());
                     }
                 }
-                ChatContent::InputAudio { .. } => return Err(unsupported_operation()),
+                ChatContent::InputImage { .. } if message.role == ChatRole::User => image = true,
+                ChatContent::InputAudio { .. } | ChatContent::InputImage { .. } => {
+                    return Err(unsupported_operation());
+                }
             }
         }
         match message.role {
@@ -109,7 +115,7 @@ fn validate_chat(chat: &crate::core::ChatRequest) -> Result<(), GatewayError> {
             ChatRole::Assistant if result != 0 => return Err(invalid_request()),
             ChatRole::Tool if calls != 0 || result != 1 || text => return Err(invalid_request()),
             ChatRole::System | ChatRole::Developer | ChatRole::User
-                if calls != 0 || result != 0 || !text =>
+                if calls != 0 || result != 0 || !(text || image) =>
             {
                 return Err(invalid_request());
             }

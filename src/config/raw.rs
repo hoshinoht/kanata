@@ -7,6 +7,8 @@ pub(super) struct RawConfig {
     pub(super) publication: RawPublication,
     #[serde(default)]
     pub(super) codex_auth: Option<RawCodexAuth>,
+    #[serde(default)]
+    pub(super) chatgpt_auth: Option<RawChatgptAuth>,
     pub(super) adapters: Vec<RawAdapter>,
     pub(super) routes: Vec<RawRoute>,
     #[serde(default)]
@@ -63,6 +65,12 @@ pub(super) struct RawCodexAuth {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct RawChatgptAuth {
+    pub(super) state_dir: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct RawAdapter {
     pub(super) id: String,
     pub(super) kind: ProviderKind,
@@ -100,6 +108,8 @@ pub(super) struct RawCapabilities {
     #[serde(default)]
     pub(super) input_audio: bool,
     #[serde(default)]
+    pub(super) input_images: bool,
+    #[serde(default)]
     pub(super) audio_streaming_chat: bool,
     #[serde(default)]
     pub(super) audio_function_tools: bool,
@@ -129,6 +139,12 @@ pub(super) struct RawRoute {
     pub(super) requires_function_tools: bool,
     #[serde(default)]
     pub(super) allows_input_audio: bool,
+    #[serde(default)]
+    pub(super) allows_input_images: bool,
+    #[serde(default)]
+    pub(super) speech_voices: Vec<String>,
+    #[serde(default)]
+    pub(super) speech_formats: Vec<crate::core::SpeechFormat>,
     #[serde(default)]
     pub(super) allows_audio_streaming_chat: bool,
     #[serde(default)]

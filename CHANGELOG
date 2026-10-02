@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- Private-only Sign in with ChatGPT provider with host browser PKCE login, verified identity, protected named profiles, refresh/sign-out, account model discovery and stateless text/function inference. The public plane excludes its authentication state and scoped keys. Added an operator walkthrough; validation uses isolated fixtures, with live consent and account availability left for the operator.
+
+- SIGHUP configuration reload on Linux/macOS: validates a complete replacement and reapplies process-plane narrowing before atomically publishing per-request route, adapter, key and public-policy snapshots. Active streams finish with their old snapshot. Admission pools, unchanged key limiters, usage, quotas and telemetry survive reload; incompatible listener/global/state-path or existing adapter-limit changes require restart. Admin status reports reload generations, outcomes and the process ID. Verified with synthetic adapters and subprocess loopback fixtures; no live deployment is implied.
+
+- Bounded speech output at `POST /v1/audio/speech` through an explicit speech backend, exact speech key scopes, route voice/format allowlists, MP3/WAV responses, speed control, scoped discovery and guide examples. Shared deadlines, cancellation, admission and usage quotas apply; audio without token metadata is recorded as missing usage. Verified with local fixtures; live model/voice availability is unverified.
+- Host-only key portal at `kanata portal --config <path> [--port <port>]`, bound strictly to `127.0.0.1` (default port 9091). A one-use terminal code unlocks an in-memory browser session for scoped key creation, expiry/limit edits, rotation, revocation and persisted usage inspection. Exact Host/Origin checks, a required request header, bounded requests, stale-write detection and the existing locked atomic key store protect changes. No gateway listener exposes key management. Verified with isolated HTTP fixtures and a local browser; no live keys or deployment were changed.
+
+- Opt-in inline PNG/JPEG image input in chat for declared Ollama, vLLM and OpenRouter routes, with strict data URLs, bounded files/count/dimensions/pixels, scoped discovery and examples. Header validation never decompresses pixels or fetches remote images. Fixture coverage does not imply live vision model availability.
+- Stateless `POST /v1/responses` for text, function-call replay and typed streaming events, sharing exact chat routes and key permissions. Stored conversations, hosted tools and unsupported options are rejected. Final output is bounded to 8 MiB. Contract checks use fixtures; this does not imply full Responses API compatibility or live deployment.
+
+- Durable daily request allowances and token reservations per key and process plane, with cancellation/crash reservations retained, reported-token reconciliation, UTC-day rollover and explicit storage failures. `kanata key usage` reports key/model/operation/day counts and optional cost estimates from supplied rates. Token allowances govern admission; reported overruns are recorded and can exceed the configured allowance. Verified with temporary-state fixtures; no live billing accuracy is implied.
+
+- Opt-in `doctor --probe-models` and exact `--probe-inference <alias> --operation <operation>` checks, with bounded requests and sanitized results. Catalog listing and fixture success do not imply live model availability.
+
+- Text embeddings through Ollama at authenticated `POST /v1/embeddings`: exact embedding routes and key scopes, bounded string batches, optional dimensions, float/base64 results, scoped model discovery and browser examples. Upstream vector shapes, indices and reported usage are checked. Shares upload reservations, admission, deadlines and usage accounting. Verified with fixtures and local mock upstreams; no live model availability or deployment is implied.
+- Host key commands accept `--embeddings`, `--add-embeddings` and `--remove-embeddings`; public embedding routes still require an explicit publication allowlist.
+- `kanata routes explain` reports exact route selection, declared capabilities, key scope/expiry and listener decisions for a selected process plane without resolving secrets or contacting backends. Its output describes a configuration snapshot, not live availability.
+
 ## [1.0.0-beta.5] - 2026-10-03
 
 Scoped browser documentation, bounded uploads, output-cap enforcement, usage accounting and operational diagnostics.

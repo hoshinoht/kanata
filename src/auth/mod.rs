@@ -83,6 +83,7 @@ struct KeyRecord {
     permissions: Vec<RouteSelector>,
     expires_at: Option<u64>,
     limits: Option<Arc<KeyLimits>>,
+    daily_quota: Option<crate::keys::quota::DailyQuota>,
 }
 
 /// One immutable key set: auth records with their per-key admission limits.
@@ -146,6 +147,7 @@ impl ApplicationAuth {
                 permissions: key.permissions().to_vec(),
                 expires_at: key.expires_at(),
                 limits: reused.or_else(|| KeyLimits::build(key.max_in_flight(), key.rate_limit())),
+                daily_quota: key.daily_quota(),
             });
         }
         Ok(Self { keys })
@@ -183,6 +185,7 @@ impl ApplicationAuth {
             key_identity: key.identity.clone(),
             permissions: key.permissions.clone(),
             limits: key.limits.clone(),
+            daily_quota: key.daily_quota,
         })
     }
 }
@@ -227,6 +230,13 @@ impl KeyHandle {
         Self {
             current: Arc::new(RwLock::new(Arc::new(auth))),
             reload: Arc::new(RwLock::new(ReloadStatus::default())),
+        }
+    }
+
+    pub(crate) fn new_generation(&self, auth: ApplicationAuth) -> Self {
+        Self {
+            current: Arc::new(RwLock::new(Arc::new(auth))),
+            reload: self.reload.clone(),
         }
     }
 
@@ -299,9 +309,13 @@ pub struct AuthContext {
     key_identity: String,
     permissions: Vec<RouteSelector>,
     limits: Option<Arc<KeyLimits>>,
+    daily_quota: Option<crate::keys::quota::DailyQuota>,
 }
 
 impl AuthContext {
+    pub(crate) fn daily_quota(&self) -> Option<crate::keys::quota::DailyQuota> {
+        self.daily_quota
+    }
     pub fn key_identity(&self) -> &str {
         &self.key_identity
     }

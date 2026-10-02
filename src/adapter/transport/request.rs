@@ -8,18 +8,26 @@ use super::{encoded::EncodedBody, multipart::MultipartRequest, origin::Origin, t
 /// Identifies Kanata to upstreams; some edges reject requests without one.
 const USER_AGENT: &str = concat!("kanata/", env!("CARGO_PKG_VERSION"));
 
-pub(crate) struct Endpoint(&'static [&'static str]);
+pub(crate) struct Endpoint(String);
 
 impl Endpoint {
     pub(crate) fn new(segments: &'static [&'static str]) -> Result<Self, GatewayError> {
         if segments.is_empty() || segments.iter().any(|segment| !valid_segment(segment)) {
             return Err(types::internal_error());
         }
-        Ok(Self(segments))
+        Ok(Self(segments.join("/")))
+    }
+
+    pub(crate) fn from_path(path: &str) -> Result<Self, GatewayError> {
+        let path = path.strip_prefix('/').ok_or_else(types::internal_error)?;
+        if path.len() > 1024 || path.split('/').any(|part| !valid_segment(part)) {
+            return Err(types::internal_error());
+        }
+        Ok(Self(path.to_owned()))
     }
 
     pub(super) fn path(&self) -> String {
-        self.0.join("/")
+        self.0.clone()
     }
 }
 
@@ -44,6 +52,23 @@ pub(crate) struct CredentialHeader {
 }
 
 impl TransportRequest {
+    pub(crate) fn get(
+        endpoint: Endpoint,
+        credential: Option<CredentialHeader>,
+        response_budget: usize,
+    ) -> Result<Self, GatewayError> {
+        Self::from_body(
+            Method::GET,
+            endpoint,
+            EncodedBody::empty(),
+            credential,
+            Some(Accept::Json),
+            1,
+            response_budget,
+            true,
+        )
+    }
+
     pub(crate) fn json<T: Serialize>(
         method: Method,
         endpoint: Endpoint,
@@ -253,8 +278,10 @@ pub(super) fn build_request(
         .header(header::USER_AGENT, USER_AGENT)
         .header(header::CONNECTION, "close")
         .header(header::ACCEPT_ENCODING, "identity")
-        .header(header::CONTENT_LENGTH, request.body.len().to_string())
-        .header(header::CONTENT_TYPE, request.body.content_type());
+        .header(header::CONTENT_LENGTH, request.body.len().to_string());
+    if !request.body.content_type().is_empty() {
+        builder = builder.header(header::CONTENT_TYPE, request.body.content_type());
+    }
     if let Some(accept) = request.accept {
         builder = builder.header(header::ACCEPT, accept_value(accept));
     }

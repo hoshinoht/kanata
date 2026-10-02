@@ -75,6 +75,16 @@ fn config_for(host: &str, port: u16) -> ValidatedConfig {
 }
 
 fn config_with_streaming(host: &str, port: u16, streaming_chat: bool) -> ValidatedConfig {
+    config_with_images(host, port, streaming_chat, false, false)
+}
+
+fn config_with_images(
+    host: &str,
+    port: u16,
+    streaming_chat: bool,
+    input_images: bool,
+    allows_input_images: bool,
+) -> ValidatedConfig {
     let contents = format!(
         r#"
 [listeners.client]
@@ -99,6 +109,7 @@ operations = ["chat"]
 streaming_chat = {streaming_chat}
 function_tools = false
 input_audio = false
+input_images = {input_images}
 audio_streaming_chat = false
 audio_function_tools = false
 
@@ -111,6 +122,7 @@ upstream_id = "{UPSTREAM_MODEL}"
 requires_streaming_chat = false
 requires_function_tools = false
 allows_input_audio = false
+allows_input_images = {allows_input_images}
 
 [[application_keys]]
 id = "fixture-client"
@@ -874,4 +886,54 @@ fn tools_and_tool_history_encode() {
             "provider": {"allow_fallbacks": false}
         })
     );
+}
+
+#[tokio::test]
+async fn image_input_requires_route_permission_and_uses_inline_https_payload() {
+    const IMAGE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2n3QAAAAASUVORK5CYII=";
+    for allowed in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (certificate, acceptor) = tls_fixture();
+        let config = config_with_images(FIXTURE_HOST, address.port(), false, true, allowed);
+        let adapter = adapter_for(&config, certificate, address);
+        let CoreRequest::Chat(mut chat) = text_request() else {
+            panic!("chat fixture")
+        };
+        chat.messages = vec![ChatMessage {
+            role: ChatRole::User,
+            content: vec![ChatContent::InputImage {
+                image: crate::core::ValidatedImage::from_data_url(IMAGE.to_owned()).unwrap(),
+            }],
+        }];
+        if !allowed {
+            let result = adapter
+                .execute(routed(&config, CoreRequest::Chat(chat)))
+                .await;
+            assert_eq!(error_kind(result), ErrorKind::UnsupportedOperation);
+            continue;
+        }
+        let server = tokio::spawn(serve_response(
+            listener,
+            acceptor,
+            200,
+            "application/json",
+            RESPONSE.as_bytes().to_vec(),
+        ));
+        let response = adapter
+            .execute(routed(&config, CoreRequest::Chat(chat)))
+            .await
+            .unwrap();
+        assert!(matches!(
+            response,
+            AdapterOutput::Complete(crate::core::Response::Chat(_))
+        ));
+        let record = server.await.unwrap().unwrap();
+        let payload: Value = serde_json::from_slice(&record.body).unwrap();
+        assert_eq!(
+            payload["messages"][0]["content"],
+            json!([{"type": "image_url", "image_url": {"url": IMAGE}}])
+        );
+        assert_eq!(payload["model"], UPSTREAM_MODEL);
+    }
 }

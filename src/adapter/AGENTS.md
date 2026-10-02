@@ -9,6 +9,7 @@
   - `vllm/`: chat (streaming and tools when declared, also behind LiteLLM) and transcription (multipart or audio chat); construction rejects reasoning control, and a `secret_ref` without a resolved token.
   - `openrouter/`: tests in `tests.rs` and `tests/stream.rs`.
   - `codex/`: `provider.rs` (instead of `mod.rs` logic), `protocol/` (Responses wire protocol + tests), `auth/` (device login, token refresh with single-flight `RefreshCoordinator`, keyring/file credential store with a lock, pinned-TLS `net.rs`).
+  - `chatgpt/`: documented plan-usage provider; browser auth with signed ID tokens, protected profiles, account catalog, pinned inference and namespaced functions. Shares the bounded Responses text/event mapper in `codex/protocol` and `codex/stream`.
 - `transport/`: the only HTTP client. HTTP/1 over hyper with rustls, per-request connection (no pool), `origin.rs` (URL and TLS rules, credentials only over HTTPS), `resolver.rs` (DNS lookups capped at 16), `time.rs` (connect/headers/first-byte/idle phases), `body.rs` (bounded bodies), `multipart.rs`, `sse.rs`. Tests live in `transport/tests/`.
 - `diagnostics.rs`: `UpstreamLabel` and sanitized provider error parsing. It never logs tokens, headers or request bodies; provider messages are DEBUG only, with body reads capped at 8 KiB.
 

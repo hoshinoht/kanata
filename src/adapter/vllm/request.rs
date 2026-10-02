@@ -119,6 +119,19 @@ enum MessageContent {
 enum ContentPart {
     Text(TextPart),
     InputAudio(InputAudioPart),
+    Image(ImagePart),
+}
+
+#[derive(Serialize)]
+struct ImagePart {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    image_url: ImageUrl,
+}
+
+#[derive(Serialize)]
+struct ImageUrl {
+    url: String,
 }
 
 #[derive(Serialize)]
@@ -290,11 +303,12 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
         return encode_assistant(message);
     }
 
-    if message
-        .content
-        .iter()
-        .any(|content| matches!(content, ChatContent::InputAudio { .. }))
-    {
+    if message.content.iter().any(|content| {
+        matches!(
+            content,
+            ChatContent::InputAudio { .. } | ChatContent::InputImage { .. }
+        )
+    }) {
         if message.role != ChatRole::User {
             return Err(unsupported_operation());
         }
@@ -307,6 +321,12 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
                     text: text.clone(),
                 })),
                 ChatContent::InputAudio { audio } => Ok(audio_part(audio)),
+                ChatContent::InputImage { image } => Ok(ContentPart::Image(ImagePart {
+                    kind: "image_url",
+                    image_url: ImageUrl {
+                        url: image.data_url().to_owned(),
+                    },
+                })),
                 ChatContent::Text { .. } => Err(invalid_request()),
                 ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. } => {
                     Err(unsupported_operation())
@@ -355,7 +375,9 @@ fn encode_assistant(message: &ChatMessage) -> Result<MessagePayload, GatewayErro
                     arguments: call.arguments.clone(),
                 },
             }),
-            ChatContent::InputAudio { .. } | ChatContent::ToolResult { .. } => {
+            ChatContent::InputAudio { .. }
+            | ChatContent::InputImage { .. }
+            | ChatContent::ToolResult { .. } => {
                 return Err(unsupported_operation());
             }
         }

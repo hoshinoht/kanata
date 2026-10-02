@@ -17,8 +17,8 @@ use super::{
     deadline::RequestDeadline,
     errors::{
         admission_rejected_observed, annotate_client_request_id, body_too_large, forbidden,
-        gateway_error_observed, invalid, request_id, server_draining_observed, unavailable,
-        upstream_failure_observed,
+        gateway_error_observed, invalid, quota_rejected, request_id, reserve_usage,
+        server_draining_observed, unavailable, upstream_failure_observed,
     },
     multipart::{MultipartInputError, parse_multipart},
     supported, validate_extensions,
@@ -129,6 +129,14 @@ pub(super) async fn transcriptions(
         }
         Err(error) => return gateway_error_observed(error, observer.as_ref()),
     };
+    match deadline
+        .run(|| reserve_usage(&auth, observer.as_ref()))
+        .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return quota_rejected(error, observer.as_ref()),
+        Err(error) => return gateway_error_observed(error, observer.as_ref()),
+    }
     if let Some(observer) = observer.as_ref() {
         observer.begin_upstream();
         observer.annotate_adapter(&route.adapter_id, &super::chat::provider_label(route));

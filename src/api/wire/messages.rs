@@ -2,8 +2,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 
 use crate::core::{
-    AudioValidationError, ChatContent, ChatMessage, ChatRole, InputAudioFormat,
-    MAX_INPUT_AUDIO_BYTES, ToolCall, ValidatedAudio,
+    AudioValidationError, ChatContent, ChatMessage, ChatRole, ImageBudget, ImageValidationError,
+    InputAudioFormat, MAX_INPUT_AUDIO_BYTES, ToolCall, ValidatedAudio, ValidatedImage,
 };
 
 use super::valid_name;
@@ -32,6 +32,7 @@ impl MessageWire {
         self,
         max_audio_bytes: usize,
         total_audio_bytes: &mut usize,
+        image_budget: &mut ImageBudget,
     ) -> Result<ChatMessage, ChatWireError> {
         let role = match self.role.as_str() {
             "system" => ChatRole::System,
@@ -48,7 +49,7 @@ impl MessageWire {
             }
             OptionalField::Value(ContentWire::Parts(parts)) => parts
                 .into_iter()
-                .map(|part| part.into_core(role, max_audio_bytes, total_audio_bytes))
+                .map(|part| part.into_core(role, max_audio_bytes, total_audio_bytes, image_budget))
                 .collect::<Result<Vec<_>, _>>()?,
         };
 
@@ -149,6 +150,8 @@ struct ContentPart {
     text: OptionalField<String>,
     #[serde(default)]
     input_audio: OptionalField<InputAudioWire>,
+    #[serde(default)]
+    image_url: OptionalField<ImageUrlWire>,
 }
 
 impl ContentPart {
@@ -157,27 +160,50 @@ impl ContentPart {
         role: ChatRole,
         max_audio_bytes: usize,
         total_audio_bytes: &mut usize,
+        image_budget: &mut ImageBudget,
     ) -> Result<ChatContent, ChatWireError> {
         let Self {
             kind,
             text,
             input_audio,
+            image_url,
         } = self;
         match kind.as_str() {
-            "text" => match (text, input_audio) {
-                (OptionalField::Value(text), OptionalField::Missing) => {
+            "text" => match (text, input_audio, image_url) {
+                (OptionalField::Value(text), OptionalField::Missing, OptionalField::Missing) => {
                     Ok(ChatContent::Text { text })
                 }
                 _ => Err(ChatWireError::Invalid),
             },
-            "input_audio" if role == ChatRole::User => match (text, input_audio) {
-                (OptionalField::Missing, OptionalField::Value(audio)) => {
+            "input_audio" if role == ChatRole::User => match (text, input_audio, image_url) {
+                (OptionalField::Missing, OptionalField::Value(audio), OptionalField::Missing) => {
                     audio.into_core(max_audio_bytes, total_audio_bytes)
                 }
                 _ => Err(ChatWireError::Invalid),
             },
+            "image_url" if role == ChatRole::User => match (text, input_audio, image_url) {
+                (OptionalField::Missing, OptionalField::Missing, OptionalField::Value(wire)) => {
+                    let image = ValidatedImage::from_data_url(wire.url).map_err(image_error)?;
+                    image_budget.add(&image).map_err(image_error)?;
+                    Ok(ChatContent::InputImage { image })
+                }
+                _ => Err(ChatWireError::InvalidParam("messages")),
+            },
             _ => Err(ChatWireError::Invalid),
         }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImageUrlWire {
+    url: String,
+}
+
+fn image_error(error: ImageValidationError) -> ChatWireError {
+    match error {
+        ImageValidationError::Invalid => ChatWireError::InvalidParam("messages"),
+        ImageValidationError::TooLarge => ChatWireError::TooLarge,
     }
 }
 
@@ -288,14 +314,15 @@ fn has_nonempty_text(content: &[ChatContent]) -> bool {
         ChatContent::Text { text } => !text.is_empty(),
         ChatContent::ToolCall { .. }
         | ChatContent::ToolResult { .. }
-        | ChatContent::InputAudio { .. } => false,
+        | ChatContent::InputAudio { .. }
+        | ChatContent::InputImage { .. } => false,
     })
 }
 
 fn has_user_content(content: &[ChatContent]) -> bool {
     content.iter().any(|item| match item {
         ChatContent::Text { text } => !text.is_empty(),
-        ChatContent::InputAudio { .. } => true,
+        ChatContent::InputAudio { .. } | ChatContent::InputImage { .. } => true,
         ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. } => false,
     })
 }
@@ -307,7 +334,8 @@ fn text_content(content: &[ChatContent]) -> String {
             ChatContent::Text { text } => Some(text.as_str()),
             ChatContent::ToolCall { .. }
             | ChatContent::ToolResult { .. }
-            | ChatContent::InputAudio { .. } => None,
+            | ChatContent::InputAudio { .. }
+            | ChatContent::InputImage { .. } => None,
         })
         .collect()
 }

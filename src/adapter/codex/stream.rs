@@ -13,16 +13,26 @@ use crate::{
 
 use super::protocol::ResponsesStreamParser;
 
-pub(super) fn event_stream(
+pub(crate) fn event_stream(
     body: ResponseBody,
     public_model: ModelAlias,
     deadline: tokio::time::Instant,
     label: UpstreamLabel,
 ) -> EventStream {
+    event_stream_with_parser(body, public_model, deadline, label, None)
+}
+
+pub(crate) fn event_stream_with_parser(
+    body: ResponseBody,
+    public_model: ModelAlias,
+    deadline: tokio::time::Instant,
+    label: UpstreamLabel,
+    namespace: Option<&'static str>,
+) -> EventStream {
     let state = StreamState {
         label,
         body: Some(body),
-        parser: ResponsesStreamParser::new(public_model),
+        parser: parser(public_model, namespace),
         pending: VecDeque::new(),
         deadline,
         finished: false,
@@ -30,20 +40,20 @@ pub(super) fn event_stream(
 
     Box::pin(stream::unfold(state, |mut state| async move {
         loop {
+            let remaining = state
+                .deadline
+                .saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() && (!state.finished || !state.pending.is_empty()) {
+                state.body.take();
+                state.pending.clear();
+                state.finished = true;
+                return Some((Err(overall_timeout()), state));
+            }
             if let Some(event) = state.pending.pop_front() {
                 return Some((Ok(event), state));
             }
             if state.finished {
                 return None;
-            }
-
-            let remaining = state
-                .deadline
-                .saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                state.body.take();
-                state.finished = true;
-                return Some((Err(overall_timeout()), state));
             }
             let next = {
                 let body = state.body.as_mut()?;
@@ -61,7 +71,13 @@ pub(super) fn event_stream(
                     return Some((Err(error), state));
                 }
                 Ok(Some(Ok(bytes))) => match state.parser.feed(&bytes) {
-                    Ok(events) => state.pending.extend(events),
+                    Ok(events) => {
+                        state.pending.extend(events);
+                        if state.parser.take_chat_response().is_some() {
+                            state.body.take();
+                            state.finished = true;
+                        }
+                    }
                     Err(error) => {
                         state.body.take();
                         state.finished = true;
@@ -85,13 +101,23 @@ pub(super) fn event_stream(
     }))
 }
 
-pub(super) async fn collect_response(
-    mut body: ResponseBody,
+pub(crate) async fn collect_response(
+    body: ResponseBody,
     public_model: ModelAlias,
     deadline: tokio::time::Instant,
     label: &UpstreamLabel,
 ) -> Result<ChatResponse, GatewayError> {
-    let mut parser = ResponsesStreamParser::new(public_model);
+    collect_response_with_parser(body, public_model, deadline, label, None).await
+}
+
+pub(crate) async fn collect_response_with_parser(
+    mut body: ResponseBody,
+    public_model: ModelAlias,
+    deadline: tokio::time::Instant,
+    label: &UpstreamLabel,
+    namespace: Option<&'static str>,
+) -> Result<ChatResponse, GatewayError> {
+    let mut parser = parser(public_model, namespace);
     let mut received = 0usize;
 
     loop {
@@ -157,5 +183,12 @@ fn overall_timeout() -> GatewayError {
 fn upstream_failure() -> GatewayError {
     GatewayError {
         kind: ErrorKind::UpstreamFailure,
+    }
+}
+
+fn parser(model: ModelAlias, namespace: Option<&'static str>) -> ResponsesStreamParser {
+    match namespace {
+        Some(namespace) => ResponsesStreamParser::namespaced(model, namespace),
+        None => ResponsesStreamParser::new(model),
     }
 }

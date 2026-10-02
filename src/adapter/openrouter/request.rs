@@ -105,6 +105,12 @@ enum MessageContent {
 enum ContentPart {
     Text { text: String },
     InputAudio { input_audio: AudioPayload },
+    ImageUrl { image_url: ImageUrl },
+}
+
+#[derive(Serialize)]
+struct ImageUrl {
+    url: String,
 }
 
 #[derive(Serialize)]
@@ -183,11 +189,13 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
         return encode_assistant(message);
     }
 
-    let has_audio = message
-        .content
-        .iter()
-        .any(|segment| matches!(segment, ChatContent::InputAudio { .. }));
-    if has_audio {
+    let has_media = message.content.iter().any(|segment| {
+        matches!(
+            segment,
+            ChatContent::InputAudio { .. } | ChatContent::InputImage { .. }
+        )
+    });
+    if has_media {
         if message.role != ChatRole::User {
             return Err(unsupported_operation());
         }
@@ -199,6 +207,11 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
                     Ok(ContentPart::Text { text: text.clone() })
                 }
                 ChatContent::Text { .. } => Err(invalid_request()),
+                ChatContent::InputImage { image } => Ok(ContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: image.data_url().to_owned(),
+                    },
+                }),
                 ChatContent::InputAudio { audio } => Ok(ContentPart::InputAudio {
                     input_audio: AudioPayload {
                         data: STANDARD.encode(audio.bytes()),
@@ -255,7 +268,9 @@ fn encode_assistant(message: &ChatMessage) -> Result<MessagePayload, GatewayErro
                     arguments: call.arguments.clone(),
                 },
             }),
-            ChatContent::InputAudio { .. } | ChatContent::ToolResult { .. } => {
+            ChatContent::InputAudio { .. }
+            | ChatContent::InputImage { .. }
+            | ChatContent::ToolResult { .. } => {
                 return Err(unsupported_operation());
             }
         }

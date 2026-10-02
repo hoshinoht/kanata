@@ -10,6 +10,7 @@ use crate::{
 pub(super) struct RouteBinding {
     identity: RouteIdentity,
     allows_input_audio: bool,
+    allows_input_images: bool,
     allows_audio_streaming_chat: bool,
     allows_audio_function_tools: bool,
     enable_thinking: Option<bool>,
@@ -42,6 +43,9 @@ pub(super) fn bind_route(
             && !(route.allows_input_audio() && capabilities.audio_streaming_chat))
         || (route.allows_audio_function_tools()
             && !(route.allows_input_audio() && capabilities.audio_function_tools))
+        || (route.allows_input_images()
+            && (route.identity().selector.operation != crate::core::Operation::Chat
+                || !capabilities.input_images))
         || (route.allows_input_audio()
             && (route.identity().selector.operation != crate::core::Operation::Chat
                 || !capabilities.input_audio))
@@ -51,6 +55,7 @@ pub(super) fn bind_route(
     Ok(RouteBinding {
         identity: route.identity().clone(),
         allows_input_audio: route.allows_input_audio(),
+        allows_input_images: route.allows_input_images(),
         allows_audio_streaming_chat: route.allows_audio_streaming_chat(),
         allows_audio_function_tools: route.allows_audio_function_tools(),
         enable_thinking: route.enable_thinking(),
@@ -95,6 +100,8 @@ pub(super) fn validate(
     };
 
     match request {
+        Request::Speech(_) => Err(unsupported_operation()),
+        Request::Embeddings(_) => Err(unsupported_operation()),
         Request::Chat(chat) => validate_chat(
             chat,
             max_audio_bytes,
@@ -181,7 +188,12 @@ fn validate_chat(
                         return Err(invalid_request());
                     }
                 }
-                ChatContent::InputAudio { .. } => return Err(unsupported_operation()),
+                ChatContent::InputImage { .. }
+                    if message.role == ChatRole::User
+                        && route_binding.is_none_or(|binding| binding.allows_input_images) => {}
+                ChatContent::InputAudio { .. } | ChatContent::InputImage { .. } => {
+                    return Err(unsupported_operation());
+                }
                 ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. } => {
                     return Err(invalid_request());
                 }

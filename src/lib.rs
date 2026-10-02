@@ -6,6 +6,7 @@ pub mod config;
 pub mod core;
 mod diagnostics;
 pub mod keys;
+mod portal;
 pub mod routing;
 mod serve;
 pub mod server;

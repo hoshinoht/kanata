@@ -1,6 +1,6 @@
 pub mod auth;
 mod provider;
-mod stream;
+pub(crate) mod stream;
 mod validation;
 
 pub use provider::CodexAdapter;

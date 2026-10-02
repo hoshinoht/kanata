@@ -168,6 +168,7 @@
     );
     if (generic || caps.structured_output === true) rows.push(["response_format", "Supports {type: \"json_object\"} or {type: \"json_schema\", json_schema: {name, schema, strict}}. JSON schemas are limited to 64 KiB and depth 32."]);
     if (generic || caps.reasoning_control === true) rows.push(["reasoning_effort", `Allowed values: ${(caps.reasoning_efforts || ["none", "minimal", "low", "medium", "high", "xhigh", "max"]).join(", ")}. Backend support still depends on the selected model.`]);
+    if (generic || caps.input_images === true) rows.push(["messages[].content[].image_url", "User messages accept inline {type: \"image_url\", image_url: {url: \"data:image/png;base64,...\"}} parts (PNG or JPEG). Remote URLs and detail options are rejected. Up to four images, 4 MiB per file, 8 MiB combined, 4096 pixels per side and 16,777,216 combined pixels; the configured request-body limit can be smaller."]);
     if (generic || caps.input_audio === true) rows.push(["messages[].content[].input_audio", "Audio parts use {type: \"input_audio\", input_audio: {data: \"BASE64_AUDIO\", format: \"wav\"}} (wav or mp3). Audio combined with streaming or tools needs separate route support; the text capability flags alone do not guarantee it."]);
     const requestFields = element("details", undefined, "request-fields");
     requestFields.append(element("summary", "Request fields"));
@@ -208,18 +209,63 @@
     return panel;
   }
 
+  function embeddingsGuide(model) {
+    const {panel, details, body: content} = endpoint("/embeddings", "Text embeddings", "Convert text into vectors for search and retrieval. Responses include indexed data and token usage when reported by the backend.");
+    fields(details, [
+      ["model", `Required embedding alias: ${model.id}. Embedding permission is separate from chat permission.`],
+      ["input", "A non-empty string or 1–128 non-empty strings. Token arrays are unsupported. The configured JSON body limit also applies."],
+      ["encoding_format", "float (default) or base64. Base64 contains little-endian float32 values."],
+      ["dimensions", "Optional positive integer up to 16,384; the model must support that size. A batch may return at most 262,144 total values."],
+    ]);
+    codeBlock(content, "Embeddings", curl("/embeddings", {model: model.id, input: ["A document to search", "A related question"], encoding_format: "float"}));
+    return panel;
+  }
+
+  function speechGuide(model) {
+    const policy = model.kanata?.speech;
+    const voice = policy?.voices?.[0] || "your-voice";
+    const format = policy?.formats?.[0] || "mp3";
+    const {panel, details, body: content} = endpoint("/audio/speech", "Speech output", "Convert text into a bounded audio file. Speech has its own key permission and configured voice and format allowlists.");
+    fields(details, [
+      ["model / input", `Use ${model.id} with up to 4,096 characters and 16,384 UTF-8 bytes of text.`],
+      ["voice", policy ? `Choose: ${policy.voices.join(", ")}.` : "Use a voice declared by your permitted model."],
+      ["response_format", policy ? `Choose: ${policy.formats.join(", ")}. The default is mp3, which must be allowed.` : "mp3 (default) or wav, when declared by the route."],
+      ["speed", "Optional number from 0.25 to 4; defaults to 1."],
+      ["Response", "Binary audio up to 8 MiB. Streaming events, inline pause/voice/rate controls, SSML, instructions and download links are unsupported."],
+    ]);
+    codeBlock(content, "Speech", curl("/audio/speech", {model: model.id, input: "Hello from Kanata.", voice, response_format: format}) + ` --output speech.${format}`);
+    return panel;
+  }
+
+  function responsesGuide(model) {
+    const {panel, details, body: content} = endpoint("/responses", "Stateless Responses", "Text and function calls using this alias's chat permission. Send the full conversation on each request; Kanata does not store responses.");
+    fields(details, [
+      ["model / input", `Use ${model.id} with text or message and function-call history.`],
+      ["store", "Omit or set false. previous_response_id and stored conversations are unsupported."],
+      ["stream", "Use true on streaming routes for typed response events. Check response.completed, response.incomplete or response.failed; partial text alone is not success."],
+      ["tools", "Function declarations and results only. Hosted tools, strict schemas, image/audio input and reasoning output are unsupported on this endpoint."],
+    ]);
+    codeBlock(content, "Responses", curl("/responses", {model: model.id, input: "Hello", store: false}));
+    return panel;
+  }
+
   function showGuide(model, generic = false) {
     const target = byId("model-guide");
     target.replaceChildren();
     if (!model) return;
     if (model.kanata.operations.includes("chat")) target.append(chatGuide(model, generic));
+    if (model.kanata.operations.includes("chat")) target.append(responsesGuide(model));
     if (model.kanata.operations.includes("transcription")) target.append(transcriptionGuide(model));
+    if (model.kanata.operations.includes("embeddings")) target.append(embeddingsGuide(model));
+    if (model.kanata.operations.includes("speech")) target.append(speechGuide(model));
   }
 
   function genericGuide() {
     const generic = { id: "your-chat-model", kanata: { operations: ["chat"] } };
     showGuide(generic, true);
     byId("model-guide").append(transcriptionGuide({ id: "your-transcription-model" }));
+    byId("model-guide").append(embeddingsGuide({ id: "your-embedding-model" }));
+    byId("model-guide").append(speechGuide({ id: "your-speech-model" }));
   }
 
   function clearAccess() {
@@ -257,7 +303,7 @@
       card.append(element("h3", model.id));
       const badges = element("div", undefined, "badges");
       for (const operation of caps.operations) badges.append(element("span", operation, "badge operation"));
-      for (const [flag, label] of [["streaming", "Text streaming"], ["function_tools", "Function tools"], ["structured_output", "Structured output"], ["sampling_controls", "Sampling"], ["reasoning_control", "Reasoning controls"], ["input_audio", "Audio input"]]) {
+      for (const [flag, label] of [["streaming", "Text streaming"], ["function_tools", "Function tools"], ["structured_output", "Structured output"], ["sampling_controls", "Sampling"], ["reasoning_control", "Reasoning controls"], ["input_audio", "Audio input"], ["input_images", "Image input"]]) {
         if (caps[flag] === true) badges.append(element("span", label, "badge"));
       }
       card.append(badges);
@@ -298,7 +344,7 @@
       });
       if (!response.ok) throw new GuideError([401, 403].includes(response.status) ? "Key rejected. Check its value, expiry and access to this listener." : `Unable to load access (HTTP ${response.status}).`);
       const data = await response.json();
-      if (!Array.isArray(data.data) || !data.data.every((model) => typeof model.id === "string" && Array.isArray(model.kanata?.operations) && model.kanata.operations.every((op) => ["chat", "transcription"].includes(op)))) throw new GuideError("The gateway returned an unexpected model listing.");
+      if (!Array.isArray(data.data) || !data.data.every((model) => typeof model.id === "string" && Array.isArray(model.kanata?.operations) && model.kanata.operations.every((op) => ["chat", "transcription", "embeddings", "speech"].includes(op)))) throw new GuideError("The gateway returned an unexpected model listing.");
       if (number !== requestNumber) return;
       models = data.data;
       renderAccess();

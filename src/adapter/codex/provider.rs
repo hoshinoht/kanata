@@ -156,7 +156,7 @@ impl Adapter for CodexAdapter {
         let public_model = routed.context().route.selector.model_alias.clone();
         let streaming = match routed.request() {
             Request::Chat(chat) => chat.stream,
-            Request::Transcription(_) => {
+            Request::Transcription(_) | Request::Embeddings(_) | Request::Speech(_) => {
                 return Box::pin(async { Err(unsupported_operation()) });
             }
         };

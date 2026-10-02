@@ -28,8 +28,8 @@
 
 | | |
 | --- | --- |
-| **Endpoints** | `GET /v1/models` · `POST /v1/chat/completions` (JSON and SSE) · `POST /v1/audio/transcriptions` |
-| **Backends** | Ollama · vLLM · OpenRouter · Apple Foundation Models (macOS 27+) · Codex (ChatGPT sign-in, experimental) |
+| **Endpoints** | `GET /v1/models` · `POST /v1/chat/completions` (JSON and SSE) · `POST /v1/responses` (stateless text/tools/SSE) · `POST /v1/audio/transcriptions` · `POST /v1/embeddings` · `POST /v1/audio/speech` |
+| **Backends** | Ollama · vLLM · OpenRouter · Apple Foundation Models (macOS 27+) · Codex (experimental) · Sign in with ChatGPT · speech |
 | **Auth** | Static `kanata_sk_…` bearer keys with exact per-model scopes, stored as SHA-256 digests |
 | **Listeners** | Private (behind your tailnet proxy) · optional public (Cloudflare tunnel) · loopback admin |
 | **Deploy** | Distroless, non-root, read-only container; Compose profiles publish **no** host ports |
@@ -54,8 +54,13 @@ A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md
 ## Features
 
 ### 🧭 Routing
+
+- **Responses:** a [stateless text and function-call subset](docs/guides/responses.md) shares existing chat routes, key scopes, limits and usage accounting.
 - **Exact routing:** each `(model alias, operation)` maps to one adapter and upstream model, with no wildcards, fallbacks or silent rewrites.
 - **Multi-modal aliases:** one alias can serve several operations, e.g. chat and transcription.
+- **Speech output:** exact speech routes convert bounded text into MP3/WAV with an explicit voice allowlist. See [speech output](docs/guides/speech-output.md).
+- **Image input:** declared chat routes accept bounded inline PNG/JPEG images with Ollama, vLLM or OpenRouter. See [image input](docs/guides/image-input.md) and the [vision template](config/vision.example.toml).
+- **Embeddings:** text or batches of up to 128 strings through Ollama, with float or base64 results. Embedding access has its own exact key scope. See the [embedding template](config/embeddings.example.toml).
 - **Browser guide:** open `/v1` for public API documentation. Connect a key to see its permitted models, capabilities and examples on that listener. The page keeps the key only in memory; disconnect or navigate away to clear it. Examples include highlighted cURL, JavaScript, Python, Go and Rust, rendered in bundled Maple Mono. Use HTTPS outside localhost.
 - **Scoped listing:** `/v1/models` lists only what the caller's key may use, and each entry includes a `kanata` capability object.
 
@@ -63,11 +68,17 @@ A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md
 
 | Adapter | What it serves |
 | --- | --- |
-| **Ollama** | Chat, tools, structured output, sampling and reasoning controls |
-| **vLLM** | Text and inline-audio chat with streaming and tools, native ASR, and transcription through audio chat; local, private or remote over HTTPS with an API key |
-| **OpenRouter** | Chat with sampling, structured output, reasoning and tools; inline-audio chat (also with tools) and speech-to-text |
+| **Ollama** | Chat with inline images, tools, structured output, sampling, reasoning controls and text embeddings |
+| **vLLM** | Text, inline-image and inline-audio chat with streaming and tools, native ASR, and transcription through audio chat; local, private or remote over HTTPS with an API key |
+| **OpenRouter** | Chat with inline images, sampling, structured output, reasoning and tools; inline-audio chat (also with tools) and speech-to-text |
 | **Apple Foundation Models** | Apple's on-device model through macOS 27's `fm serve`: chat, streaming, JSON-schema output and sampling. 8,192-token context, no tools. Expect loose formatting; guardrail refusals return `finish_reason: "content_filter"` |
+| **ChatGPT** | Documented plan usage preview with browser sign-in; private text and function chat, complete or streaming |
+| **Speech** | Bounded MP3/WAV output through a Kokoro-FastAPI compatible backend with voice and format allowlists |
 | **Codex** ⚠️ *experimental* | ChatGPT-subscription models via device-code sign-in (private listener only), with effort aliases like `gpt-6-sol:high`. Uses an unofficial private backend that may change or break without notice |
+
+### Sign in with ChatGPT
+
+A separate private `chatgpt` provider supports host browser sign-in, protected account profiles, model discovery, and text/function chat through the documented plan usage preview. Start with [the setup and trial guide](docs/guides/sign-in-with-chatgpt.md) and [`config/chatgpt.example.toml`](config/chatgpt.example.toml). Local fixtures cover this integration; live sign-in and account model availability remain for the operator to verify.
 
 ### 🎛️ Typed generation options
 - **Supported fields:** `response_format` (JSON object / JSON schema), `temperature`, `top_p`, `seed`, `max_tokens` / `max_completion_tokens` and `reasoning_effort`.
@@ -78,9 +89,12 @@ A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md
 
 ### 🔐 Keys and exposure
 - **Host key CLI:** `kanata key new|list|show|edit|rm|rotate|migrate` manages keys in `keys.toml` on the host (no network or admin endpoint). Keys are shown once and stored only as SHA-256 digests; every key has an expiry (1–60 days or `unlimited`). Changes apply within about 2 s, without a restart.
+- **Route reload:** send SIGHUP to adopt validated route, adapter and publication changes without interrupting active streams. Shared admission and usage state survive reload; incompatible settings require a restart. See [configuration reload](docs/guides/config-reload.md).
+- **Private key portal:** `kanata portal --config <path>` opens a host-only dashboard on `127.0.0.1:9091` for creating, inspecting, editing, rotating and revoking keys. A terminal login code unlocks a one-hour browser session; see [private portal](docs/guides/private-portal.md).
+- **Daily allowances:** optional per-key request limits and token reservations survive restarts. `kanata key usage` reports model and UTC-day usage with explicit missing reports and optional cost estimates; see [usage and quotas](docs/guides/usage-quotas.md). Each process plane has a separate allowance.
 - **Usage and audit:** the server records per-key request counts, last use and reported token totals; the CLI appends every change to `keys/audit.jsonl` (never secrets).
-- **Owner key:** only one key may be the owner. Any key may be given Codex scopes, but Codex is never served publicly, and with the public profile the public container never loads the owner key or any key with Codex scopes, so use a separate key for public routes.
-- **Public listener:** its allowlist is empty by default. Missing or invalid keys get 403 except on the exact public guide paths (`GET`/`HEAD /v1` and `/v1/`); it never serves Codex.
+- **Owner key:** only one key may be the owner. Any key may be given private provider scopes. Codex and ChatGPT sign-in routes are never served publicly, and the public container never loads the owner key or keys with either provider’s scopes, so use a separate key for public routes.
+- **Public listener:** its allowlist is empty by default. Missing or invalid keys get 403 except on the exact public guide paths (`GET`/`HEAD /v1` and `/v1/`); it never serves Codex or the Sign in with ChatGPT provider.
 
 ### 📈 Operations
 - **Admission and limits:** bounded admission, shared request-buffer reservations, upload concurrency limits and a dedicated upload deadline.
@@ -150,6 +164,7 @@ scripts/kanata.sh logs
 | Sign in to Codex | `scripts/kanata.sh codex login` |
 | Issue a key for someone else | `kanata key new --config config/config.toml --id alice --chat <alias> --expires 30` |
 | List, inspect, change or revoke keys | `kanata key list`, `key show`, `key edit`, `key rm` (each with `--config`); see `kanata key` |
+| Manage keys in your browser on the host | `kanata portal --config config/config.toml`; see [private portal](docs/guides/private-portal.md) |
 | Which routes are public | `kanata routes --config config/config.toml` |
 | Rotate the owner key | `kanata key rotate --owner --config config/config.toml --expires 30 --key-out ~/.config/kanata/owner-client-key` |
 | Everything else (`status`, `restart`, `check`, `down`, …) | `scripts/kanata.sh help` |
@@ -208,7 +223,7 @@ Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you
 - **Public documentation:** only `GET`/`HEAD /v1` and `/v1/` serve a generic page without authentication. `/v1/models` and inference endpoints still require a key. No configured models, backend addresses or credentials are embedded in the public page. Scripts and styles are embedded with a restrictive Content Security Policy; personalized discovery responses are not cached.
 - **Host isolation:** Docker bridges alone don't isolate containers from each other or from the host, so use a host firewall.
 - **Cloudflare Access** on the public route is optional defence in depth, never a replacement for keys.
-- **Key management is host-only:** `kanata key` edits `keys.toml` directly (0600, one writer at a time) and has no network path. The server rejects a group- or world-writable keys file and keeps the previous keys when a reload fails. Expired keys get `401 key_expired`; revoked keys are treated exactly like unknown keys.
+- **Key management is host-only:** `kanata key` edits `keys.toml` directly (0600, one writer at a time) and has no network path. The optional `kanata portal` is a separate host command restricted to IPv4 loopback, with a one-use terminal login code and exact browser-origin checks. The gateway listeners have no key-management endpoint. The server rejects a group- or world-writable keys file and keeps the previous keys when a reload fails. Expired keys get `401 key_expired`; revoked keys are treated exactly like unknown keys.
 - **Suspected compromise:** run `kanata key rotate --owner --config <config> --expires <days> --key-out <file>` (takes effect within about 2 s), revoke other keys with `kanata key rm`, then rotate the Codex sign-in, the tunnel token, and proxy DNS tokens.
 
 ## Development
@@ -229,11 +244,12 @@ scripts/check-templates.sh
 | --- | --- |
 | `src/api`, `src/server` | HTTP handlers, listeners, wire decoding |
 | `src/core`, `src/routing`, `src/auth` | Provider-neutral contracts, route registry, key auth |
-| `src/adapter/*` | Ollama (also Apple FM), vLLM, OpenRouter, Codex, shared transport |
+| `src/adapter/*` | Ollama (also Apple FM), vLLM, OpenRouter, Codex, ChatGPT sign-in, speech, shared transport |
 | `src/telemetry` | Access logs, diagnostics, metrics |
 | `config/` | Templates (your `config.toml` is git-ignored) |
 | `compose.kanata*.yml`, `Dockerfile` | Container and Compose profiles |
 | `src/keys` | Host key CLI, `keys.toml`, reload, usage state, audit log |
+| `src/portal` | Separate loopback-only browser portal for host key management |
 | `scripts/` | Compose lifecycle, Codex login, local model helpers |
 | `tests/` | Integration tests and sanitized fixtures (`tests/fixtures/config/example.toml` is a schema fixture; never serve it) |
 

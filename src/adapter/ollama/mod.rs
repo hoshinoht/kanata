@@ -1,4 +1,5 @@
 mod apple_fm;
+mod embeddings;
 mod request;
 mod response;
 mod sse;
@@ -69,11 +70,14 @@ impl OllamaAdapter {
         }
 
         let configured = adapter.capabilities();
-        if !configured.operations.contains(&Operation::Chat)
+        if configured.operations.is_empty()
             || configured
                 .operations
                 .iter()
-                .any(|operation| *operation != Operation::Chat)
+                .any(|operation| !matches!(operation, Operation::Chat | Operation::Embeddings))
+            || (adapter.kind() == ProviderKind::AppleFm
+                && configured.operations.contains(&Operation::Embeddings))
+            || (adapter.kind() == ProviderKind::AppleFm && configured.input_images)
             || configured.input_audio
             || configured.audio_streaming_chat
             || configured.audio_function_tools
@@ -92,10 +96,11 @@ impl OllamaAdapter {
             id: adapter.id().to_owned(),
             kind: adapter.kind(),
             capabilities: Capabilities {
-                operations: [Operation::Chat].into_iter().collect(),
+                operations: configured.operations.clone(),
                 streaming_chat: configured.streaming_chat,
                 function_tools: configured.function_tools,
                 input_audio: false,
+                input_images: configured.input_images,
                 audio_streaming_chat: false,
                 audio_function_tools: false,
                 structured_output: configured.structured_output,
@@ -115,9 +120,13 @@ impl OllamaAdapter {
         limits: &ValidatedLimits,
     ) -> Result<Self, GatewayError> {
         if route.adapter_id() != adapter.id()
-            || route.identity().selector.operation != Operation::Chat
+            || !adapter
+                .capabilities()
+                .operations
+                .contains(&route.identity().selector.operation)
             || (route.requires_streaming_chat() && !adapter.capabilities().streaming_chat)
             || (route.requires_function_tools() && !adapter.capabilities().function_tools)
+            || (route.allows_input_images() && !adapter.capabilities().input_images)
             || route.allows_input_audio()
             || route.allows_audio_streaming_chat()
             || route.allows_audio_function_tools()
@@ -269,6 +278,18 @@ impl Adapter for OllamaAdapter {
         }
 
         let (context, request) = routed.into_parts();
+        if let Request::Embeddings(request) = request {
+            let transport = self.transport.clone();
+            let max_body_bytes = self.max_body_bytes;
+            let label = UpstreamLabel::new(&self.id, self.kind.label());
+            return Box::pin(embeddings::execute(
+                transport,
+                request,
+                context.route.upstream_id,
+                max_body_bytes,
+                label,
+            ));
+        }
         let Request::Chat(chat) = request else {
             return Box::pin(async { Err(unsupported_operation()) });
         };
