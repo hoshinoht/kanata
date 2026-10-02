@@ -145,13 +145,17 @@
     panel.append(element("h3", title));
     const heading = element("div", undefined, "endpoint");
     heading.append(element("span", "POST", "method"), element("code", `/v1${path}`));
-    panel.append(heading, element("p", description, "muted"));
-    return panel;
+    const body = element("div", undefined, "endpoint-body");
+    const details = element("div", undefined, "endpoint-details");
+    details.append(element("p", description, "muted"));
+    body.append(details);
+    panel.append(heading, body);
+    return {panel, details, body};
   }
 
   function chatGuide(model, generic) {
     const caps = model.kanata;
-    const panel = endpoint("/chat/completions", "Chat completions", "Send a conversation as application/json. A non-streaming response returns choices[0].message, finish_reason and usage when reported by the backend.");
+    const {panel, details, body: content} = endpoint("/chat/completions", "Chat completions", "Send a conversation as application/json. A non-streaming response returns choices[0].message, finish_reason and usage when reported by the backend.");
     const rows = [
       ["model", `Required string. ${generic ? "Replace your-chat-model with an allowed alias." : `Use ${model.id}.`}`],
       ["messages", "Required, non-empty array of messages, for example {role: \"user\", content: \"Hello\"}. Text conversations support system, user and assistant roles."],
@@ -168,13 +172,13 @@
     const requestFields = element("details", undefined, "request-fields");
     requestFields.append(element("summary", "Request fields"));
     fields(requestFields, rows);
-    if (generic) panel.append(element("p", "Optional fields require matching route capabilities. Connect your key to narrow this reference.", "muted"));
+    if (generic) details.append(element("p", "Optional fields require matching route capabilities. Connect your key to narrow this reference.", "muted"));
     const body = { model: model.id, messages: [{ role: "user", content: "Hello!" }] };
-    examples(panel, "Chat", [
+    examples(content, "Chat", [
       {label: "cURL", language: "shell", filename: "Terminal", setup: "Set KANATA_API_KEY in your environment before running this request.", source: curl("/chat/completions", body)},
       ...requestExamples(base, model.id),
     ]);
-    panel.append(requestFields);
+    details.append(requestFields);
     if (generic || caps.streaming === true) {
       const streaming = element("details", undefined, "request-fields");
       streaming.append(element("summary", "Streaming example"));
@@ -187,7 +191,7 @@
   }
 
   function transcriptionGuide(model) {
-    const panel = endpoint("/audio/transcriptions", "Audio transcription", "Upload an audio file as multipart/form-data. The default response is JSON: {\"text\":\"…\"}. Transcription responses do not stream.");
+    const {panel, details, body: content} = endpoint("/audio/transcriptions", "Audio transcription", "Upload an audio file as multipart/form-data. The default response is JSON: {\"text\":\"…\"}. Transcription responses do not stream.");
     const requestFields = element("details", undefined, "request-fields");
     requestFields.append(element("summary", "Request fields"));
     fields(requestFields, [
@@ -196,11 +200,11 @@
       ["response_format", "Optional: json (default) or text."],
       ["language / prompt", "Optional hints; support varies by backend. Unsupported hints are rejected. Omit them for a portable request."],
     ]);
-    examples(panel, "Transcription", [
+    examples(content, "Transcription", [
       {label: "cURL", language: "shell", filename: "Terminal", setup: "Place sample.wav in your working directory and set KANATA_API_KEY.", source: `curl ${quote(base + "/audio/transcriptions")} \\\n${authHeader} \\\n  --form-string ${quote("model=" + model.id)} \\\n  -F 'file=@sample.wav;type=audio/wav'`},
       ...requestExamples(base, model.id, true),
     ]);
-    panel.append(requestFields);
+    details.append(requestFields);
     return panel;
   }
 

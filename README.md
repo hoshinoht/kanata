@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="src/server/guide/relay.svg" alt="Kanata Relay logo" width="80" height="80">
+
 # Kanata
 
 **A lightweight Rust inference gateway: one OpenAI-compatible API in front of your local and remote models.**
@@ -31,6 +33,23 @@
 | **Auth** | Static `kanata_sk_…` bearer keys with exact per-model scopes, stored as SHA-256 digests |
 | **Listeners** | Private (behind your tailnet proxy) · optional public (Cloudflare tunnel) · loopback admin |
 | **Deploy** | Distroless, non-root, read-only container; Compose profiles publish **no** host ports |
+
+## Browser guide
+
+A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md), Maple Mono code and highlighted examples in five languages. Open `/v1` to browse, then connect a key to see its permitted models and operations.
+
+![Kanata API guide on desktop](docs/images/api-guide-desktop.png)
+
+<details>
+<summary>Code examples and mobile layout</summary>
+
+![Highlighted JavaScript example](docs/images/api-guide-code.png)
+
+<img src="docs/images/api-guide-mobile.png" alt="Kanata API guide on a 390-pixel mobile viewport" width="390">
+
+</details>
+
+*Captured from the local public-reference preview. Model aliases in examples are placeholders, not a live model inventory.*
 
 ## Features
 

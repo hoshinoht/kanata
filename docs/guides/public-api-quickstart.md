@@ -20,7 +20,7 @@ You have been given access to a small, personally run, OpenAI-compatible API. It
 
 ## Browser reference
 
-Open the API base URL (for example, `https://api.example.com/v1`) in a browser for a public reference with placeholder examples. `/v1/` also works. Chat and transcription examples include cURL, JavaScript (Node.js), Python, Go and Rust, with setup instructions and copy buttons. Use the arrow keys, Home or End to change language tabs. Code uses a bundled Maple Mono font and local syntax highlighting; the guide loads no CDN assets. Both client listeners serve this same generic page; the admin listener does not.
+Open the API base URL (for example, `https://api.example.com/v1`) in a browser for a public reference with placeholder examples. `/v1/` also works. Chat and transcription examples include cURL, JavaScript (Node.js), Python, Go and Rust, with setup instructions and copy buttons. Use the arrow keys, Home or End to change language tabs. The Material 3 Expressive layout places request details beside examples on wide screens and stacks them on mobile. Code uses a bundled Maple Mono font and local syntax highlighting; the guide loads no CDN assets. Both client listeners serve this same generic page; the admin listener does not.
 
 Choose **View my access** after entering a bearer key to load its permitted models and capabilities from `GET /v1/models`. The public listener also applies its route allowlist. A listed model means a configured, bound route; it does not confirm that its backend is healthy. No inference request is sent by the page.
 

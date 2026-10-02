@@ -12,6 +12,8 @@ const STYLE: &str = include_str!("guide/style.css");
 const SCRIPT: &str = include_str!("guide/app.js");
 const EXAMPLES: &str = include_str!("guide/examples.js");
 const HIGHLIGHT: &str = include_str!("guide/highlight.js");
+const LOGO: &str = include_str!("guide/relay.svg");
+const FAVICON: &[u8] = include_bytes!("guide/favicon.svg");
 const FONT: &[u8] = include_bytes!("guide/fonts/MapleMono-Regular.woff2");
 const FONT_LICENSE: &str = include_str!("guide/fonts/OFL.txt");
 
@@ -25,13 +27,15 @@ pub(super) async fn page() -> Response {
         let style = STYLE.replace("{{FONT}}", &STANDARD.encode(FONT));
         let script = format!("(() => {{\n{HIGHLIGHT}\n{EXAMPLES}\n{SCRIPT}\n}})();");
         let html = TEMPLATE
+            .replace("{{LOGO}}", LOGO)
+            .replace("{{FAVICON}}", &STANDARD.encode(FAVICON))
             .replace("{{STYLE}}", &style)
             .replace("{{SCRIPT}}", &script)
             .replace("{{FONT_LICENSE}}", FONT_LICENSE);
         let script_hash = STANDARD.encode(Sha256::digest(&script));
         let style_hash = STANDARD.encode(Sha256::digest(&style));
         let policy = format!(
-            "default-src 'none'; script-src 'sha256-{script_hash}'; style-src 'sha256-{style_hash}'; font-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+            "default-src 'none'; script-src 'sha256-{script_hash}'; style-src 'sha256-{style_hash}'; font-src data:; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
         );
         (html, HeaderValue::from_str(&policy).expect("static guide policy"))
     });

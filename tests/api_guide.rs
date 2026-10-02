@@ -75,6 +75,8 @@ async fn guide_is_identical_static_html_on_both_listeners_without_auth() {
                     "{{STYLE}}",
                     "{{FONT}}",
                     "{{FONT_LICENSE}}",
+                    "{{LOGO}}",
+                    "{{FAVICON}}",
                 ] {
                     assert!(!body.contains(secret), "page contains {secret}");
                 }
@@ -90,6 +92,8 @@ async fn guide_is_identical_static_html_on_both_listeners_without_auth() {
                     assert!(policy.contains(&format!("{directive} 'sha256-{hash}'")));
                 }
                 assert!(policy.contains("font-src data:"));
+                assert!(policy.contains("img-src data:"));
+                assert!(body.contains("data:image/svg+xml;base64,"));
                 assert!(body.contains("data:font/woff2;base64,d09GMg"));
                 assert!(body.contains("SIL OPEN FONT LICENSE"));
                 assert!(policy.contains("connect-src 'self'"));
