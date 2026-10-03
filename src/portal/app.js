@@ -2,6 +2,7 @@
   'use strict';
   const $ = (id) => document.getElementById(id);
   let data = null, selected = null, pending = null, busy = false, session = null;
+  const providerOpen = new Map();
   const text = (tag, value, className) => { const node = document.createElement(tag); node.textContent = value; if (className) node.className = className; return node; };
   const format = (value) => value == null ? 'Unavailable' : Number(value).toLocaleString();
   const date = (value) => value ? new Date(value).toLocaleString() : 'Never';
@@ -29,6 +30,7 @@
     const keys = data.keys.filter((key) => key.id.toLowerCase().includes(query));
     $('keys').replaceChildren(...keys.map((key) => {
       const button = text('button', '', `key-row${selected === key.id ? ' selected' : ''}`); button.type = 'button';
+      if (selected === key.id) button.setAttribute('aria-current', 'true');
       const status = key.revoked_at ? 'revoked' : key.expired ? 'expired' : 'active';
       button.append(text('strong', key.id), text('small', `${key.owner ? 'Owner · ' : ''}${key.scopes.length} scope${key.scopes.length === 1 ? '' : 's'} · ${key.public_access ? 'Public + private' : 'Private'}`), text('span', status, `status ${status}`));
       button.addEventListener('click', () => select(key)); return button;
@@ -36,11 +38,31 @@
     if (!keys.length) $('keys').append(text('p', query ? 'No matching keys.' : 'No keys yet. Create one to grant access.', 'small'));
   }
   function scopes(key) {
+    const effortViews = [], providerCounts = [];
+    const updateSelections = () => {
+      for (const view of effortViews) view.input.checked = view.indices.some((index) => inputs[index].checked);
+      for (const view of providerCounts) {
+        const aliases = new Set(view.models.map((model) => model.alias));
+        const selectedAliases = new Set(view.models.filter((model) => model.indices.some((index) => inputs[index].checked)).map((model) => model.alias));
+        view.label.textContent = `${selectedAliases.size} / ${aliases.size} selected`;
+      }
+      scopeWarning();
+    };
     const inputs = data.routes.map((route, index) => {
       const input = document.createElement('input'); input.type = 'checkbox'; input.name = 'scope'; input.value = String(index);
       input.checked = !!key?.scopes.some((scope) => scope.model_alias === route.model_alias && scope.operation === route.operation);
-      input.disabled = !!key?.revoked_at; input.addEventListener('change', scopeWarning); return input;
+      input.disabled = !!key?.revoked_at; input.addEventListener('change', updateSelections); return input;
     });
+    const bulkControls = (indices, name) => {
+      const controls = text('div', '', 'actions scope-actions');
+      for (const [label, checked] of [['Select all', true], ['Deselect all', false]]) {
+        const button = text('button', label, 'quiet'); button.type = 'button'; button.disabled = !!key?.revoked_at;
+        button.setAttribute('aria-label', `${label} ${name} models`);
+        button.addEventListener('click', () => { selectScopes(inputs, indices, checked); updateSelections(); });
+        controls.append(button);
+      }
+      return controls;
+    };
     const renderModel = (group) => {
       const badge = text('em', group.exposure === 'never_public' ? 'Never public' : group.exposure === 'public' ? 'Public' : 'Private');
       const label = text('span', '');
@@ -55,23 +77,27 @@
         const choice = text('label', '', 'check effort-choice'); const visible = document.createElement('input'); visible.type = 'checkbox'; visible.name = 'effort';
         visible.checked = level.indices.some((index) => inputs[index].checked); visible.disabled = !!key?.revoked_at;
         visible.setAttribute('aria-label', `${name} ${level.effort} reasoning`);
-        visible.addEventListener('change', () => { for (const index of level.indices) inputs[index].checked = visible.checked; scopeWarning(); });
+        effortViews.push({input: visible, indices: level.indices});
+        visible.addEventListener('change', () => { selectScopes(inputs, level.indices, visible.checked); updateSelections(); });
         choice.append(visible, text('span', level.effort)); levels.append(choice);
       }
       for (const index of group.indices) { inputs[index].hidden = true; row.append(inputs[index]); }
       row.append(levels); return row;
     };
-    $('scopes').replaceChildren(...providerGroups(data.routes).map((provider) => {
-      const section = text('section', '', 'provider-group'); section.setAttribute('aria-label', `${provider.label} routes`);
-      const heading = text('div', '', 'provider-heading');
-      const modelCount = new Set(provider.models.map((model) => model.alias)).size;
-      heading.append(text('h3', provider.label), text('span', `${modelCount} model${modelCount === 1 ? '' : 's'}`));
+    const toolbar = text('div', '', 'scope-toolbar'); toolbar.append(bulkControls(inputs.map((_, index) => index), 'available'), text('p', 'Selection changes apply to this key when you save.', 'small'));
+    $('scopes').replaceChildren(toolbar, ...providerGroups(data.routes).map((provider) => {
+      const section = text('details', '', 'provider-group'); section.open = providerOpen.get(provider.id) || false;
+      section.addEventListener('toggle', () => providerOpen.set(provider.id, section.open));
+      const heading = text('summary', '', 'provider-heading');
+      const count = text('span', '', 'provider-count'); providerCounts.push({label: count, models: provider.models});
+      heading.append(text('span', provider.label, 'provider-name'), count);
       section.append(heading);
+      section.append(bulkControls(provider.models.flatMap((model) => model.indices), provider.label));
       if (provider.models.every((model) => model.exposure === 'never_public')) section.append(text('p', 'Private access only', 'provider-note'));
       const models = text('div', '', 'provider-routes'); models.append(...provider.models.map(renderModel)); section.append(models);
       return section;
     }));
-    scopeWarning();
+    updateSelections();
   }
   function scopeWarning() {
     const never = [...document.querySelectorAll('input[name=scope]:checked')].some((input) => data.routes[Number(input.value)].exposure === 'never_public');

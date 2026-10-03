@@ -17,8 +17,8 @@ use super::{
 use crate::{
     config::{ProviderKind, ValidatedConfig},
     core::{
-        Capabilities, ErrorKind, GatewayError, ModelAlias, Request, Response, RouteIdentity,
-        RoutedRequest, TrustZone,
+        Capabilities, ErrorKind, GatewayError, ModelAlias, Request, Response, RoutedRequest,
+        TrustZone,
     },
 };
 use futures_util::StreamExt;
@@ -31,7 +31,7 @@ const NAMESPACE: &str = "kanata";
 pub struct ChatgptAdapter {
     id: String,
     capabilities: Capabilities,
-    routes: Vec<RouteIdentity>,
+    routes: Vec<request::RouteBinding>,
     transport: Arc<Transport>,
     auth: Arc<auth::AuthManager>,
     request_budget: usize,
@@ -60,7 +60,7 @@ impl ChatgptAdapter {
                 .routes()
                 .iter()
                 .filter(|route| route.adapter_id() == id)
-                .map(|route| route.identity().clone())
+                .map(request::RouteBinding::from_route)
                 .collect(),
             transport: Arc::new(Transport::new_pinned_https(HOST, config.timeouts())?),
             auth: Arc::new(
@@ -187,6 +187,12 @@ async fn execute_with_token(
 pub struct Model {
     pub slug: String,
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported_reasoning_efforts: Option<Vec<crate::core::ReasoningEffort>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_effort: Option<crate::core::ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsupported_reasoning_efforts: Vec<String>,
 }
 
 pub async fn models(config: &ValidatedConfig) -> Result<Vec<Model>, String> {
@@ -241,6 +247,14 @@ fn decode_models(bytes: &[u8]) -> Result<Vec<Model>, ()> {
         slug: String,
         display_name: String,
         visibility: String,
+        #[serde(default)]
+        supported_reasoning_levels: Option<Vec<Level>>,
+        #[serde(default)]
+        default_reasoning_level: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Level {
+        effort: String,
     }
     let catalog: Catalog = serde_json::from_slice(bytes).map_err(|_| ())?;
     if catalog.models.len() > 16_384 {
@@ -260,9 +274,47 @@ fn decode_models(bytes: &[u8]) -> Result<Vec<Model>, ()> {
             return Err(());
         }
         if entry.visibility == "list" {
+            let mut unsupported_reasoning_efforts = Vec::new();
+            let supported_reasoning_efforts = match entry.supported_reasoning_levels {
+                Some(levels) => {
+                    if levels.len() > 16 {
+                        return Err(());
+                    }
+                    let mut efforts = Vec::new();
+                    let mut seen = std::collections::BTreeSet::new();
+                    for level in levels {
+                        if !crate::config::valid_identifier(&level.effort)
+                            || level.effort.len() > 32
+                            || !seen.insert(level.effort.clone())
+                        {
+                            return Err(());
+                        }
+                        match crate::core::ReasoningEffort::parse(&level.effort) {
+                            Some(effort) => efforts.push(effort),
+                            None => unsupported_reasoning_efforts.push(level.effort),
+                        }
+                    }
+                    Some(efforts)
+                }
+                None => None,
+            };
+            let default_reasoning_effort = entry
+                .default_reasoning_level
+                .as_deref()
+                .and_then(crate::core::ReasoningEffort::parse);
+            if let Some(default) = default_reasoning_effort
+                && supported_reasoning_efforts
+                    .as_ref()
+                    .is_some_and(|efforts| !efforts.contains(&default))
+            {
+                return Err(());
+            }
             models.push(Model {
                 slug: entry.slug,
                 display_name: entry.display_name,
+                supported_reasoning_efforts,
+                default_reasoning_effort,
+                unsupported_reasoning_efforts,
             });
         }
     }

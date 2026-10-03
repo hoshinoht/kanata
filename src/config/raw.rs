@@ -130,6 +130,8 @@ pub(super) struct RawRoute {
     pub(super) adapter_id: String,
     pub(super) upstream_id: String,
     #[serde(default)]
+    pub(super) reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
     pub(super) codex_reasoning_effort: Option<CodexReasoningEffort>,
     #[serde(default)]
     pub(super) codex_reasoning_summary: Option<CodexReasoningSummary>,

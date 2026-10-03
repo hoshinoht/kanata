@@ -27,3 +27,7 @@ function providerGroups(routes) {
   }
   return [...providers.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
+
+function selectScopes(inputs, indices, checked) {
+  for (const index of indices) if (!inputs[index].disabled) inputs[index].checked = checked;
+}

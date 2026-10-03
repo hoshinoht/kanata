@@ -21,7 +21,36 @@ fn load(contents: &str) -> Result<ValidatedConfig, crate::config::ConfigError> {
     result
 }
 pub(super) fn config() -> ValidatedConfig {
-    load(include_str!("../../../config/chatgpt.example.toml")).unwrap()
+    load(&legacy_template()).unwrap()
+}
+fn legacy_template() -> String {
+    let mut template: toml::Value =
+        toml::from_str(include_str!("../../../config/chatgpt.example.toml")).unwrap();
+    let routes = template["routes"].as_array_mut().unwrap();
+    routes.truncate(1);
+    routes[0].as_table_mut().unwrap().remove("reasoning_effort");
+    for adapter in template["adapters"].as_array_mut().unwrap() {
+        adapter["capabilities"]
+            .as_table_mut()
+            .unwrap()
+            .remove("reasoning_control");
+    }
+    toml::to_string(&template).unwrap()
+}
+pub(super) fn config_with_effort(effort: crate::core::ReasoningEffort) -> ValidatedConfig {
+    let text = legacy_template()
+        .replace(
+            "\nfunction_tools = true\n",
+            "\nfunction_tools = true\nreasoning_control = true\n",
+        )
+        .replace(
+            "upstream_id = \"replace-with-account-model-slug\"",
+            &format!(
+                "upstream_id = \"fixture-model\"\nreasoning_effort = \"{}\"",
+                effort.as_str()
+            ),
+        );
+    load(&text).unwrap()
 }
 pub(super) fn chat() -> ChatRequest {
     ChatRequest {
@@ -93,7 +122,7 @@ pub(super) fn routed(config: &ValidatedConfig, chat: ChatRequest) -> RoutedReque
 #[test]
 fn namespaced_payload_keeps_full_history_and_rejects_unsupported_options() {
     let config = config();
-    let routes = vec![config.routes()[0].identity().clone()];
+    let routes = vec![request::RouteBinding::from_route(&config.routes()[0])];
     let caps = config.adapters()[0].capabilities();
     let mut responses_chat = chat();
     responses_chat.options.max_output_tokens_param = crate::core::MaxTokensParam::MaxOutputTokens;
@@ -182,4 +211,111 @@ fn public_process_excludes_keys_with_mixed_private_provider_scopes() {
             .iter()
             .all(|adapter| !adapter.kind().is_private_only())
     );
+}
+
+#[test]
+fn pinned_reasoning_payload_supports_standard_efforts_and_rejects_overrides() {
+    use crate::core::ReasoningEffort;
+    for effort in [
+        ReasoningEffort::None,
+        ReasoningEffort::Minimal,
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+        ReasoningEffort::Xhigh,
+        ReasoningEffort::Max,
+    ] {
+        let config = config_with_effort(effort);
+        let bindings = vec![request::RouteBinding::from_route(&config.routes()[0])];
+        let caps = config.adapters()[0].capabilities();
+        for explicit in [None, Some(effort)] {
+            let mut chat = chat();
+            chat.options.reasoning_effort = explicit;
+            let payload = request::encode(&routed(&config, chat), caps, &bindings).unwrap();
+            assert_eq!(payload["reasoning"]["effort"], effort.as_str());
+            assert_eq!(payload["store"], false);
+            assert_eq!(payload["stream"], true);
+            assert_eq!(payload["tools"][0]["type"], "namespace");
+        }
+        let mut chat = chat();
+        chat.options.reasoning_effort = Some(if effort == ReasoningEffort::High {
+            ReasoningEffort::Low
+        } else {
+            ReasoningEffort::High
+        });
+        assert!(request::encode(&routed(&config, chat), caps, &bindings).is_err());
+    }
+    let config = config();
+    let mut chat = chat();
+    chat.options.reasoning_effort = Some(ReasoningEffort::Low);
+    assert!(
+        request::encode(
+            &routed(&config, chat),
+            config.adapters()[0].capabilities(),
+            &[request::RouteBinding::from_route(&config.routes()[0])]
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn catalog_reports_account_efforts_defaults_and_unsupported_levels() {
+    let models = decode_models(br#"{"models":[{"slug":"fixture","display_name":"Fixture","visibility":"list","supported_reasoning_levels":[{"effort":"low","description":"Fixture"},{"effort":"medium"},{"effort":"max"},{"effort":"ultra"}],"default_reasoning_level":"low"}]}"#).unwrap();
+    assert_eq!(
+        models[0].supported_reasoning_efforts,
+        Some(vec![
+            crate::core::ReasoningEffort::Low,
+            crate::core::ReasoningEffort::Medium,
+            crate::core::ReasoningEffort::Max
+        ])
+    );
+    assert_eq!(
+        models[0].default_reasoning_effort,
+        Some(crate::core::ReasoningEffort::Low)
+    );
+    assert_eq!(models[0].unsupported_reasoning_efforts, ["ultra"]);
+    for levels in [
+        json!([{"effort":"low"},{"effort":"low"}]),
+        json!([{"effort":"bad\nlevel"}]),
+    ] {
+        assert!(decode_models(&serde_json::to_vec(&json!({"models":[{"slug":"fixture","display_name":"Fixture","visibility":"list","supported_reasoning_levels":levels}]})).unwrap()).is_err());
+    }
+}
+
+#[test]
+fn reasoning_config_requires_explicit_matching_private_route_pins() {
+    let legacy = legacy_template();
+    let enabled = legacy.replace(
+        "\nfunction_tools = true\n",
+        "\nfunction_tools = true\nreasoning_control = true\n",
+    );
+    assert!(
+        load(&enabled)
+            .unwrap_err()
+            .to_string()
+            .contains("reasoning_effort: required")
+    );
+    let pinned = enabled.replace(
+        "upstream_id = \"replace-with-account-model-slug\"",
+        "upstream_id = \"fixture-model\"\nreasoning_effort = \"medium\"",
+    );
+    let config = load(&pinned).unwrap();
+    assert_eq!(config.routes()[0].pinned_reasoning_effort(), Some("medium"));
+    for changed in [
+        pinned.replace("reasoning_control = true", "reasoning_control = false"),
+        pinned.replace(
+            "model_alias = \"chatgpt-chat\"",
+            "model_alias = \"chatgpt-chat:low\"",
+        ),
+        pinned.replace(
+            "reasoning_effort = \"medium\"",
+            "reasoning_effort = \"ultra\"",
+        ),
+        pinned.replace(
+            "reasoning_effort = \"medium\"",
+            "codex_reasoning_effort = \"medium\"",
+        ),
+    ] {
+        assert!(load(&changed).is_err());
+    }
 }

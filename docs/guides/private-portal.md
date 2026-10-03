@@ -35,6 +35,8 @@ The portal manages gateway keys and quotas. Set up account authentication separa
 
 Models are organized into sections by their configured provider, such as ChatGPT, Codex and Ollama. Private-only sections state that boundary. Selectable reasoning families appear as one model with separate effort controls. The portal retains exact route scopes underneath, including duplicate default/medium grants on unrelated edits. Toggling an effort explicitly selects or clears its configured scopes. Clients discover one base ID and accessible levels; see the [service handoff](service-handoff.md).
 
+Provider sections start collapsed and show how many models are selected. Expand a section to choose individual models or reasoning levels. **Select all** and **Deselect all** act on one provider or the entire configured list, including every effort in a selected family. These controls stage changes for the current key. Choose at least one route, then use **Save changes** to update its access. Collapsing a section preserves its selections; unrelated providers are unchanged by a provider's bulk controls. Revoked keys cannot be edited.
+
 - **Create:** choose a unique ID, exact model/operation scopes and expiry. Copy the generated secret from the one-time dialog. Only its SHA-256 digest is stored.
 - **Inspect:** select a key to see its scopes, expiry, owner status, request and reported token usage, existing daily allowances, and missing route references.
 - **Edit:** change scopes, expiry, maximum concurrent requests, request rate or daily request/token quotas. The quota selector preserves existing limits by default; choose **Set a daily quota** to replace them or **No daily quota** to remove them. Daily quotas require `[keys] usage_dir`.
@@ -46,6 +48,8 @@ An owner key is private-only. Adding a never-public route requires a separate ac
 The gateway normally reloads the keys file within about two seconds. The portal writes the same locked, atomic, permission-checked file and audit log as the host CLI. It does not verify that a gateway is running or that its reload succeeded. Check gateway status and warnings when validating access. A stale page cannot overwrite another writer's changes: refresh and repeat the edit.
 
 Usage is read from configured persisted state and can lag by about 30 seconds. Token totals include only reported upstream usage. An unavailable count or missing-usage count is not evidence of zero consumption. The portal makes no inference requests. Daily quotas reserve tokens before dispatch, retain reservations when usage is missing, and reset at UTC midnight. Actual reported usage can exceed a reservation, so token quotas are not a hard billing cap. See [usage and quotas](usage-quotas.md) for reservation policy and separate plane allowances.
+
+The provider disclosures and reasoning controls use shape and containment to show grouping and selection. Bulk actions use separate buttons with 48 px targets; **Save changes** remains the main action and Revoke is visually separated. The existing guide palette and logo remain the portal's identity.
 
 ## Session and network boundary
 
@@ -66,4 +70,4 @@ This protects the browser boundary. A compromised host account with access to th
 
 ## Validation
 
-The implementation was checked with isolated fixture keys, router security and lifecycle tests, a subprocess loopback HTTP test, and browser creation, expiry editing, rotation, revocation and locking. These checks did not alter live keys or deploy the portal.
+The implementation was checked with isolated fixture keys, router security and lifecycle tests, a subprocess loopback HTTP test, and browser creation, expiry editing, rotation, revocation and locking. The collapsible groups and bulk controls were additionally checked using isolated fixture keys: scoped/global selection, persistence through collapsed saves, revoked-key controls and a 390 px viewport without horizontal overflow. Fixture checks do not establish provider availability.

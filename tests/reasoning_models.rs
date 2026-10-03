@@ -376,3 +376,120 @@ async fn disabled_reasoning_control_preserves_exact_legacy_discovery_and_calls()
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(requests.lock().unwrap().len(), 1);
 }
+
+fn chatgpt_source(permissions: &[&str]) -> String {
+    let mut text = source(permissions)
+        .replace("[codex_auth]\nstore = \"keyring\"", "[chatgpt_auth]")
+        .replace("kind = \"codex\"", "kind = \"chatgpt\"")
+        .replace(
+            "https://chatgpt.invalid/backend-api/codex",
+            "https://api.openai.com/v1",
+        )
+        .replace("codex_reasoning_effort =", "reasoning_effort =")
+        .replace(
+            "model_alias = \"reasoning-model\"\noperation",
+            "model_alias = \"reasoning-model\"\nreasoning_effort = \"medium\"\noperation",
+        );
+    let mut variants = String::new();
+    for effort in ["none", "xhigh", "max"] {
+        variants.push_str(&format!(
+            r#"
+[[routes]]
+id = "reasoning-{effort}"
+model_alias = "reasoning-model:{effort}"
+reasoning_effort = "{effort}"
+operation = "chat"
+adapter_id = "codex-private"
+upstream_id = "gpt-5-codex"
+requires_streaming_chat = true
+requires_function_tools = true
+
+"#
+        ));
+    }
+    let insert = text.find("[[application_keys]]").unwrap();
+    text.insert_str(insert, &variants);
+    text
+}
+
+#[tokio::test]
+async fn generic_private_reasoning_families_are_key_scoped_and_exact() {
+    let config = load(&chatgpt_source(&[
+        "reasoning-model:none",
+        "reasoning-model:low",
+        "reasoning-model:xhigh",
+    ]))
+    .unwrap();
+    let (server, requests) = server_with(
+        &config,
+        vec![adapter_spec(
+            "codex-private",
+            capabilities(&config, "codex-private"),
+            chat_outcome("fixture"),
+        )],
+    );
+    let models = response_json(server.client_oneshot(models_request()).await.unwrap()).await;
+    assert_eq!(models["data"].as_array().unwrap().len(), 1);
+    assert_eq!(models["data"][0]["id"], "reasoning-model");
+    assert_eq!(
+        models["data"][0]["kanata"]["reasoning_efforts"],
+        json!(["none", "low", "xhigh"])
+    );
+    for (effort, status) in [
+        ("none", StatusCode::OK),
+        ("low", StatusCode::OK),
+        ("xhigh", StatusCode::OK),
+        ("medium", StatusCode::FORBIDDEN),
+        ("max", StatusCode::FORBIDDEN),
+        ("minimal", StatusCode::BAD_REQUEST),
+    ] {
+        let response = server.client_oneshot(chat_request(&json!({"model":"reasoning-model","messages":[{"role":"user","content":"fixture"}],"reasoning_effort":effort}).to_string())).await.unwrap();
+        assert_eq!(response.status(), status, "{effort}");
+        if status == StatusCode::OK {
+            assert_eq!(response_json(response).await["model"], "reasoning-model");
+            assert_eq!(
+                requests
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .context()
+                    .route
+                    .selector
+                    .model_alias
+                    .0,
+                format!("reasoning-model:{effort}")
+            );
+        }
+    }
+    let public = response_json(server.public_oneshot(models_request()).await.unwrap()).await;
+    assert_eq!(public["data"], json!([]));
+    let (server, requests) = {
+        let config = load(&chatgpt_source(&["reasoning-model"])).unwrap();
+        server_with(
+            &config,
+            vec![adapter_spec(
+                "codex-private",
+                capabilities(&config, "codex-private"),
+                chat_outcome("fixture"),
+            )],
+        )
+    };
+    let response = server
+        .client_oneshot(chat_request(
+            &json!({"model":"reasoning-model","messages":[{"role":"user","content":"fixture"}]})
+                .to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        requests.lock().unwrap()[0]
+            .context()
+            .route
+            .selector
+            .model_alias
+            .0,
+        "reasoning-model"
+    );
+}

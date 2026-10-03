@@ -356,7 +356,9 @@ pub(super) fn validate(
         let codex_reasoning_effort = match adapter.kind {
             ProviderKind::Codex if route.operation == Operation::Chat => {
                 match (alias_effort, route.codex_reasoning_effort) {
-                    (Some(alias), Some(field)) if alias != field => {
+                    (Some(alias), Some(field))
+                        if CodexReasoningEffort::from_request(alias) != Some(field) =>
+                    {
                         return Err(ConfigError::new(
                             format!("{path}.codex_reasoning_effort"),
                             "does_not_match_alias",
@@ -393,6 +395,15 @@ pub(super) fn validate(
                 }
                 None
             }
+            ProviderKind::Chatgpt => {
+                if route.codex_reasoning_effort.is_some() {
+                    return Err(ConfigError::new(
+                        format!("{path}.codex_reasoning_effort"),
+                        "codex_only",
+                    ));
+                }
+                None
+            }
             _ => {
                 if route.codex_reasoning_effort.is_some() {
                     return Err(ConfigError::new(
@@ -409,6 +420,32 @@ pub(super) fn validate(
                 None
             }
         };
+        if adapter.kind == ProviderKind::Chatgpt {
+            if let Some(effort) = route.reasoning_effort {
+                if route.operation != Operation::Chat || !adapter.capabilities.reasoning_control {
+                    return Err(ConfigError::new(
+                        format!("{path}.reasoning_effort"),
+                        "unsupported_by_adapter",
+                    ));
+                }
+                if alias_effort.is_some_and(|alias| alias != effort) {
+                    return Err(ConfigError::new(
+                        format!("{path}.reasoning_effort"),
+                        "does_not_match_alias",
+                    ));
+                }
+            } else if alias_effort.is_some() || adapter.capabilities.reasoning_control {
+                return Err(ConfigError::new(
+                    format!("{path}.reasoning_effort"),
+                    "required",
+                ));
+            }
+        } else if route.reasoning_effort.is_some() {
+            return Err(ConfigError::new(
+                format!("{path}.reasoning_effort"),
+                "chatgpt_only",
+            ));
+        }
         if route.codex_reasoning_summary.is_some() {
             if adapter.kind != ProviderKind::Codex {
                 return Err(ConfigError::new(
@@ -569,6 +606,7 @@ pub(super) fn validate(
             },
             adapter_id: route.adapter_id,
             codex_reasoning_effort,
+            reasoning_effort: route.reasoning_effort,
             codex_reasoning_summary: route.codex_reasoning_summary,
             extension_allowlist,
             requires_streaming_chat: route.requires_streaming_chat,
@@ -1423,19 +1461,14 @@ pub(crate) fn valid_identifier(value: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
-pub(crate) fn parse_model_alias(value: &str) -> Option<Option<CodexReasoningEffort>> {
+pub(crate) fn parse_model_alias(value: &str) -> Option<Option<ReasoningEffort>> {
     let Some((model, effort)) = value.split_once(':') else {
         return valid_identifier(value).then_some(None);
     };
     if !valid_identifier(model) || effort.contains(':') {
         return None;
     }
-    let effort = match effort {
-        "low" => CodexReasoningEffort::Low,
-        "medium" => CodexReasoningEffort::Medium,
-        "high" => CodexReasoningEffort::High,
-        _ => return None,
-    };
+    let effort = ReasoningEffort::parse(effort)?;
     Some(Some(effort))
 }
 pub(super) fn valid_env_name(value: &&str) -> bool {

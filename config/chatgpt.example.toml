@@ -23,6 +23,7 @@ trust_zone = "external"
 operations = ["chat"]
 streaming_chat = true
 function_tools = true
+reasoning_control = true
 
 [[routes]]
 id = "chatgpt-chat"
@@ -30,10 +31,22 @@ model_alias = "chatgpt-chat"
 operation = "chat"
 adapter_id = "chatgpt-private"
 upstream_id = "replace-with-account-model-slug"
+reasoning_effort = "medium"
 requires_streaming_chat = true
 requires_function_tools = true
 
-# kanata key new --config <path> --id chat-client --chat chatgpt-chat --expires 30
+[[routes]]
+id = "chatgpt-chat-low"
+model_alias = "chatgpt-chat:low"
+operation = "chat"
+adapter_id = "chatgpt-private"
+upstream_id = "replace-with-account-model-slug"
+reasoning_effort = "low"
+requires_streaming_chat = true
+requires_function_tools = true
+
+# Use account-supported levels; pin the base alias to the account's default.
+# kanata key new --config <path> --id chat-client --chat chatgpt-chat,chatgpt-chat:low --expires 30
 [keys]
 file = "keys/keys.toml"
 usage_dir = "state"

@@ -23,13 +23,13 @@ This implementation is checked with protocol, OAuth and TLS fixtures. A local ma
    target/debug/kanata auth chatgpt models --config /absolute/path/to/chatgpt.toml
    ```
 
-   Copy a returned `slug` into the route's `upstream_id`. Keep `model_alias = "chatgpt-chat"` or choose your own alias. Listing models does not create routes or grant permissions.
+   Copy a returned `slug` into each family route's `upstream_id`. Keep `model_alias = "chatgpt-chat"` or choose your own alias. Select pins from `supported_reasoning_efforts` and use `default_reasoning_effort` for the unsuffixed route. Listing models does not create routes or grant permissions.
 
 5. Create the config's `usage_dir`, then create a gateway key and start the private process:
 
    ```sh
    target/debug/kanata key new --config /absolute/path/to/chatgpt.toml \
-     --id chat-client --chat chatgpt-chat --expires 30 \
+     --id chat-client --chat chatgpt-chat,chatgpt-chat:low --expires 30 \
      --key-out /absolute/private/path/chat-client.key
    target/debug/kanata serve --config /absolute/path/to/chatgpt.toml --plane private
    ```
@@ -71,7 +71,11 @@ The callback always binds `127.0.0.1` on an available port at `/auth/callback`. 
 - Function tools are grouped in a private adapter namespace. Clients continue to use ordinary function names. A forced function choice restricts the upstream declarations to that function.
 - Exact configured routes and existing key scopes, admission, cancellation, deadlines, usage reports and quotas.
 
-This first implementation rejects image/audio input, embeddings, transcription, speech, structured output, sampling controls, reasoning controls and output-token caps for this provider. It does not support hosted tools or persistent response chaining. Unsupported fields fail before inference. See the [preview contract](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
+With adapter `reasoning_control = true`, pin every route with `reasoning_effort` and use matching suffixes such as `chatgpt-chat:low` for variants. Clients discover one base alias and accessible `kanata.reasoning_efforts`, then send Chat `reasoning_effort` or Responses `reasoning.effort`. See the [service handoff](service-handoff.md).
+
+Legacy adapters with reasoning controls disabled keep their default request shape. Catalog levels outside the supported standard enum appear in `unsupported_reasoning_efforts`; `ultra` task delegation is not enabled. Configure only levels supported by the selected account model. The [official reasoning guide](https://developers.openai.com/api/docs/guides/reasoning) defines standard effort values; the account catalog determines the subset available to you.
+
+This implementation rejects image/audio input, embeddings, transcription, speech, structured output, sampling controls and output-token caps for this provider. It does not support hosted tools or persistent response chaining. Unsupported fields fail before inference. See the [preview contract](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
 
 ## Security boundary
 

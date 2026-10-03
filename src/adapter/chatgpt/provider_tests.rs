@@ -190,7 +190,7 @@ fn inference(config: &ValidatedConfig, streaming: bool) -> Inference {
     let payload = request::encode(
         &routed,
         config.adapters()[0].capabilities(),
-        &[config.routes()[0].identity().clone()],
+        &[request::RouteBinding::from_route(&config.routes()[0])],
     )
     .unwrap();
     Inference {
@@ -543,4 +543,39 @@ async fn queued_events_obey_overall_deadline_for_slow_consumers() {
     assert!(events.next().await.is_none());
     tokio::time::resume();
     fixture.server.await.unwrap();
+}
+
+#[tokio::test]
+async fn pinned_reasoning_effort_reaches_responses_with_complete_and_stream_output() {
+    let config = tests::config_with_effort(crate::core::ReasoningEffort::Xhigh);
+    for streaming in [false, true] {
+        let fixture = fixture(&config, 200, started_text() + &completed(), None).await;
+        let output = execute_with_token(&fixture.transport, TOKEN, inference(&config, streaming))
+            .await
+            .unwrap();
+        match output {
+            AdapterOutput::Complete(Response::Chat(response)) => {
+                assert!(!streaming);
+                assert_eq!(response.model.0, "chatgpt-chat");
+            }
+            AdapterOutput::Events(mut events) => {
+                assert!(streaming);
+                let mut finished = false;
+                while let Some(event) = events.next().await {
+                    if matches!(event.unwrap(), NormalizedEvent::ChatCompleted { .. }) {
+                        finished = true;
+                    }
+                }
+                assert!(finished);
+            }
+            _ => panic!("chat response"),
+        }
+        let record = fixture.request.await.unwrap();
+        assert_eq!(record.path, "/v1/responses");
+        assert_eq!(record.body["model"], "fixture-model");
+        assert_eq!(record.body["reasoning"]["effort"], "xhigh");
+        assert_eq!(record.body["stream"], true);
+        assert_eq!(record.body["store"], false);
+        fixture.server.await.unwrap();
+    }
 }

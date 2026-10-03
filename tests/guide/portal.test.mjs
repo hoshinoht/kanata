@@ -42,3 +42,11 @@ test('provider sections use configured provider labels and preserve original sco
   assert.deepEqual(groups[1].models[0].indices, [0, 2]);
   assert.deepEqual(groups[2].models[0].indices, [3]);
 });
+
+test('bulk selection respects provider indices and disabled scopes', () => {
+  const inputs = [{checked: false}, {checked: true}, {checked: false, disabled: true}, {checked: false}];
+  context.selectScopes(inputs, [0, 2, 3], true);
+  assert.deepEqual(inputs.map(x => x.checked), [true, true, false, true]);
+  context.selectScopes(inputs, [0, 3], false);
+  assert.deepEqual(inputs.map(x => x.checked), [false, true, false, false]);
+});

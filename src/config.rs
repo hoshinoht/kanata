@@ -460,6 +460,7 @@ pub struct ValidatedRoute {
     identity: RouteIdentity,
     adapter_id: String,
     codex_reasoning_effort: Option<CodexReasoningEffort>,
+    reasoning_effort: Option<ReasoningEffort>,
     codex_reasoning_summary: Option<CodexReasoningSummary>,
     extension_allowlist: BTreeSet<ExtensionKey>,
     requires_streaming_chat: bool,
@@ -482,6 +483,9 @@ impl ValidatedRoute {
     }
     pub fn codex_reasoning_effort(&self) -> Option<CodexReasoningEffort> {
         self.codex_reasoning_effort
+    }
+    pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.reasoning_effort
     }
     pub fn codex_reasoning_summary(&self) -> Option<CodexReasoningSummary> {
         self.codex_reasoning_summary
@@ -522,8 +526,12 @@ impl ValidatedRoute {
     }
     /// Reasoning effort fixed by the route rather than the client.
     pub fn pinned_reasoning_effort(&self) -> Option<&'static str> {
-        self.codex_reasoning_effort
-            .map(CodexReasoningEffort::as_str)
+        self.reasoning_effort
+            .map(ReasoningEffort::as_str)
+            .or_else(|| {
+                self.codex_reasoning_effort
+                    .map(CodexReasoningEffort::as_str)
+            })
     }
     /// Published model name for a pinned reasoning route.
     pub fn model_family_alias(&self) -> &str {
@@ -675,8 +683,8 @@ impl ProviderKind {
     pub fn accepts_reasoning_effort(self, effort: ReasoningEffort) -> bool {
         match self {
             Self::Codex => CodexReasoningEffort::from_request(effort).is_some(),
-            Self::Ollama | Self::Vllm | Self::Openrouter => true,
-            Self::AppleFm | Self::Speech | Self::Chatgpt => false,
+            Self::Ollama | Self::Vllm | Self::Openrouter | Self::Chatgpt => true,
+            Self::AppleFm | Self::Speech => false,
         }
     }
 
@@ -722,9 +730,9 @@ impl ProviderKind {
         match self {
             Self::Ollama | Self::Openrouter => (true, true, true),
             Self::Vllm => (true, true, false),
-            Self::Codex => (false, false, true),
+            Self::Codex | Self::Chatgpt => (false, false, true),
             Self::AppleFm => (true, true, false),
-            Self::Speech | Self::Chatgpt => (false, false, false),
+            Self::Speech => (false, false, false),
         }
     }
 }
