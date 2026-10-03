@@ -13,6 +13,8 @@
 
 The offline schema fixture used by the tests lives in `tests/fixtures/config/example.toml`. Never serve it.
 
+For Docker sign-in with ChatGPT, add `compose.kanata.chatgpt.yml` and set `KANATA_CHATGPT_STATE_DIR` to the same absolute path as `[chatgpt_auth].state_dir`. It is a dedicated owner-only writable directory outside the checkout, shared by host sign-in and the private container. See [deployment setup](../deploy/docker/README.md#sign-in-with-chatgpt). Manage the deployed client key file with `scripts/kanata.sh portal`.
+
 ## Reloading route changes
 
 On Linux/macOS, `kanata serve` accepts SIGHUP to validate and adopt route, adapter and publication changes while active requests finish. Listener/global/state-path changes require restart. See [configuration reload](../docs/guides/config-reload.md) for the supported scope, retained admission state and status checks. Ordinary keys-file changes continue to reload automatically.
@@ -22,6 +24,7 @@ On Linux/macOS, `kanata serve` accepts SIGHUP to validate and adopt route, adapt
 - **Routes** map an exact `(model_alias, operation)` pair to one adapter and upstream model. One alias can carry several operations. For example, a multimodal alias such as `omni` can be both `chat` (text plus inline audio) and `transcription` (native ASR). Each pair maps to exactly one backend, so a second backend for the same operation needs its own alias (e.g. `omni-transcribe`).
 - **Aliases** may not contain `:` except a Codex effort suffix (`gpt-6-sol:low`, `:high`). An unsuffixed Codex alias uses medium effort.
 - **Reasoning:** on the private listener, chat replies carry the backend's reasoning text as `message.reasoning_content` (streamed as `delta.reasoning_content`, at most 256 KiB per reply) and `usage.completion_tokens_details.reasoning_tokens` when the backend reports it. The public listener never returns reasoning text. Codex returns only a summary of its reasoning; `codex_reasoning_summary = "auto" | "concise" | "detailed"` on a Codex chat route asks for one explicitly.
+- **Reasoning model families:** pinned effort routes with adapter `reasoning_control = true` advertise one base model and the key's accessible `kanata.reasoning_efforts`. Variants must share their adapter, upstream and route policies/caps; incompatible mappings fail with `inconsistent_reasoning_family`. Keep exact key scopes unchanged. Disabled reasoning controls preserve legacy exact IDs. See the [client migration notes](../docs/guides/service-handoff.md).
 - **Keys** live in a separate file managed by the host `kanata key` CLI:
   ```toml
   [keys]

@@ -525,6 +525,15 @@ impl ValidatedRoute {
         self.codex_reasoning_effort
             .map(CodexReasoningEffort::as_str)
     }
+    /// Published model name for a pinned reasoning route.
+    pub fn model_family_alias(&self) -> &str {
+        let alias = self.identity.selector.model_alias.0.as_str();
+        alias
+            .rsplit_once(':')
+            .filter(|(_, effort)| Some(*effort) == self.pinned_reasoning_effort())
+            .map(|(model, _)| model)
+            .unwrap_or(alias)
+    }
     /// vLLM chat-template thinking switch; `None` leaves the template default.
     pub fn enable_thinking(&self) -> Option<bool> {
         self.enable_thinking

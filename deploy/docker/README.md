@@ -19,6 +19,7 @@ Kanata makes its outbound calls to model backends over the separate `backend_egr
 | `compose.kanata.public.yml` | Opt-in public plane: a separate `kanata-public` container (`--plane public`, no Codex volume) on the public network, the `cloudflared` sidecar, and `--plane private` for the main container |
 | `compose.kanata.openrouter.yml` | Opt-in OpenRouter API key as a Compose secret at `/run/secrets/openrouter-api-key`, from `KANATA_OPENROUTER_KEY_FILE` |
 | `compose.kanata.omnilion.yml` | Opt-in OmniLion API key as a Compose secret at `/run/secrets/omnilion-api-key` in both `kanata` and `kanata-public`, from `KANATA_OMNILION_KEY_FILE`; needs `compose.kanata.public.yml` |
+| `compose.kanata.chatgpt.yml` | Opt-in writable ChatGPT credential directory in the private container; host browser sign-in uses the same protected directory |
 | `.env` (git-ignored; from `.env.example`) | `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`, and paths to the config, the host-side owner key and the tunnel token. Paths only, never secrets |
 
 ## Config and secrets
@@ -32,6 +33,41 @@ Kanata makes its outbound calls to model backends over the separate `backend_egr
   - Linux: `sudo chown -R 10001:10001 <config dir>/keys <config dir>/state`, then run the CLI as the container uid: `sudo -u '#10001' kanata key ... --config <config>`. Do not change the container uid.
 - **File permissions:** bind mounts and Compose file secrets keep their host ownership and mode. Make the config file, and the tunnel token if used, readable by the container user, e.g. `0444` inside a `0700` directory.
 - **Codex credentials** live only in the dedicated `codex_state` volume. Log in with `scripts/kanata.sh codex login`. No host home directory, keychain or Docker socket is mounted.
+
+## Host key portal
+
+Install the host binary with `cargo install --locked --path .`, then run:
+
+```sh
+scripts/kanata.sh portal
+# Optional: scripts/kanata.sh portal --port 9092
+```
+
+Keep this terminal open. It prints the loopback URL and one-use login code. The portal edits the deployed `keys/keys.toml` and reads usage from `state/private` and `state/public`; existing gateway keys and provider secrets stay in place. It runs on the Docker host, so it adds no Compose service or published port. See [private portal](../../docs/guides/private-portal.md) for login, rotation and expiry behavior.
+
+## Sign in with ChatGPT
+
+Use a dedicated directory outside the checkout, owned by the user running the host auth command with mode `0700`. Add `compose.kanata.chatgpt.yml` to `COMPOSE_FILE` in `.env`, and set:
+
+```dotenv
+KANATA_CHATGPT_STATE_DIR=/absolute/path/outside/repo/kanata-chatgpt
+```
+
+Set `[chatgpt_auth].state_dir` in the deployed config to **that same absolute path**. The overlay mounts the directory at the identical path in the private container. Host sign-in and container inference share one installation's saved host identity and refresh lock. No credential directory is mounted in `kanata-public`; existing API-key Compose secrets and the Codex volume remain separate.
+
+Add the `chatgpt` adapter from [`config/chatgpt.example.toml`](../../config/chatgpt.example.toml), then:
+
+```sh
+scripts/kanata.sh chatgpt login
+scripts/kanata.sh chatgpt status
+scripts/kanata.sh chatgpt models
+```
+
+Complete sign-in in a browser **on the Docker host**. Select a returned account model `slug` for an explicit private chat route, then grant its alias to a gateway key using the portal or host CLI. Run `scripts/kanata.sh build` and `scripts/kanata.sh restart` to install the image and credential mount. Later route changes can use the [configuration reload](../../docs/guides/config-reload.md) procedure.
+
+On macOS/OrbStack, host ownership is mapped into the container; a disposable `0700` directory passed the non-root image's auth storage check. On Linux, keep container UID `10001`: create/chown the dedicated directory to `10001:10001` and run host auth commands as that UID, as with key management. Keep credentials `0600`; do not broaden permissions to make them readable. For a remote Docker host, the browser's loopback callback cannot reach it directly; use the [official self-hosted procedure](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms) and the [ChatGPT guide](../../docs/guides/sign-in-with-chatgpt.md).
+
+The directory is writable because refresh rotates saved credentials. A static Compose secret cannot replace this state store. Sign-in consent, the account catalog and a successful inference request must be checked with your own account; fixture and storage checks do not establish plan availability.
 
 ## Private route (reverse proxy)
 

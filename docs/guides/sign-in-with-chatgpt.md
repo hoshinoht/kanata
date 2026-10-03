@@ -2,7 +2,7 @@
 
 Kanata has a separate `chatgpt` provider for the documented ChatGPT plan usage preview. Authentication runs on the host; chat routes stay private. The existing experimental `codex` provider remains separate and its credentials are not imported.
 
-This implementation is checked with local protocol, OAuth and TLS fixtures. No live sign-in or account inference was performed for this change. Your account permissions, workspace policy and current model catalog determine what is available.
+This implementation is checked with protocol, OAuth and TLS fixtures. A local macOS/OrbStack smoke check completed browser sign-in, account model discovery and a short `gpt-6-luna` inference probe. That confirms this setup at the time of the check; your account permissions, workspace policy and current model catalog determine what is available.
 
 ## Try it on your host
 
@@ -35,6 +35,20 @@ This implementation is checked with local protocol, OAuth and TLS fixtures. No l
    ```
 
    Use that gateway key with `/v1/chat/completions` or `/v1/responses` and the configured alias. Your client never needs the account's OAuth token. First try a short text request, then a function-call round trip if you need tools.
+
+## Docker deployment
+
+For an existing Compose deployment, use the [Docker setup](../../deploy/docker/README.md#sign-in-with-chatgpt). It adds the opt-in `compose.kanata.chatgpt.yml` overlay and a dedicated `KANATA_CHATGPT_STATE_DIR` directory. Set `[chatgpt_auth].state_dir` to the same absolute path; host browser login and the private container use one protected state store. This preserves the existing client key file, provider API-key secrets and Codex credentials.
+
+```sh
+scripts/kanata.sh chatgpt login
+scripts/kanata.sh chatgpt status
+scripts/kanata.sh chatgpt models
+# Named profile for login or logout:
+scripts/kanata.sh chatgpt login --profile work
+```
+
+The callback stays on host loopback. Nothing is published through the reverse proxy or public gateway. After selecting an account model slug and adding a private route, grant its alias through `scripts/kanata.sh portal` or the key CLI. Starting the gateway does not start sign-in.
 
 ## Profiles and sign-out
 

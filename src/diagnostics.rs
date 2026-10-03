@@ -51,6 +51,9 @@ pub(crate) async fn run(
     }
     .and_then(|config| config.for_plane(plane.unwrap_or_default()))
     .map_err(|error| error.to_string())?;
+    if models || inference.is_some() {
+        crate::telemetry::logging::install(config.logging());
+    }
     let registry = Registry::from_validated(&config);
     let inference_route = inference
         .zip(operation)

@@ -29,7 +29,6 @@ pub(in crate::api) fn parse(
         "include",
         "metadata",
         "parallel_tool_calls",
-        "reasoning",
         "text",
         "service_tier",
         "user",
@@ -41,6 +40,17 @@ pub(in crate::api) fn parse(
         }
     }
     let mut chat = Map::new();
+    if let Some(reasoning) = value.remove("reasoning") {
+        let Value::Object(mut reasoning) = reasoning else {
+            return Err(ChatWireError::InvalidParam("reasoning"));
+        };
+        if let Some(effort) = reasoning.remove("effort") {
+            chat.insert("reasoning_effort".into(), effort);
+        }
+        if !reasoning.is_empty() {
+            return Err(ChatWireError::InvalidParam("reasoning"));
+        }
+    }
     for name in ["model", "stream", "temperature", "top_p"] {
         if let Some(value) = value.remove(name) {
             chat.insert(name.into(), value);
@@ -182,6 +192,9 @@ pub(in crate::api) fn parse(
         .map_err(|error| match error {
             ChatWireError::InvalidParam("max_completion_tokens") => {
                 ChatWireError::InvalidParam("max_output_tokens")
+            }
+            ChatWireError::InvalidParam("reasoning_effort") => {
+                ChatWireError::InvalidParam("reasoning.effort")
             }
             other => other,
         })?;

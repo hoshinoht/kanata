@@ -4,7 +4,13 @@
 
 ### Added
 
-- Private-only Sign in with ChatGPT provider with host browser PKCE login, verified identity, protected named profiles, refresh/sign-out, account model discovery and stateless text/function inference. The public plane excludes its authentication state and scoped keys. Added an operator walkthrough; validation uses isolated fixtures, with live consent and account availability left for the operator.
+- Pinned reasoning families with enabled reasoning controls now advertise one model ID and an ordered, deduplicated array of key-accessible efforts. Chat and stateless Responses select an exact authorized variant from a base ID plus effort, preserve legacy suffix requests and return canonical model IDs. Family policy validation prevents incompatible backend mappings. The portal groups effort controls while retaining exact key scopes. Checked with synthetic providers and browser fixtures; grouped inference has not been tested against a live provider. Added a service migration handoff.
+
+- Deployment helpers for the host-only key portal and ChatGPT browser authentication, plus an opt-in private-container credential mount. The portal uses the deployed keys and usage files; ChatGPT uses a separate owner-only writable directory shared with host sign-in. No gateway management endpoint or published callback port is added. Helper validation uses isolated fixtures; macOS/OrbStack sign-in and authenticated complete/streaming inference succeeded for the requested `gpt-6-luna` with one account. Other account/model availability is unverified.
+
+- The private key portal adopts the API guide's Material 3 Expressive styles, Relay logo and locally served fonts. Login, dashboard controls and dialogs retain the host-only session boundary.
+
+- Private-only Sign in with ChatGPT provider with host browser PKCE login, verified identity, protected named profiles, refresh/sign-out, account model discovery and stateless text/function inference. The public plane excludes its authentication state and scoped keys. Added an operator walkthrough; validation uses isolated fixtures plus one account's live consent, catalog and complete/streaming `gpt-6-luna` checks. Broader account/model availability remains unverified.
 
 - SIGHUP configuration reload on Linux/macOS: validates a complete replacement and reapplies process-plane narrowing before atomically publishing per-request route, adapter, key and public-policy snapshots. Active streams finish with their old snapshot. Admission pools, unchanged key limiters, usage, quotas and telemetry survive reload; incompatible listener/global/state-path or existing adapter-limit changes require restart. Admin status reports reload generations, outcomes and the process ID. Verified with synthetic adapters and subprocess loopback fixtures; no live deployment is implied.
 
@@ -69,6 +75,8 @@ Scoped browser documentation, bounded uploads, output-cap enforcement, usage acc
 - Streamed reasoning now counts as stream activity for the first-byte and idle timeouts, on both listeners.
 
 ### Fixed
+
+- ChatGPT inference now accepts a valid completed SSE response when the upstream omits `Content-Type`, matching the existing private stream handling. Explicit non-SSE media types, unframed data and incomplete streams still fail. Host inference diagnostics and upstream failures use configured sanitized logs. Fixtures cover omitted/incorrect types and redaction; a local authenticated `gpt-6-luna` host probe completed successfully.
 
 - Updated the yanked transitive `yoke-derive` dependency from 0.8.3 to compatible 0.8.4.
 

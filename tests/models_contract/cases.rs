@@ -277,7 +277,7 @@ async fn models_report_kanata_capabilities_per_alias() {
             "operations": ["chat"], "structured_output": false, "sampling_controls": false,
             "reasoning_control": true, "function_tools": true, "streaming": true,
             "input_audio": false, "input_images": false, "images": null, "trust_zone": "external",
-            "reasoning_efforts": ["low", "medium", "high"], "context_tokens": null,
+            "reasoning_efforts": ["medium"], "context_tokens": null,
             "max_output_tokens": null,
             "responses": {"endpoint":"/v1/responses","operation":"chat","stateless":true,"input":["text"],"function_tools":true,"streaming":true,"max_output_bytes":8388608},
             "admission": {

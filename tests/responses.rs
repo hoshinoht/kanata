@@ -93,7 +93,7 @@ async fn unsupported_state_and_fields_fail_before_dispatch() {
         ("previous_response_id", json!("resp_old")),
         ("conversation", json!("conv_old")),
         ("include", json!(["reasoning.encrypted_content"])),
-        ("reasoning", json!({"effort":"low"})),
+        ("reasoning", json!({"summary":"auto"})),
         ("parallel_tool_calls", json!(false)),
         ("tools", json!([{"type":"web_search"}])),
         (

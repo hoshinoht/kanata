@@ -25,6 +25,7 @@ pub(in crate::api) struct Options {
     max_output_tokens: Option<u32>,
     temperature: Option<f64>,
     top_p: Option<f64>,
+    reasoning_effort: Option<crate::core::ReasoningEffort>,
 }
 
 impl Options {
@@ -41,6 +42,7 @@ impl Options {
             max_output_tokens: chat.options.max_output_tokens,
             temperature: chat.options.sampling.temperature.map(|value| value.get()),
             top_p: chat.options.sampling.top_p.map(|value| value.get()),
+            reasoning_effort: chat.options.reasoning_effort,
         }
     }
 }
@@ -108,7 +110,7 @@ impl Output {
                 "store":false,"background":false,"previous_response_id":null,"instructions":null,
                 "max_output_tokens":options.max_output_tokens,"parallel_tool_calls":true,"tool_choice":options.tool_choice,
                 "tools":options.tools,"temperature":options.temperature,"top_p":options.top_p,
-                "text":{"format":{"type":"text"}},"reasoning":{"effort":null,"summary":null},
+                "text":{"format":{"type":"text"}},"reasoning":{"effort":options.reasoning_effort,"summary":null},
                 "truncation":"disabled","usage":null,"metadata":{},"user":null
             }),
             sequence: 0,

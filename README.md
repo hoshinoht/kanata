@@ -78,7 +78,7 @@ A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md
 
 ### Sign in with ChatGPT
 
-A separate private `chatgpt` provider supports host browser sign-in, protected account profiles, model discovery, and text/function chat through the documented plan usage preview. Start with [the setup and trial guide](docs/guides/sign-in-with-chatgpt.md) and [`config/chatgpt.example.toml`](config/chatgpt.example.toml). Local fixtures cover this integration; live sign-in and account model availability remain for the operator to verify.
+A separate private `chatgpt` provider supports host browser sign-in, protected account profiles, model discovery, and text/function chat through the documented plan usage preview. Start with [the setup and trial guide](docs/guides/sign-in-with-chatgpt.md) and [`config/chatgpt.example.toml`](config/chatgpt.example.toml). Compose deployments can use the [ChatGPT overlay and host sign-in helper](deploy/docker/README.md#sign-in-with-chatgpt). Local fixtures cover this integration; live sign-in and account model availability remain for the operator to verify.
 
 ### 🎛️ Typed generation options
 - **Supported fields:** `response_format` (JSON object / JSON schema), `temperature`, `top_p`, `seed`, `max_tokens` / `max_completion_tokens` and `reasoning_effort`.
@@ -91,6 +91,7 @@ A separate private `chatgpt` provider supports host browser sign-in, protected a
 - **Host key CLI:** `kanata key new|list|show|edit|rm|rotate|migrate` manages keys in `keys.toml` on the host (no network or admin endpoint). Keys are shown once and stored only as SHA-256 digests; every key has an expiry (1–60 days or `unlimited`). Changes apply within about 2 s, without a restart.
 - **Route reload:** send SIGHUP to adopt validated route, adapter and publication changes without interrupting active streams. Shared admission and usage state survive reload; incompatible settings require a restart. See [configuration reload](docs/guides/config-reload.md).
 - **Private key portal:** `kanata portal --config <path>` opens a host-only dashboard on `127.0.0.1:9091` for creating, inspecting, editing, rotating and revoking keys. A terminal login code unlocks a one-hour browser session; see [private portal](docs/guides/private-portal.md).
+- **Selectable reasoning levels:** pinned effort families advertise one model ID and key-accessible `kanata.reasoning_efforts`. Send the base ID with Chat `reasoning_effort` or Responses `reasoning.effort`; legacy suffixed requests remain accepted. See the [service handoff](docs/guides/service-handoff.md).
 - **Daily allowances:** optional per-key request limits and token reservations survive restarts. `kanata key usage` reports model and UTC-day usage with explicit missing reports and optional cost estimates; see [usage and quotas](docs/guides/usage-quotas.md). Each process plane has a separate allowance.
 - **Usage and audit:** the server records per-key request counts, last use and reported token totals; the CLI appends every change to `keys/audit.jsonl` (never secrets).
 - **Owner key:** only one key may be the owner. Any key may be given private provider scopes. Codex and ChatGPT sign-in routes are never served publicly, and the public container never loads the owner key or keys with either provider’s scopes, so use a separate key for public routes.
@@ -164,7 +165,8 @@ scripts/kanata.sh logs
 | Sign in to Codex | `scripts/kanata.sh codex login` |
 | Issue a key for someone else | `kanata key new --config config/config.toml --id alice --chat <alias> --expires 30` |
 | List, inspect, change or revoke keys | `kanata key list`, `key show`, `key edit`, `key rm` (each with `--config`); see `kanata key` |
-| Manage keys in your browser on the host | `kanata portal --config config/config.toml`; see [private portal](docs/guides/private-portal.md) |
+| Manage deployed keys in your browser | `scripts/kanata.sh portal`; see [private portal](docs/guides/private-portal.md) |
+| Sign in with ChatGPT for the private container | `scripts/kanata.sh chatgpt login`; see [Docker setup](deploy/docker/README.md#sign-in-with-chatgpt) |
 | Which routes are public | `kanata routes --config config/config.toml` |
 | Rotate the owner key | `kanata key rotate --owner --config config/config.toml --expires 30 --key-out ~/.config/kanata/owner-client-key` |
 | Everything else (`status`, `restart`, `check`, `down`, …) | `scripts/kanata.sh help` |

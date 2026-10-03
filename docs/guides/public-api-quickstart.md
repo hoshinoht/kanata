@@ -136,7 +136,7 @@ Embedding permissions are separate from chat permissions. `/v1/models` lists `em
   | `seed` | integer |
   | `max_tokens` or `max_completion_tokens` | 1 – 1,048,576, and no more than the model's `kanata.max_output_tokens` when set |
   | `response_format` | `{"type":"json_object"}` or `{"type":"json_schema","json_schema":{"name":…,"schema":{…},"strict":true}}` (schema ≤ 64 KiB, nesting ≤ 32 levels) |
-  | `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (the model decides which it honours) |
+  | `reasoning_effort` | On reasoning-enabled models, choose from `kanata.reasoning_efforts` when enumerated. Grouped models use one base ID with a separate effort; see the [service handoff](service-handoff.md) |
   | `chat_template_kwargs` | only `{"enable_thinking": true\|false}`, on vLLM-served models (e.g. `omnilion`) |
 - **Strictness:** Kanata returns `400 invalid_request` for fields it doesn't support or a model can't honour, rather than silently ignoring them. The error's `param` names the field.
 - **Reasoning:** this listener never returns a model's reasoning text. `usage.completion_tokens_details.reasoning_tokens` is included when the backend reports it.
@@ -155,9 +155,9 @@ When `/v1/models` declares `kanata.input_images`, user messages can include inli
 
 | HTTP | `error.code` | Meaning / what to do |
 | --- | --- | --- |
-| 400 | `invalid_request` | Malformed JSON or an unsupported field. Check `param` |
+| 400 | `invalid_request` | Malformed JSON, unsupported/unconfigured effort, conflicting effort suffix, or omitted inaccessible default. Check `param` |
 | 401 | `key_expired` | Your key has expired. Ask the owner for a new one |
-| 403 | `permission_denied` | Missing, invalid or revoked key, or a model your key may not use publicly |
+| 403 | `permission_denied` | Missing, invalid or revoked key, or a model/configured effort your key may not use on this listener |
 | 404 | `not_found` | Wrong path. Use `/v1/models`, `/v1/chat/completions` or `/v1/audio/transcriptions` |
 | 408 | `request_cancelled` | The request was cancelled, for example because the client disconnected |
 | 413 | `invalid_request` | Request body or image count, file bytes, dimensions or total pixels exceed gateway limits |

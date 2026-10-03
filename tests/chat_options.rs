@@ -276,13 +276,20 @@ async fn reasoning_effort_outside_the_route_backend_range_is_rejected() {
         json!("reasoning_effort"),
     )
     .await;
+    assert_rejected(
+        &server,
+        "codex-chat",
+        json!({"reasoning_effort": "low"}),
+        json!("reasoning_effort"),
+    )
+    .await;
     assert_rejected(&server, "codex-chat", json!({"seed": 1}), json!("seed")).await;
     assert_eq!(recorded_len(&requests), 0);
 
     let accepted = server
         .client_oneshot(chat_request(&body(
             "codex-chat",
-            json!({"reasoning_effort": "low"}),
+            json!({"reasoning_effort": "medium"}),
         )))
         .await
         .expect("response");

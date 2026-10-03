@@ -32,6 +32,11 @@ const LOGIN_DURATION: Duration = Duration::from_secs(600);
 const REQUEST_DURATION: Duration = Duration::from_secs(10);
 const STYLE: &str = include_str!("style.css");
 const SCRIPT: &str = include_str!("app.js");
+const ROUTE_GROUPS: &str = include_str!("route-groups.js");
+const LOGO: &str = include_str!("../server/guide/relay.svg");
+const FAVICON: &str = include_str!("../server/guide/favicon.svg");
+const FONT: &[u8] = include_bytes!("../server/guide/fonts/MapleMono-Regular.woff2");
+const FONT_LICENSE: &str = include_str!("../server/guide/fonts/OFL.txt");
 
 #[derive(Clone)]
 struct Portal {
@@ -145,7 +150,10 @@ impl Portal {
         Router::new()
             .route("/", get(page))
             .route("/app.js", get(script))
+            .route("/route-groups.js", get(route_groups))
             .route("/style.css", get(style))
+            .route("/favicon.svg", get(favicon))
+            .route("/fonts/MapleMono-Regular.woff2", get(font))
             .route("/api/login", post(login))
             .route("/api/snapshot", post(snapshot))
             .route("/api/change", post(change))
@@ -224,7 +232,7 @@ async fn guard(State(portal): State<Portal>, request: Request, next: Next) -> Re
     );
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(
-        "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     ));
     response
 }
@@ -234,8 +242,12 @@ fn exactly(headers: &HeaderMap, name: &str, expected: &str) -> bool {
     values.next().is_some_and(|value| value == expected) && values.next().is_none()
 }
 
-async fn page() -> Html<&'static str> {
-    Html(include_str!("index.html"))
+async fn page() -> Html<String> {
+    Html(
+        include_str!("index.html")
+            .replace("{{LOGO}}", LOGO)
+            .replace("{{FONT_LICENSE}}", FONT_LICENSE),
+    )
 }
 async fn script() -> impl IntoResponse {
     (
@@ -245,6 +257,18 @@ async fn script() -> impl IntoResponse {
 }
 async fn style() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], STYLE)
+}
+async fn route_groups() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        ROUTE_GROUPS,
+    )
+}
+async fn favicon() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "image/svg+xml")], FAVICON)
+}
+async fn font() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "font/woff2")], FONT)
 }
 
 #[derive(Deserialize)]

@@ -151,11 +151,15 @@ async fn execute_with_token(
         request_budget,
         STREAM_RESPONSE_BYTES,
     )?;
-    let response = transport.execute(request).await?;
+    let mut response = transport.execute(request).await?;
     if response.status != 200 {
+        label.status(response.status, &mut response.body).await;
         return Err(status_error(response.status));
     }
-    if response.content_type != Some(ResponseContentType::EventStream) {
+    if response.content_type != Some(ResponseContentType::EventStream)
+        && response.content_type_present
+    {
+        label.content_type(response.status, response.media_type.as_deref());
         return Err(failure());
     }
     if streaming {

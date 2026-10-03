@@ -14,7 +14,26 @@ kanata portal --config config/config.toml --port 9092
 
 The config must use `[keys] file = "..."`. For an older inline-key config, migrate it first with `kanata key migrate --config <path>`. The portal does not read or reveal provider credentials.
 
+## Manage a Docker deployment
+
+Install the current host binary, then run the helper from the deployment checkout:
+
+```sh
+cargo install --locked --path .
+scripts/kanata.sh portal
+# Choose another host port if 9091 is occupied:
+scripts/kanata.sh portal --port 9092
+```
+
+The helper reads the resolved Compose mounts, including `.env` and `COMPOSE_FILE`, and opens the deployed config on the host. It verifies that `KANATA_KEYS_DIR` is `<config dir>/keys`, `KANATA_STATE_DIR` is `<config dir>/state`, and `[keys]` uses `file = "keys/keys.toml"` and `usage_dir = "state"`. This makes the dashboard write the keys file mounted into the gateway and read persisted usage from its private and public state subdirectories. The gateway's read-only key mount remains in place; the host writes and the gateway reloads the file.
+
+Keep the helper running in a private terminal, open its printed loopback URL on that host, and use the login code from the terminal. The helper starts a separate foreground host process; it adds no Compose service or published port. Ctrl-C stops that process. Starting or stopping it does not restart the gateway. Check `scripts/kanata.sh status` and gateway logs to confirm deployment health and key reloads after an edit.
+
+The portal manages gateway keys and quotas. Set up account authentication separately with the [Sign in with ChatGPT guide](sign-in-with-chatgpt.md).
+
 ## Manage keys
+
+Selectable reasoning families appear as one model with separate effort controls. The portal retains exact route scopes underneath, including duplicate default/medium grants on unrelated edits. Toggling an effort explicitly selects or clears its configured scopes. Clients discover one base ID and accessible levels; see the [service handoff](service-handoff.md).
 
 - **Create:** choose a unique ID, exact model/operation scopes and expiry. Copy the generated secret from the one-time dialog. Only its SHA-256 digest is stored.
 - **Inspect:** select a key to see its scopes, expiry, owner status, request and reported token usage, existing daily allowances, and missing route references.

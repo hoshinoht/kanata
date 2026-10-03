@@ -4,6 +4,7 @@ use axum::{
     http::{HeaderMap, header},
     response::Response,
 };
+use futures_util::StreamExt;
 
 use crate::adapter::AdapterOutput;
 use crate::core::{
@@ -130,21 +131,46 @@ async fn dispatch_chat(
     observer: Option<Observer>,
     output_format: OutputFormat,
 ) -> Response {
-    let response_model = chat.model.clone();
+    let reasoning_param = if matches!(output_format, OutputFormat::Responses) {
+        "reasoning.effort"
+    } else {
+        "reasoning_effort"
+    };
     let stream = chat.stream;
     let selector = crate::core::RouteSelector {
-        model_alias: response_model.clone(),
+        model_alias: chat.model.clone(),
         operation: Operation::Chat,
     };
-    if let (Some(observer), Some(_)) = (observer.as_ref(), state.registry().resolve(&selector)) {
-        observer.annotate_route(&response_model.0, Operation::Chat, stream);
+    if let (Some(observer), Some(route)) = (observer.as_ref(), state.registry().resolve(&selector))
+    {
+        observer.annotate_route(
+            &route.identity.selector.model_alias.0,
+            Operation::Chat,
+            stream,
+        );
     }
-    if auth.authorize(&selector).is_err() {
-        return forbidden();
-    }
-    let Some(route) = state.registry().resolve(&selector) else {
-        return invalid();
+    let route =
+        match state
+            .registry()
+            .resolve_chat(&selector, chat.options.reasoning_effort, |selector| {
+                auth.authorize(selector).is_ok()
+            }) {
+            Ok(route) => route,
+            Err(crate::routing::ChatRouteError::Forbidden) => return forbidden(),
+            Err(crate::routing::ChatRouteError::Missing) => return invalid(),
+            Err(crate::routing::ChatRouteError::ReasoningEffort) => {
+                return invalid_param(reasoning_param);
+            }
+        };
+    let response_model = if route.capabilities.reasoning_control {
+        crate::core::ModelAlias(route.model_family_alias().to_owned())
+    } else {
+        route.identity.selector.model_alias.clone()
     };
+    let routed_model = route.identity.selector.model_alias.clone();
+    if let Some(observer) = observer.as_ref() {
+        observer.annotate_route(&routed_model.0, Operation::Chat, stream);
+    }
     let Some(adapter) = state.adapter(&route.adapter_id) else {
         return unavailable();
     };
@@ -168,17 +194,25 @@ async fn dispatch_chat(
     {
         chat.options.max_output_tokens = Some(cap);
     }
+    chat.model = response_model.clone();
     let response_options = matches!(output_format, OutputFormat::Responses)
         .then(|| super::responses::Options::new(&chat));
+    chat.model = routed_model.clone();
     let request = CoreRequest::Chat(chat);
     match check_supported(&route.capabilities, adapter.capabilities(), &request) {
         Ok(()) => {}
-        Err(Some(param)) => return invalid_param(param),
+        Err(Some(param)) => {
+            return invalid_param(if param == "reasoning_effort" {
+                reasoning_param
+            } else {
+                param
+            });
+        }
         Err(None) => return invalid(),
     }
     if reasoning_effort.is_some_and(|effort| !route.provider_kind.accepts_reasoning_effort(effort))
     {
-        return invalid_param("reasoning_effort");
+        return invalid_param(reasoning_param);
     }
     if let (Some(requested), Some(cap)) = (max_output_tokens, route.max_output_tokens)
         && requested > cap
@@ -247,7 +281,11 @@ async fn dispatch_chat(
         permit.record_outcome(outcome);
     }
     match result {
-        Ok(Ok(AdapterOutput::Complete(CoreResponse::Chat(response)))) if !stream => {
+        Ok(Ok(AdapterOutput::Complete(CoreResponse::Chat(mut response)))) if !stream => {
+            if response.model != routed_model {
+                return upstream_failure_observed(observer.as_ref());
+            }
+            response.model = response_model.clone();
             if let Some(options) = response_options {
                 return super::responses::complete(response, options, observer.as_ref());
             }
@@ -259,6 +297,21 @@ async fn dispatch_chat(
             )
         }
         Ok(Ok(AdapterOutput::Events(events))) if stream => {
+            let published_model = response_model.clone();
+            let events = Box::pin(events.map(move |event| match event {
+                Ok(crate::core::NormalizedEvent::ChatStarted { model }) => {
+                    if model == routed_model {
+                        Ok(crate::core::NormalizedEvent::ChatStarted {
+                            model: published_model.clone(),
+                        })
+                    } else {
+                        Err(crate::core::GatewayError {
+                            kind: crate::core::ErrorKind::UpstreamFailure,
+                        })
+                    }
+                }
+                other => other,
+            }));
             if let Some(options) = response_options {
                 return super::responses::stream_response(
                     events,

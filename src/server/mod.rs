@@ -614,7 +614,11 @@ async fn list_models(auth: Authenticated, State(state): State<ClientState>) -> R
         .filter(|route| state.route_is_bound(route))
     {
         aliases
-            .entry(route.identity.selector.model_alias.0.clone())
+            .entry(if route.capabilities.reasoning_control {
+                route.model_family_alias().to_owned()
+            } else {
+                route.identity.selector.model_alias.0.clone()
+            })
             .or_default()
             .push(route);
     }
@@ -687,15 +691,29 @@ fn model_capabilities(routes: &[&crate::routing::RouteEntry]) -> serde_json::Val
         .map(|route| route.identity.selector.operation)
         .collect();
     operations.sort();
+    operations.dedup();
     let chat = routes
         .iter()
         .find(|route| route.identity.selector.operation == crate::core::Operation::Chat);
     let caps = chat.map(|route| &route.capabilities);
     let flag = |get: fn(&crate::core::Capabilities) -> bool| caps.is_some_and(get);
     let reasoning_control = flag(|c| c.reasoning_control);
-    let reasoning_efforts = chat
-        .filter(|_| reasoning_control)
-        .and_then(|route| route.provider_kind.restricted_reasoning_efforts());
+    let reasoning_efforts =
+        if reasoning_control && chat.is_some_and(|route| route.pinned_reasoning_effort.is_some()) {
+            let efforts: std::collections::BTreeSet<_> = routes
+                .iter()
+                .filter(|_| reasoning_control)
+                .filter_map(|route| {
+                    route
+                        .pinned_reasoning_effort
+                        .and_then(crate::core::ReasoningEffort::parse)
+                })
+                .collect();
+            Some(efforts.into_iter().collect())
+        } else {
+            chat.filter(|_| reasoning_control)
+                .and_then(|route| route.provider_kind.restricted_reasoning_efforts())
+        };
     let trust_zone = chat.or(routes.first()).map(|route| route.trust_zone);
     json!({
         "operations": operations,

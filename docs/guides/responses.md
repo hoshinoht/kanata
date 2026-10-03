@@ -24,7 +24,7 @@ print(response.output_text)
 
 | Field | Supported value |
 | --- | --- |
-| `model` | Exact configured chat alias |
+| `model` | Advertised chat model ID, or a legacy exact effort alias |
 | `input` | Nonempty text or an array of message/function-call/function-result items |
 | `instructions` | Optional nonempty system text |
 | `store`, `background` | Omitted or `false` |
@@ -33,12 +33,15 @@ print(response.output_text)
 | `tools` | Flat function declarations: `type`, `name`, `description`, `parameters`; `strict` omitted or `false` |
 | `tool_choice` | `auto`, `none`, `required`, or `{ "type": "function", "name": "..." }` |
 | `temperature`, `top_p`, `max_output_tokens` | Only when the route declares sampling controls; configured output caps still apply |
+| `reasoning` | `{ "effort": "low" }` when `kanata.reasoning_control` is true; choose from the model's advertised `kanata.reasoning_efforts` |
 
 Messages use `role` (`system`, `developer`, `user`, `assistant`) and text `content`, or an array of `input_text` parts. Replayed assistant output may use `output_text` with empty annotations and logprobs. Function calls use `type: "function_call"`, `call_id`, `name`, and string `arguments`; their results use `type: "function_call_output"`, the same `call_id`, and nonempty string `output`. Include a result for every outstanding call before continuing the conversation. Kanata does not execute functions.
 
 To continue, send the original input, the previous response's `output` items and the function results or next user message. Kanata keeps no conversation state. Generated response/item IDs are identifiers for that result, not retrieval handles.
 
-`previous_response_id`, `conversation`, stored responses, background work, hosted tools, strict function-schema enforcement, images/audio, structured-output options, reasoning controls/output and all other fields are unsupported. Unsupported options return `400 invalid_request`; recognized unsupported fields include a `param`. Use `/v1/chat/completions` for its additional supported modalities and options. GET, DELETE and cancellation endpoints for stored responses are absent.
+For grouped reasoning models, send the base model ID and an accessible effort. Omitting the effort requires permission for the unsuffixed default route. See the [service handoff](service-handoff.md) for migration examples. Responses return the canonical model ID and the explicit requested effort under `reasoning.effort`.
+
+`previous_response_id`, `conversation`, stored responses, background work, hosted tools, strict function-schema enforcement, images/audio, structured-output options, reasoning summaries/output and all other fields are unsupported. Unsupported options return `400 invalid_request`; recognized unsupported fields include a `param`. Use `/v1/chat/completions` for its additional supported modalities and options. GET, DELETE and cancellation endpoints for stored responses are absent.
 
 ## Streaming and limits
 

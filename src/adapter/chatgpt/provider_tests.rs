@@ -104,6 +104,16 @@ async fn fixture(
     head: String,
     tail: Option<String>,
 ) -> Fixture {
+    fixture_content_type(config, status, head, tail, Some("text/event-stream")).await
+}
+
+async fn fixture_content_type(
+    config: &ValidatedConfig,
+    status: u16,
+    head: String,
+    tail: Option<String>,
+    content_type: Option<&str>,
+) -> Fixture {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (certificate, acceptor) = tls_fixture(HOST);
@@ -112,13 +122,16 @@ async fn fixture(
             .unwrap();
     let (request_tx, request) = oneshot::channel();
     let (release, wait) = oneshot::channel();
+    let content_type = content_type
+        .map(|value| format!("Content-Type: {value}\r\n"))
+        .unwrap_or_default();
     let server = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
         let mut stream = acceptor.accept(socket).await.unwrap();
         request_tx
             .send(read_request(&mut stream).await)
             .unwrap_or_else(|_| panic!("request receiver dropped"));
-        stream.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nLocation: https://credential-trap.invalid/stolen\r\n\r\n").as_bytes()).await.unwrap();
+        stream.write_all(format!("HTTP/1.1 {status} Fixture\r\n{content_type}Transfer-Encoding: chunked\r\nConnection: close\r\nLocation: https://credential-trap.invalid/stolen\r\n\r\n").as_bytes()).await.unwrap();
         write_chunk(&mut stream, &head).await;
         if let Some(tail) = tail {
             let _ = wait.await;
@@ -359,6 +372,120 @@ async fn unauthorized_and_redirect_responses_are_never_retried() {
         assert!(matches!(output, Err(GatewayError {kind:actual}) if actual == kind));
         let request = fixture.request.await.unwrap();
         assert_eq!(request.headers["host"], HOST);
+        fixture.server.await.unwrap();
+    }
+}
+
+#[derive(Clone, Default)]
+struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn upstream_status_logs_sanitized_code_without_credentials_or_message() {
+    use tracing::instrument::WithSubscriber;
+
+    const CHILD: &str = "KANATA_TEST_CHATGPT_LOG_CAPTURE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // Runs log assertions in an isolated test process.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "adapter::chatgpt::provider_tests::upstream_status_logs_sanitized_code_without_credentials_or_message",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated logging fixture failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        return;
+    }
+
+    let config = tests::config();
+    let body = json!({"error": {"code": "provider_busy", "type": "server_error",
+        "message": "TEST_ONLY_PROVIDER_DETAIL"}})
+    .to_string();
+    let fixture = fixture(&config, 502, body, None).await;
+    let capture = LogCapture::default();
+    let writer = capture.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(move || writer.clone())
+        .finish();
+    let output = execute_with_token(&fixture.transport, TOKEN, inference(&config, false))
+        .with_subscriber(subscriber)
+        .await;
+    assert!(matches!(
+        output,
+        Err(GatewayError {
+            kind: ErrorKind::UpstreamFailure
+        })
+    ));
+    fixture.request.await.unwrap();
+    fixture.server.await.unwrap();
+    let text = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    for field in [
+        "upstream error response",
+        "status=502",
+        "provider_busy",
+        "server_error",
+    ] {
+        assert!(text.contains(field), "missing {field}: {text}");
+    }
+    for hidden in [
+        TOKEN,
+        "TEST_ONLY_PROVIDER_DETAIL",
+        "Fixture question",
+        "Fixture result",
+    ] {
+        assert!(!text.contains(hidden), "leaked {hidden}: {text}");
+    }
+}
+
+#[tokio::test]
+async fn omitted_content_type_still_requires_valid_sse_and_completion() {
+    let config = tests::config();
+    for (content_type, body, succeeds) in [
+        (None, started_text() + &completed(), true),
+        (None, "{\"text\":\"unframed\"}".into(), false),
+        (None, started_text(), false),
+        (
+            Some("application/json"),
+            started_text() + &completed(),
+            false,
+        ),
+    ] {
+        let fixture = fixture_content_type(&config, 200, body, None, content_type).await;
+        let output = execute_with_token(&fixture.transport, TOKEN, inference(&config, false)).await;
+        if succeeds {
+            assert!(matches!(
+                output,
+                Ok(AdapterOutput::Complete(Response::Chat(_)))
+            ));
+        } else {
+            assert!(matches!(
+                output,
+                Err(GatewayError {
+                    kind: ErrorKind::UpstreamFailure
+                })
+            ));
+        }
+        fixture.request.await.unwrap();
         fixture.server.await.unwrap();
     }
 }

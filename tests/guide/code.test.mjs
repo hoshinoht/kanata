@@ -34,3 +34,15 @@ test("Rust quoting preserves literal backslashes and escapes control characters"
   const example = context.requestExamples("https://gateway.example/v1", 'alias\\u1234\b\f\u0001"').find(x => x.language === "rust");
   assert.ok(example.source.includes('alias\\\\u1234\\u{8}\\u{c}\\u{0001}\\"'));
 });
+
+test("chat examples include a selected effort and audio examples omit it", () => {
+  for (const example of context.requestExamples("https://gateway.example/v1", "family", false, "low")) {
+    assert.match(example.source, /reasoning_effort/);
+    assert.match(example.source, /low/);
+  }
+  for (const audio of [false, true]) {
+    for (const example of context.requestExamples("https://gateway.example/v1", "ordinary", audio, audio ? "low" : undefined)) {
+      assert.doesNotMatch(example.source, /reasoning_effort/);
+    }
+  }
+});

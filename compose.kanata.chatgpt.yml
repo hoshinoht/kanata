@@ -1,0 +1,10 @@
+# Host sign-in and the private gateway share one protected credential directory.
+# Use the same absolute path in [chatgpt_auth].state_dir. No callback port is published.
+services:
+  kanata:
+    volumes:
+      - type: bind
+        source: "${KANATA_CHATGPT_STATE_DIR:?Set KANATA_CHATGPT_STATE_DIR to a dedicated private directory outside the checkout}"
+        target: "${KANATA_CHATGPT_STATE_DIR:?Set KANATA_CHATGPT_STATE_DIR to a dedicated private directory outside the checkout}"
+        bind:
+          create_host_path: false

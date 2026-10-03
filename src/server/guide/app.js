@@ -174,10 +174,12 @@
     requestFields.append(element("summary", "Request fields"));
     fields(requestFields, rows);
     if (generic) details.append(element("p", "Optional fields require matching route capabilities. Connect your key to narrow this reference.", "muted"));
+    const effort = exampleEffort(model);
     const body = { model: model.id, messages: [{ role: "user", content: "Hello!" }] };
+    if (effort) body.reasoning_effort = effort;
     examples(content, "Chat", [
       {label: "cURL", language: "shell", filename: "Terminal", setup: "Set KANATA_API_KEY in your environment before running this request.", source: curl("/chat/completions", body)},
-      ...requestExamples(base, model.id),
+      ...requestExamples(base, model.id, false, effort),
     ]);
     details.append(requestFields);
     if (generic || caps.streaming === true) {
@@ -237,6 +239,12 @@
     return panel;
   }
 
+  function exampleEffort(model) {
+    const caps = model.kanata;
+    if (caps.reasoning_control !== true || !caps.reasoning_efforts?.length) return undefined;
+    return caps.reasoning_efforts.includes("medium") ? "medium" : caps.reasoning_efforts[0];
+  }
+
   function responsesGuide(model) {
     const {panel, details, body: content} = endpoint("/responses", "Stateless Responses", "Text and function calls using this alias's chat permission. Send the full conversation on each request; Kanata does not store responses.");
     fields(details, [
@@ -244,8 +252,12 @@
       ["store", "Omit or set false. previous_response_id and stored conversations are unsupported."],
       ["stream", "Use true on streaming routes for typed response events. Check response.completed, response.incomplete or response.failed; partial text alone is not success."],
       ["tools", "Function declarations and results only. Hosted tools, strict schemas, image/audio input and reasoning output are unsupported on this endpoint."],
+      ...(model.kanata.reasoning_control === true ? [["reasoning.effort", `Choose an advertised effort: ${(model.kanata.reasoning_efforts || []).join(", ")}. reasoning.summary is unsupported.`]] : []),
     ]);
-    codeBlock(content, "Responses", curl("/responses", {model: model.id, input: "Hello", store: false}));
+    const body = {model: model.id, input: "Hello", store: false};
+    const effort = exampleEffort(model);
+    if (effort) body.reasoning = {effort};
+    codeBlock(content, "Responses", curl("/responses", body));
     return panel;
   }
 

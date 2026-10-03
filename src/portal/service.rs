@@ -140,10 +140,16 @@ impl KeyService {
         }).collect();
         Ok(json!({
             "revision": revision(&keys), "keys": records,
-            "routes": catalog.iter().map(|route| json!({
-                "model_alias": route.selector.model_alias.0, "operation": route.selector.operation.as_str(),
-                "exposure": match route.exposure { Exposure::Public => "public", Exposure::Private => "private", Exposure::Never => "never_public" }
-            })).collect::<Vec<_>>(),
+            "routes": catalog.iter().map(|route| {
+                let configured = config.routes().iter().find(|configured| configured.identity().selector == route.selector);
+                let selectable = configured.filter(|configured| config.adapters().iter().any(|adapter| adapter.id() == configured.adapter_id() && adapter.capabilities().reasoning_control));
+                json!({
+                    "model_alias": route.selector.model_alias.0, "operation": route.selector.operation.as_str(),
+                    "display_alias": selectable.map(|configured| configured.model_family_alias()).unwrap_or(&route.selector.model_alias.0),
+                    "reasoning_effort": selectable.and_then(|configured| configured.pinned_reasoning_effort()),
+                    "exposure": match route.exposure { Exposure::Public => "public", Exposure::Private => "private", Exposure::Never => "never_public" }
+                })
+            }).collect::<Vec<_>>(),
             "usage_configured": usage_dir.is_some(), "usage_note": "Persisted usage may lag by 30 seconds. Missing provider token usage is not zero.",
             "reload_note": "Saved keys are normally reloaded within 2 seconds. This portal does not verify gateway availability or reload success."
         }))

@@ -84,6 +84,60 @@ fn new_key(revision: &serde_json::Value, id: &str) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn guide_identity_assets_stay_local_and_use_the_portal_boundary() {
+    let fixture = Fixture::new();
+    for (path, content_type, expected) in [
+        ("/", "text/html; charset=utf-8", None),
+        ("/favicon.svg", "image/svg+xml", Some(FAVICON.as_bytes())),
+        ("/fonts/MapleMono-Regular.woff2", "font/woff2", Some(FONT)),
+    ] {
+        let response = fixture
+            .portal
+            .clone()
+            .router()
+            .oneshot(
+                http::Request::builder()
+                    .uri(path)
+                    .header("Host", "127.0.0.1:9091")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let policy = response.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap();
+        assert!(policy.contains("font-src 'self'; img-src 'self'"));
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        if let Some(expected) = expected {
+            assert_eq!(bytes.as_ref(), expected);
+        } else {
+            let page = std::str::from_utf8(&bytes).unwrap();
+            assert!(page.contains(LOGO));
+            assert!(page.contains(FONT_LICENSE));
+            assert!(!page.contains("{{LOGO}}"));
+        }
+        let response = fixture
+            .portal
+            .clone()
+            .router()
+            .oneshot(
+                http::Request::builder()
+                    .uri(path)
+                    .header("Host", "attacker.test:9091")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+}
+
+#[tokio::test]
 async fn browser_boundary_and_one_use_login_protect_every_private_route() {
     let fixture = Fixture::new();
     assert_eq!(

@@ -587,6 +587,39 @@ pub(super) fn validate(
         return Err(ConfigError::new("routes", "empty"));
     }
 
+    for (index, route) in routes.iter().enumerate().filter(|(_, route)| {
+        route.pinned_reasoning_effort().is_some()
+            && adapters.iter().any(|adapter| {
+                adapter.id == route.adapter_id && adapter.capabilities.reasoning_control
+            })
+    }) {
+        for other in routes.iter().filter(|other| {
+            other.identity.selector.operation == Operation::Chat
+                && other.model_family_alias() == route.model_family_alias()
+        }) {
+            if other.pinned_reasoning_effort().is_none()
+                || route.adapter_id != other.adapter_id
+                || route.identity.upstream_id != other.identity.upstream_id
+                || route.allows_input_images != other.allows_input_images
+                || route.extension_allowlist != other.extension_allowlist
+                || route.enable_thinking != other.enable_thinking
+                || route.allows_input_audio != other.allows_input_audio
+                || route.allows_audio_streaming_chat != other.allows_audio_streaming_chat
+                || route.allows_audio_function_tools != other.allows_audio_function_tools
+                || route.requires_streaming_chat != other.requires_streaming_chat
+                || route.requires_function_tools != other.requires_function_tools
+                || route.context_tokens != other.context_tokens
+                || route.max_output_tokens != other.max_output_tokens
+                || route.codex_reasoning_summary != other.codex_reasoning_summary
+            {
+                return Err(ConfigError::new(
+                    format!("routes[{index}]"),
+                    "inconsistent_reasoning_family",
+                ));
+            }
+        }
+    }
+
     publication.public_routes = validate_public_routes(
         &raw.publication.public_routes,
         listeners.public.is_some(),

@@ -32,7 +32,8 @@ Kanata is a single Rust crate (edition 2024, `rust-version = "1.98"`): an OpenAI
   - `cargo fmt --all -- --check`
   - `cargo clippy --locked --all-targets --all-features -- -D warnings`
   - `cargo test --locked --all-targets`
-  - `node --test tests/guide/code.test.mjs`
+  - `node --test tests/guide/*.test.mjs`
+  - `python3 tests/deploy/helper_test.py`
   - `scripts/check-templates.sh`
 - One suite: `cargo test --test <file-stem>` (e.g. `--test admission`); unit tests in a module: `cargo test --lib <filter>`.
 - Validate a config: `cargo run -q -- check --config <path> [--plane all|private|public]`, or `scripts/kanata.sh check` for the Compose config.

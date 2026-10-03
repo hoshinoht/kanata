@@ -36,12 +36,30 @@
     if (!keys.length) $('keys').append(text('p', query ? 'No matching keys.' : 'No keys yet. Create one to grant access.', 'small'));
   }
   function scopes(key) {
-    $('scopes').replaceChildren(...data.routes.map((route, index) => {
-      const row = text('label', '', 'check scope'); const input = document.createElement('input'); input.type = 'checkbox'; input.name = 'scope'; input.value = String(index);
+    const inputs = data.routes.map((route, index) => {
+      const input = document.createElement('input'); input.type = 'checkbox'; input.name = 'scope'; input.value = String(index);
       input.checked = !!key?.scopes.some((scope) => scope.model_alias === route.model_alias && scope.operation === route.operation);
-      input.disabled = !!key?.revoked_at; input.addEventListener('change', scopeWarning);
-      const label = text('span', ''); label.append(text('b', route.model_alias), text('small', route.operation));
-      row.append(input, label, text('em', route.exposure === 'never_public' ? 'Never public' : route.exposure === 'public' ? 'Public' : 'Private')); return row;
+      input.disabled = !!key?.revoked_at; input.addEventListener('change', scopeWarning); return input;
+    });
+    $('scopes').replaceChildren(...routeGroups(data.routes).map((group) => {
+      const badge = text('em', group.exposure === 'never_public' ? 'Never public' : group.exposure === 'public' ? 'Public' : 'Private');
+      const label = text('span', '');
+      const name = group.levels.length ? group.alias.replace(/^gpt-(\d+(?:\.\d+)?)-(.+)$/i, (_, version, model) => `GPT-${version}-${model.replace(/(^|-)[a-z]/g, (part) => part.toUpperCase())}`) : group.alias;
+      label.append(text('b', name), text('small', group.operation));
+      if (!group.levels.length) {
+        const row = text('label', '', 'check scope'); row.append(inputs[group.indices[0]], label, badge); return row;
+      }
+      const row = text('div', '', 'scope scope-group'); const heading = text('div', '', 'scope-heading'); heading.append(label, badge); row.append(heading);
+      const levels = document.createElement('fieldset'); levels.className = 'effort-levels'; levels.append(text('legend', 'Allowed reasoning levels'));
+      for (const level of group.levels) {
+        const choice = text('label', '', 'check effort-choice'); const visible = document.createElement('input'); visible.type = 'checkbox'; visible.name = 'effort';
+        visible.checked = level.indices.some((index) => inputs[index].checked); visible.disabled = !!key?.revoked_at;
+        visible.setAttribute('aria-label', `${name} ${level.effort} reasoning`);
+        visible.addEventListener('change', () => { for (const index of level.indices) inputs[index].checked = visible.checked; scopeWarning(); });
+        choice.append(visible, text('span', level.effort)); levels.append(choice);
+      }
+      for (const index of group.indices) { inputs[index].hidden = true; row.append(inputs[index]); }
+      row.append(levels); return row;
     }));
     scopeWarning();
   }
