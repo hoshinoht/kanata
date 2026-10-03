@@ -25,6 +25,10 @@ Private account integration, host key management and expanded inference APIs.
 
 - Setup and operating guides replace development trackers and deployment-specific handoff notes. Client migration and Codex restoration procedures remain documented.
 
+### Fixed
+
+- Deployment helpers use the default image when `.env` is absent, allowing help and host commands to start in a fresh checkout.
+
 ### Security
 
 - Public-plane narrowing excludes ChatGPT credentials and keys with account-provider scopes. Portal management stays separate from gateway listeners and requires exact local Host/Origin checks.

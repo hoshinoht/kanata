@@ -21,6 +21,10 @@ class DeploymentHelperTests(unittest.TestCase):
         self.output = self.root / "arguments.json"
         bins = self.root / "bin"
         bins.mkdir()
+        self.checkout = self.root / "checkout"
+        (self.checkout / "scripts").mkdir(parents=True)
+        self.helper = self.checkout / "scripts/kanata.sh"
+        self.helper.write_text((REPO / "scripts/kanata.sh").read_text())
         (bins / "docker").write_text(
             "#!/usr/bin/env python3\nimport os, sys\n"
             'assert sys.argv[1:] == ["compose", "config", "--format", "json"], sys.argv\n'
@@ -37,6 +41,7 @@ class DeploymentHelperTests(unittest.TestCase):
             "PATH": str(bins) + os.pathsep + os.environ["PATH"],
             "KANATA_HELPER_OUTPUT": str(self.output),
         }
+        self.env.pop("KANATA_IMAGE", None)
         self.model = {"services": {"kanata": {"volumes": [
             self.mount(self.config, "/etc/kanata/config.toml"),
             self.mount(self.config_dir / "keys", "/etc/kanata/keys"),
@@ -63,7 +68,7 @@ class DeploymentHelperTests(unittest.TestCase):
     def run_helper(self, *args, success=True):
         self.output.unlink(missing_ok=True)
         result = subprocess.run(
-            ["bash", str(REPO / "scripts/kanata.sh"), *args],
+            ["bash", str(self.helper), *args],
             env=self.env | {"KANATA_HELPER_MODEL": json.dumps(self.model)},
             capture_output=True, text=True,
         )
@@ -119,7 +124,7 @@ class DeploymentHelperTests(unittest.TestCase):
         self.auth_dir.rename(target)
         self.auth_dir.symlink_to(target, target_is_directory=True)
         self.assertIn("symlinks", self.run_helper("chatgpt", "status", success=False))
-        self.auth_dir = REPO / "private-auth-fixture"
+        self.auth_dir = self.checkout / "private-auth-fixture"
         self.write_config(auth=True)
         self.assertIn("outside the checkout", self.run_helper("chatgpt", "status", success=False))
 
