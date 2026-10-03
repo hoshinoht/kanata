@@ -248,6 +248,11 @@ async fn key_lifecycle_is_atomic_scoped_audited_and_reveals_secrets_once() {
     let fixture = Fixture::new();
     let session = fixture.unlock().await;
     let initial = fixture.snapshot(&session).await;
+    let config = crate::config::load(fixture.directory.join("config.toml")).unwrap();
+    assert_eq!(
+        initial["routes"][0]["provider"],
+        config.adapters()[0].kind().label()
+    );
     let created = fixture
         .send(
             "/api/change",

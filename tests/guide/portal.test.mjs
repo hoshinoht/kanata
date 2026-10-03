@@ -27,3 +27,18 @@ test('ordinary routes retain separate operation scopes and are never inferred fr
   ];
   assert.deepEqual(group(routes).map((group) => group.indices), [[0], [1], [2]]);
 });
+
+test('provider sections use configured provider labels and preserve original scope indices', () => {
+  const routes = [
+    {...route('gpt-6-luna:low', 'low'), provider: 'codex'},
+    {model_alias: 'chatgpt-luna', provider: 'chatgpt', operation: 'chat'},
+    {...route('gpt-6-luna:high', 'high'), provider: 'codex'},
+    {model_alias: 'chatgpt-looking-alias', provider: 'ollama', operation: 'chat'},
+    {...route('gpt-6-luna:low', 'low'), provider: 'chatgpt'},
+  ];
+  const groups = JSON.parse(JSON.stringify(context.providerGroups(routes)));
+  assert.deepEqual(groups.map(x => x.label), ['ChatGPT', 'Codex', 'Ollama']);
+  assert.deepEqual(groups[0].models.map(x => x.indices), [[1], [4]]);
+  assert.deepEqual(groups[1].models[0].indices, [0, 2]);
+  assert.deepEqual(groups[2].models[0].indices, [3]);
+});

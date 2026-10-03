@@ -41,7 +41,7 @@
       input.checked = !!key?.scopes.some((scope) => scope.model_alias === route.model_alias && scope.operation === route.operation);
       input.disabled = !!key?.revoked_at; input.addEventListener('change', scopeWarning); return input;
     });
-    $('scopes').replaceChildren(...routeGroups(data.routes).map((group) => {
+    const renderModel = (group) => {
       const badge = text('em', group.exposure === 'never_public' ? 'Never public' : group.exposure === 'public' ? 'Public' : 'Private');
       const label = text('span', '');
       const name = group.levels.length ? group.alias.replace(/^gpt-(\d+(?:\.\d+)?)-(.+)$/i, (_, version, model) => `GPT-${version}-${model.replace(/(^|-)[a-z]/g, (part) => part.toUpperCase())}`) : group.alias;
@@ -60,6 +60,16 @@
       }
       for (const index of group.indices) { inputs[index].hidden = true; row.append(inputs[index]); }
       row.append(levels); return row;
+    };
+    $('scopes').replaceChildren(...providerGroups(data.routes).map((provider) => {
+      const section = text('section', '', 'provider-group'); section.setAttribute('aria-label', `${provider.label} routes`);
+      const heading = text('div', '', 'provider-heading');
+      const modelCount = new Set(provider.models.map((model) => model.alias)).size;
+      heading.append(text('h3', provider.label), text('span', `${modelCount} model${modelCount === 1 ? '' : 's'}`));
+      section.append(heading);
+      if (provider.models.every((model) => model.exposure === 'never_public')) section.append(text('p', 'Private access only', 'provider-note'));
+      const models = text('div', '', 'provider-routes'); models.append(...provider.models.map(renderModel)); section.append(models);
+      return section;
     }));
     scopeWarning();
   }

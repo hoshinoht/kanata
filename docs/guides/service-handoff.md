@@ -74,8 +74,14 @@ The private deployment has a separate ChatGPT account provider and these aliases
 | --- | --- | --- |
 | `chatgpt-luna` | `gpt-6-luna` | Authenticated complete and streaming Chat requests returned HTTP 200 and `OK`; stream finished with `[DONE]` |
 | `chatgpt-chat` | `gpt-6-astra` | Account catalog/configuration only; inference not tested |
+| `chatgpt-5.6-sol` | `gpt-5.6-sol` | Account catalog and authenticated private discovery; inference not tested |
+| `chatgpt-5.6-terra` | `gpt-5.6-terra` | Account catalog and authenticated private discovery; inference not tested |
+| `chatgpt-5.6-luna` | `gpt-5.6-luna` | Account catalog and authenticated private discovery; inference not tested |
+| `chatgpt-5.5` | `gpt-5.5` | Account catalog and authenticated private discovery; inference not tested |
 
 The sign-in completed and the private container read the shared protected account state. These checks establish availability for this account at the time of testing, rather than every account or a future guarantee.
+
+All five models returned by this account's current catalog have configured private routes, alongside the previously tested `gpt-6-luna` model. The six aliases are exposed through the private API to the existing `chatgpt-client` key. They appear under **ChatGPT** in the portal's provider sections. The key's secret and expiry are unchanged. To give another service access, use the portal to grant that service's existing key the exact ChatGPT aliases, then refresh its authenticated model list. Selecting a never-public scope makes the entire key private-only. Keep a separate key for services that also need public access. Future catalog changes require explicit route and scope updates.
 
 Use `chatgpt-luna` to call the tested ChatGPT integration. It is a separate alias from the grouped `gpt-6-luna` routes. Its adapter advertises `reasoning_control: false`; omit reasoning fields. Complete request:
 
@@ -83,7 +89,7 @@ Use `chatgpt-luna` to call the tested ChatGPT integration. It is a separate alia
 {"model":"chatgpt-luna","messages":[{"role":"user","content":"Hello"}]}
 ```
 
-Set `stream: true` for Chat SSE. The user-created `chatgpt-client` gateway key is already scoped to both ChatGPT aliases. Supply that key privately to the service; account OAuth tokens stay on the Kanata host. Services continue to authenticate with gateway bearer keys. Account-provider routes remain private-only and unavailable through the public listener.
+Set `stream: true` for Chat SSE. Supply the user-created `chatgpt-client` gateway key privately to the service; account OAuth tokens stay on the Kanata host. Services continue to authenticate with gateway bearer keys. Account-provider routes remain private-only and unavailable through the public listener.
 
 ## Operator handoff
 

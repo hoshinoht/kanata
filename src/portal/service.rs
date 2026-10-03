@@ -142,9 +142,11 @@ impl KeyService {
             "revision": revision(&keys), "keys": records,
             "routes": catalog.iter().map(|route| {
                 let configured = config.routes().iter().find(|configured| configured.identity().selector == route.selector);
-                let selectable = configured.filter(|configured| config.adapters().iter().any(|adapter| adapter.id() == configured.adapter_id() && adapter.capabilities().reasoning_control));
+                let adapter = configured.and_then(|configured| config.adapters().iter().find(|adapter| adapter.id() == configured.adapter_id()));
+                let selectable = configured.filter(|_| adapter.is_some_and(|adapter| adapter.capabilities().reasoning_control));
                 json!({
                     "model_alias": route.selector.model_alias.0, "operation": route.selector.operation.as_str(),
+                    "provider": adapter.map(|adapter| adapter.kind().label()),
                     "display_alias": selectable.map(|configured| configured.model_family_alias()).unwrap_or(&route.selector.model_alias.0),
                     "reasoning_effort": selectable.and_then(|configured| configured.pinned_reasoning_effort()),
                     "exposure": match route.exposure { Exposure::Public => "public", Exposure::Private => "private", Exposure::Never => "never_public" }

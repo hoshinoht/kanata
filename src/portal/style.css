@@ -122,9 +122,14 @@ fieldset { border:0; padding:0; margin:24px 0; min-width:0; }
 .check { display:flex; gap:10px; align-items:flex-start; font-weight:400; margin:10px 0; }
 .check input { width:18px; height:18px; min-height:0; flex-shrink:0; margin:2px 0; padding:0; }
 .scope { padding:12px; border-radius:16px; background:var(--surface); margin:8px 0; }
-#scopes > .scope { border-radius:var(--shape-joined); margin:4px 0; }
-#scopes > .scope:first-child { border-top-left-radius:24px; border-top-right-radius:24px; }
-#scopes > .scope:last-child { border-bottom-left-radius:24px; border-bottom-right-radius:24px; }
+.provider-group { margin:20px 0; }
+.provider-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+.provider-heading h3 { margin:0; font-size:14px; font-weight:650; color:var(--ink); }
+.provider-heading > span { font-size:11px; color:var(--muted); }
+.provider-note { margin:-4px 0 10px; font-size:11px; color:var(--muted); }
+.provider-routes > .scope { border-radius:var(--shape-joined); margin:4px 0; }
+.provider-routes > .scope:first-child { border-top-left-radius:24px; border-top-right-radius:24px; }
+.provider-routes > .scope:last-child { border-bottom-left-radius:24px; border-bottom-right-radius:24px; }
 .scope span { flex:1; min-width:0; }
 .scope b { display:block; font:12px/1.7 var(--mono); overflow-wrap:anywhere; }
 .scope small { color:var(--muted); }

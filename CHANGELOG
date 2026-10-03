@@ -4,6 +4,8 @@
 
 ### Added
 
+- The private portal organizes configured models into named provider sections, including ChatGPT, while retaining reasoning controls and exact scope indices. Private-only sections state their access boundary. Provider metadata comes from the configured adapter; labels are not inferred from aliases. Checked with snapshot and grouping fixtures.
+
 - Pinned reasoning families with enabled reasoning controls now advertise one model ID and an ordered, deduplicated array of key-accessible efforts. Chat and stateless Responses select an exact authorized variant from a base ID plus effort, preserve legacy suffix requests and return canonical model IDs. Family policy validation prevents incompatible backend mappings. The portal groups effort controls while retaining exact key scopes. Checked with synthetic providers and browser fixtures; grouped inference has not been tested against a live provider. Added a service migration handoff.
 
 - Deployment helpers for the host-only key portal and ChatGPT browser authentication, plus an opt-in private-container credential mount. The portal uses the deployed keys and usage files; ChatGPT uses a separate owner-only writable directory shared with host sign-in. No gateway management endpoint or published callback port is added. Helper validation uses isolated fixtures; macOS/OrbStack sign-in and authenticated complete/streaming inference succeeded for the requested `gpt-6-luna` with one account. Other account/model availability is unverified.
