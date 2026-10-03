@@ -2,7 +2,7 @@
 
 Kanata has a separate `chatgpt` provider for the documented ChatGPT plan usage preview. Authentication runs on the host; chat routes stay private. The existing experimental `codex` provider remains separate and its credentials are not imported.
 
-This implementation is checked with protocol, OAuth and TLS fixtures. A local macOS/OrbStack smoke check completed browser sign-in, account model discovery and a short `gpt-6-luna` inference probe. That confirms this setup at the time of the check; your account permissions, workspace policy and current model catalog determine what is available.
+Your account permissions, workspace policy and current model catalog determine what is available. Verify a short inference request with your selected account after configuring a route.
 
 ## Try it on your host
 
@@ -71,9 +71,9 @@ The callback always binds `127.0.0.1` on an available port at `/auth/callback`. 
 - Function tools are grouped in a private adapter namespace. Clients continue to use ordinary function names. A forced function choice restricts the upstream declarations to that function.
 - Exact configured routes and existing key scopes, admission, cancellation, deadlines, usage reports and quotas.
 
-With adapter `reasoning_control = true`, pin every route with `reasoning_effort` and use matching suffixes such as `chatgpt-chat:low` for variants. Clients discover one base alias and accessible `kanata.reasoning_efforts`, then send Chat `reasoning_effort` or Responses `reasoning.effort`. See the [service handoff](service-handoff.md).
+With adapter `reasoning_control = true`, pin every route with `reasoning_effort` and use matching suffixes such as `chatgpt-chat:low` for variants. Clients discover one base alias and accessible `kanata.reasoning_efforts`, then send Chat `reasoning_effort` or Responses `reasoning.effort`. See [client integration and migration](service-handoff.md).
 
-Legacy adapters with reasoning controls disabled keep their default request shape. Catalog levels outside the supported standard enum appear in `unsupported_reasoning_efforts`; `ultra` task delegation is not enabled. Configure only levels supported by the selected account model. The [official reasoning guide](https://developers.openai.com/api/docs/guides/reasoning) defines standard effort values; the account catalog determines the subset available to you.
+Legacy adapters with reasoning controls disabled keep their default request shape. Catalog levels outside the supported standard enum appear in `unsupported_reasoning_efforts`; `ultra` task delegation is not enabled. Configure only levels supported by the selected account model. The [official reasoning guide](https://developers.openai.com/api/docs/guides/reasoning) defines standard effort values; use the account catalog to select advertised levels and verify inference with the selected model.
 
 This implementation rejects image/audio input, embeddings, transcription, speech, structured output, sampling controls and output-token caps for this provider. It does not support hosted tools or persistent response chaining. Unsupported fields fail before inference. See the [preview contract](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
 

@@ -35,7 +35,7 @@ The portal manages gateway keys and quotas. Set up account authentication separa
 
 ChatGPT cards show the configured upstream model, such as **GPT-6-Luna**, and its **API alias**, such as `chatgpt-luna`. Use the alias in requests and the reasoning choices below it for permissions. All configured models appear in their provider section, including models the selected key cannot access yet. The portal reads this inventory from configuration; it does not fetch account credentials or automatically add new catalog entries.
 
-Models are organized into sections by their configured provider, such as ChatGPT, Codex and Ollama. Private-only sections state that boundary. Selectable reasoning families appear as one model with separate effort controls. The portal retains exact route scopes underneath, including duplicate default/medium grants on unrelated edits. Toggling an effort explicitly selects or clears its configured scopes. Clients discover one base ID and accessible levels; see the [service handoff](service-handoff.md).
+Models are organized into sections by their configured provider, such as ChatGPT, Codex and Ollama. Private-only sections state that boundary. Selectable reasoning families appear as one model with separate effort controls. The portal retains exact route scopes underneath, including duplicate default/medium grants on unrelated edits. Toggling an effort explicitly selects or clears its configured scopes. Clients discover one base ID and accessible levels; see [client integration and migration](service-handoff.md).
 
 Provider sections start collapsed and show how many models are selected. Expand a section to choose individual models or reasoning levels. **Select all** and **Deselect all** act on one provider or the entire configured list, including every effort in a selected family. These controls stage changes for the current key. Choose at least one route, then use **Save changes** to update its access. Collapsing a section preserves its selections; unrelated providers are unchanged by a provider's bulk controls. Revoked keys cannot be edited.
 
@@ -50,8 +50,6 @@ An owner key is private-only. Adding a never-public route requires a separate ac
 The gateway normally reloads the keys file within about two seconds. The portal writes the same locked, atomic, permission-checked file and audit log as the host CLI. It does not verify that a gateway is running or that its reload succeeded. Check gateway status and warnings when validating access. A stale page cannot overwrite another writer's changes: refresh and repeat the edit.
 
 Usage is read from configured persisted state and can lag by about 30 seconds. Token totals include only reported upstream usage. An unavailable count or missing-usage count is not evidence of zero consumption. The portal makes no inference requests. Daily quotas reserve tokens before dispatch, retain reservations when usage is missing, and reset at UTC midnight. Actual reported usage can exceed a reservation, so token quotas are not a hard billing cap. See [usage and quotas](usage-quotas.md) for reservation policy and separate plane allowances.
-
-The provider disclosures and reasoning controls use shape and containment to show grouping and selection. Bulk actions use separate buttons with 48 px targets; **Save changes** remains the main action and Revoke is visually separated. The existing guide palette and logo remain the portal's identity.
 
 ## Session and network boundary
 
@@ -69,7 +67,3 @@ Use the dashboard's **Refresh** button to update keys without leaving the sessio
 The static login page contains no configured inventory, keys or provider credentials. No management routes are mounted on the private gateway, public gateway or admin listener. The terminal code is delivered separately from the URL, and the portal does not write HTTP access logs containing credentials.
 
 This protects the browser boundary. A compromised host account with access to the keys file is outside that boundary.
-
-## Validation
-
-The implementation was checked with isolated fixture keys, router security and lifecycle tests, a subprocess loopback HTTP test, and browser creation, expiry editing, rotation, revocation and locking. The collapsible groups and bulk controls were additionally checked using isolated fixture keys: scoped/global selection, persistence through collapsed saves, revoked-key controls and a 390 px viewport without horizontal overflow. Fixture checks do not establish provider availability.

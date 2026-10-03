@@ -61,5 +61,3 @@ The loopback admin `/status` includes `pid` and a `configuration_reload` object:
 - `last_error`: a sanitized validation or initialization error, or `null` after success.
 
 `key_reload` remains separate and describes automatic keys-file polling. Restart the process for settings reported as `restart_required`.
-
-Regression coverage uses synthetic adapters and a subprocess loopback gateway. It checks old streams, reused keep-alive connections, admission and key-rate preservation, failed reload retention, key polling against new routes, and persisted usage. These are fixture checks, not evidence of deployment or live provider availability.

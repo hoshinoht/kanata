@@ -39,7 +39,7 @@ Messages use `role` (`system`, `developer`, `user`, `assistant`) and text `conte
 
 To continue, send the original input, the previous response's `output` items and the function results or next user message. Kanata keeps no conversation state. Generated response/item IDs are identifiers for that result, not retrieval handles.
 
-For grouped reasoning models, send the base model ID and an accessible effort. Omitting the effort requires permission for the unsuffixed default route. See the [service handoff](service-handoff.md) for migration examples. Responses return the canonical model ID and the explicit requested effort under `reasoning.effort`.
+For grouped reasoning models, send the base model ID and an accessible effort. Omitting the effort requires permission for the unsuffixed default route. See [client integration and migration](service-handoff.md) for migration examples. Responses return the canonical model ID and the explicit requested effort under `reasoning.effort`.
 
 `previous_response_id`, `conversation`, stored responses, background work, hosted tools, strict function-schema enforcement, images/audio, structured-output options, reasoning summaries/output and all other fields are unsupported. Unsupported options return `400 invalid_request`; recognized unsupported fields include a `param`. Use `/v1/chat/completions` for its additional supported modalities and options. GET, DELETE and cancellation endpoints for stored responses are absent.
 
@@ -53,4 +53,4 @@ For grouped reasoning models, send the base model ID and an accessible effort. O
 
 The final response includes accumulated output and available usage. Missing token counts remain unknown; no tokenizer estimates are returned as measured usage. Text and function arguments together are limited to 8 MiB, with at most 64 function calls and 16 KiB per streamed argument delta. Request body limits also apply. The full output is retained in memory to produce typed done events and the terminal response; dropping the client stream cancels upstream work and releases capacity.
 
-The wire shapes follow the documented [Responses events](https://developers.openai.com/api/reference/resources/responses/streaming-events) and [function-call flow](https://developers.openai.com/api/docs/guides/function-calling). Kanata's supported subset is defined above. Local fixtures cover text, function replay, terminal events and cancellation. The official Python SDK was also checked against an isolated gateway and mock provider for complete replies, streamed events and final response assembly. These checks do not establish live provider or account availability.
+The wire shapes follow the documented [Responses events](https://developers.openai.com/api/reference/resources/responses/streaming-events) and [function-call flow](https://developers.openai.com/api/docs/guides/function-calling). Kanata's supported subset is defined above.

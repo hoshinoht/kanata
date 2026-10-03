@@ -8,7 +8,7 @@ file = "keys/keys.toml"
 usage_dir = "state"
 ```
 
-The existing `usage-<plane>.json` totals count authenticated API requests, including discovery, and flush periodically. The new `daily-<plane>.json` records admitted inference attempts durably before dispatch. Validation failures, permission failures, discovery and admission rejections do not consume daily quotas. Cancellation while the durable write is completing can consume an allowance before the backend receives the request.
+The existing `usage-<plane>.json` totals count authenticated API requests, including discovery, and flush periodically. The `daily-<plane>.json` records admitted inference attempts durably before dispatch. Validation failures, permission failures, discovery and admission rejections do not consume daily quotas. Cancellation while the durable write is completing can consume an allowance before the backend receives the request.
 
 ## Set a daily allowance
 
@@ -79,5 +79,3 @@ kanata key usage --config config/config.toml --model local-chat \
 ```
 
 These are estimates from your supplied rates and reported input/output counts. They do not fetch provider prices or model-specific image, audio, cached-token, tiered or other billing rules. Missing usage sets `cost_incomplete`; retained reservations are not presented as known billing. Use a model filter when aliases have different rates. No price estimate changes quota admission.
-
-The behavior above is covered with synthetic fixtures and temporary state directories. It does not establish live-provider token reporting or price accuracy.

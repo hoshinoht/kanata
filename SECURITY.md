@@ -4,7 +4,7 @@ Kanata is **beta** software for single-host, self-hosted deployments. Only the l
 
 ## Reporting a vulnerability
 
-Please **do not open a public issue** for security problems. Report them privately with GitHub's [private vulnerability reporting](../../security/advisories/new) (Security tab → "Report a vulnerability").
+Please **do not open a public issue** for security problems. Report them privately with GitHub's [private vulnerability reporting](https://github.com/hoshinoht/kanata/security/advisories/new) (Security tab → "Report a vulnerability").
 
 Include:
 - the affected version or commit;

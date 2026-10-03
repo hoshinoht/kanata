@@ -78,18 +78,3 @@ A sustained queue indicates demand above inference capacity. Upload refusals ind
 - `reasoning_tokens`, `reasoning_reported`: reported reasoning total and number of reports containing that count. Reasoning tokens are part of output tokens; do not add them again to a total.
 
 Usage is recorded after response completion or cancellation even when a streaming client did not request usage chunks. Authenticated request counts also include local rejections and model listings; token report counts apply only to dispatched inference attempts. Usage state v2 remains local, flushes every 30 seconds and at shutdown, and can read v1 files. Old files contain no historical token measurements. Missing reports and delayed persistence make these observability totals unsuitable as billing or hard spend enforcement.
-
-## Verification tools
-
-```sh
-scripts/check-templates.sh
-scripts/container-smoke.sh
-KANATA_FUZZ_CASES=20000 cargo test --locked --lib parser_mutation_smoke
-cargo test --locked --release --lib connection_reuse_benchmark -- --ignored --nocapture
-```
-
-Template checks copy examples into a temporary directory with explicit empty fixture keys. The container smoke test builds `kanata:ci`, starts a disposable container without networking or credentials, checks readiness, then verifies graceful shutdown. Parser mutation tests use a reproducible seed and compare SSE framing across chunk boundaries; they are bounded mutation tests, not coverage-guided fuzzing.
-
-The connection benchmark compares the current transport with a single reused HTTP/1 connection on loopback. It measures tiny JSON requests without TLS or inference. The prototype omits production transport validation, so its difference is an upper estimate of potential local savings, not a production pooling speedup. Connection pooling requires separate cancellation, credential-boundary and no-replay validation before adoption.
-
-A local macOS release-mode run during development (200 requests per path) measured 144 µs median / 218 µs p95 for the current transport and 32 µs / 42 µs for the reuse prototype. That is approximately 0.11 ms median savings on this fixture. Production pooling remains unchanged pending representative remote TLS and inference measurements.

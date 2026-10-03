@@ -1,13 +1,13 @@
-# Kanata API: tester quickstart
+# Kanata API quickstart
 
-You have been given access to a small, personally run, OpenAI-compatible API. It works with the official OpenAI SDKs and any client that lets you set a base URL.
+Kanata exposes an OpenAI-compatible API. Use the base URL and gateway key supplied by your operator with an OpenAI SDK or any client that supports a custom base URL.
 
 | | |
 | --- | --- |
 | Base URL | `https://api.example.com/v1` |
 | Auth | `Authorization: Bearer <your key>` (keys start with `kanata_sk_`) |
 | Endpoints | `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/audio/transcriptions` (models with speech input) |
-| Models | Whatever `GET /v1/models` lists for your key (for example `qwen3-0.6b`, a tiny test model, so expect short and sometimes silly answers) |
+| Models | The aliases returned by authenticated `GET /v1/models` |
 
 ## Your key
 
@@ -127,7 +127,7 @@ Embedding permissions are separate from chat permissions. `/v1/models` lists `em
 ## What is supported
 
 - **Request fields:** `model`, `messages` (`system` / `user` / `assistant` / `tool` roles with text content, plus assistant `tool_calls` and user `input_audio` parts), `stream`, `stream_options.include_usage`, and `tools` / `tool_choice` on models that support tools.
-- **Generation options,** where the model's route supports them (all do on `qwen3-0.6b`):
+- **Generation options,** where the model's route supports them:
 
   | Option | Accepted values |
   | --- | --- |
@@ -136,10 +136,10 @@ Embedding permissions are separate from chat permissions. `/v1/models` lists `em
   | `seed` | integer |
   | `max_tokens` or `max_completion_tokens` | 1 – 1,048,576, and no more than the model's `kanata.max_output_tokens` when set |
   | `response_format` | `{"type":"json_object"}` or `{"type":"json_schema","json_schema":{"name":…,"schema":{…},"strict":true}}` (schema ≤ 64 KiB, nesting ≤ 32 levels) |
-  | `reasoning_effort` | On reasoning-enabled models, choose from `kanata.reasoning_efforts` when enumerated. Grouped models use one base ID with a separate effort; see the [service handoff](service-handoff.md) |
+  | `reasoning_effort` | On reasoning-enabled models, choose from `kanata.reasoning_efforts` when enumerated. Grouped models use one base ID with a separate effort; see [client integration and migration](service-handoff.md) |
   | `chat_template_kwargs` | only `{"enable_thinking": true\|false}`, on vLLM-served models (e.g. `omnilion`) |
 - **Strictness:** Kanata returns `400 invalid_request` for fields it doesn't support or a model can't honour, rather than silently ignoring them. The error's `param` names the field.
-- **Reasoning:** this listener never returns a model's reasoning text. `usage.completion_tokens_details.reasoning_tokens` is included when the backend reports it.
+- **Reasoning:** private listeners can return backend reasoning text as `reasoning_content`; public listeners never return it. `usage.completion_tokens_details.reasoning_tokens` is included when the backend reports it.
 - **Responses:** `/v1/responses` supports stateless text, function calls/results and typed SSE through chat routes and scopes. Send full history with `store: false`. See the [supported subset](responses.md).
 - **Not available:** stored Responses/conversations, Assistants, fine-tuning and files.
 
@@ -171,10 +171,10 @@ When `/v1/models` declares `kanata.input_images`, user messages can include inli
 | 503 | `gateway_upload_busy` | Request-buffer capacity is full. Retry after `Retry-After` seconds |
 | 408 | `request_upload_timeout` | The request body did not arrive before the upload deadline |
 | 504 | `upstream_timeout` | The model took too long |
-| 5xx page from Cloudflare | — | The gateway itself is offline, for example because the host is asleep or restarting |
+| 5xx page from Cloudflare | — | If Cloudflare is configured, the gateway or tunnel may be unavailable |
 
 ## Good to know
 
-- This runs on a personal machine. There is no uptime guarantee, it may be offline at times, and capacity is small (a handful of concurrent requests), so please don't load-test it without asking.
-- Traffic passes through Cloudflare, which terminates TLS, to the owner's machine. Kanata keeps only aggregate counters (endpoint, outcome, timing), never message content. Cloudflare and the model server may keep their own operational logs, so don't send secrets or sensitive personal data.
+- Availability and capacity depend on the deployment and its model backends. Coordinate load tests with your operator.
+- Kanata records aggregate usage and timing rather than message content. Proxies and model providers can have their own logging policies; check with your operator before sending sensitive data.
 - When reporting a problem, include the time (with timezone), the model, the HTTP status and the `error.code`. **Never include your key.**

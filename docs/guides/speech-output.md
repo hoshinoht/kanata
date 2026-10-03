@@ -71,7 +71,3 @@ Upload reservations, admission, queue limits, circuit breakers and request deadl
 No token usage accompanies this binary dialect. Usage accounting records the upstream attempt with missing token usage; it never reports zero tokens as measured usage. Daily request quotas apply. For token quotas, the configured token reservation remains charged when upstream usage is absent; it is an operator estimate, not an audio billing measurement.
 
 Authenticated `/v1/models` returns the permitted speech operation and `kanata.speech` voice/format allowlists, text limits, output byte cap and speed range. `doctor --probe-models` can query an upstream catalog if it implements that endpoint. Synthetic speech inference probes currently report `not_supported`.
-
-## Validation status
-
-Tests cover local mock audio responses, private/public scopes, strict inputs, voice/format allowlists, key commands, malformed and oversized responses, cancellation and credential configuration. These are fixture checks. No live Kokoro service, model, voice availability or deployment has been verified.

@@ -8,12 +8,12 @@
 
 *Built for homelabs. Designed as the model gateway for [kanade](https://github.com/hoshinoht/kanade-bot).*
 
-[![Version](https://img.shields.io/badge/version-1.0.0--beta.5-orange)](CHANGELOG)
+[![Version](https://img.shields.io/badge/version-1.0.0--beta.6-orange)](CHANGELOG)
 [![Rust](https://img.shields.io/badge/rust-1.98%2B-b7410e?logo=rust)](Cargo.toml)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![OpenAI compatible](https://img.shields.io/badge/API-OpenAI%20compatible-412991)](#api)
 
-[Features](#features) · [Architecture](#architecture) · [Quick start](#quick-start) · [API](#api) · [Security](#security) · [Development](#development)
+[Features](#features) · [Architecture](#architecture) · [Quick start](#quick-start) · [API](#api) · [Security](#security) · [Build from source](#build-from-source)
 
 </div>
 
@@ -22,7 +22,7 @@
 > Model execution, batching, tokenization, GPU scheduling and model loading belong to runtimes such as Ollama, vLLM and hosted providers. Kanata owns the application-facing boundary: keys, routing, validation, limits and a safe public edge.
 
 > [!NOTE]
-> **Beta (`1.0.0-beta.5`).** Kanata targets single-host personal deployments. Interfaces may still change before 1.0.
+> **Beta (`1.0.0-beta.6`).** Kanata targets single-host personal deployments. Interfaces may still change before 1.0.
 
 ## At a glance
 
@@ -49,7 +49,7 @@ A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md
 
 </details>
 
-*Captured from the local public-reference preview. Model aliases in examples are placeholders, not a live model inventory.*
+*Model aliases in examples are placeholders. Use authenticated `/v1/models` for your permitted inventory.*
 
 ## Features
 
@@ -78,7 +78,7 @@ A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md
 
 ### Sign in with ChatGPT
 
-A separate private `chatgpt` provider supports host browser sign-in, protected account profiles, model discovery, and text/function chat through the documented plan usage preview. Start with [the setup and trial guide](docs/guides/sign-in-with-chatgpt.md) and [`config/chatgpt.example.toml`](config/chatgpt.example.toml). Compose deployments can use the [ChatGPT overlay and host sign-in helper](deploy/docker/README.md#sign-in-with-chatgpt). Fixtures cover the protocol, and this deployment has live low-effort checks for GPT-6-Sol, GPT-6.1-Sol and GPT-6-Luna. Other account/model availability needs separate verification. The [Codex retirement overlay](deploy/docker/README.md#retire-the-experimental-codex-provider) preserves the experimental implementation while detaching its credentials; see the [service handoff](docs/guides/service-handoff.md#retiring-codex-in-this-deployment) for preserved aliases and validation limits.
+A separate private `chatgpt` provider supports host browser sign-in, protected account profiles, model discovery, and text/function chat through the documented plan usage preview. Start with [the setup and trial guide](docs/guides/sign-in-with-chatgpt.md) and [`config/chatgpt.example.toml`](config/chatgpt.example.toml). Compose deployments can use the [ChatGPT overlay and host sign-in helper](deploy/docker/README.md#sign-in-with-chatgpt). Verify model access with your own account after sign-in. The [Codex retirement overlay](deploy/docker/README.md#retire-the-experimental-codex-provider) preserves the experimental implementation while detaching its credentials; see the [client migration guide](docs/guides/service-handoff.md#move-existing-codex-routes-to-chatgpt) for preserving service aliases.
 
 ### 🎛️ Typed generation options
 - **Supported fields:** `response_format` (JSON object / JSON schema), `temperature`, `top_p`, `seed`, `max_tokens` / `max_completion_tokens` and `reasoning_effort`.
@@ -91,7 +91,7 @@ A separate private `chatgpt` provider supports host browser sign-in, protected a
 - **Host key CLI:** `kanata key new|list|show|edit|rm|rotate|migrate` manages keys in `keys.toml` on the host (no network or admin endpoint). Keys are shown once and stored only as SHA-256 digests; every key has an expiry (1–60 days or `unlimited`). Changes apply within about 2 s, without a restart.
 - **Route reload:** send SIGHUP to adopt validated route, adapter and publication changes without interrupting active streams. Shared admission and usage state survive reload; incompatible settings require a restart. See [configuration reload](docs/guides/config-reload.md).
 - **Private key portal:** `kanata portal --config <path>` opens a host-only dashboard on `127.0.0.1:9091` for creating, inspecting, editing, rotating and revoking keys. A one-use login code unlocks a one-hour browser session. Press Enter in the portal terminal or choose **New login code** while unlocked to renew it without restarting; see [private portal](docs/guides/private-portal.md).
-- **Selectable reasoning levels:** pinned effort families advertise one model ID and key-accessible `kanata.reasoning_efforts`. Send the base ID with Chat `reasoning_effort` or Responses `reasoning.effort`; legacy suffixed requests remain accepted. See the [service handoff](docs/guides/service-handoff.md).
+- **Selectable reasoning levels:** pinned effort families advertise one model ID and key-accessible `kanata.reasoning_efforts`. Send the base ID with Chat `reasoning_effort` or Responses `reasoning.effort`; legacy suffixed requests remain accepted. See [client integration and migration](docs/guides/service-handoff.md).
 - **Daily allowances:** optional per-key request limits and token reservations survive restarts. `kanata key usage` reports model and UTC-day usage with explicit missing reports and optional cost estimates; see [usage and quotas](docs/guides/usage-quotas.md). Each process plane has a separate allowance.
 - **Usage and audit:** the server records per-key request counts, last use and reported token totals; the CLI appends every change to `keys/audit.jsonl` (never secrets).
 - **Owner key:** only one key may be the owner. Any key may be given private provider scopes. Codex and ChatGPT sign-in routes are never served publicly, and the public container never loads the owner key or keys with either provider’s scopes, so use a separate key for public routes.
@@ -122,18 +122,19 @@ flowchart LR
   end
   subgraph Public["kanata-public (--plane public)"]
     KU[Public listener<br/>allowlist only]
-    PCORE[public routes and keys only<br/>no Codex]
+    PCORE[public routes and keys only<br/>no account providers]
     KU --> PCORE
   end
   CORE --> O[Ollama]
   CORE --> V[vLLM]
   CORE --> R[OpenRouter]
   CORE --> A[Apple FM]
-  CORE --> C[Codex]
+  CORE --> G[ChatGPT]
+  CORE --> C[Codex · optional]
   PCORE --> O
 ```
 
-Both listeners sit on internal Docker networks; the container publishes no host ports. See [the contract notes](docs/architecture/kanata-mvp.md) for core types and boundaries.
+Both listeners sit on internal Docker networks; the container publishes no host ports. See [operations](docs/guides/operations.md) and [security boundaries](SECURITY.md) for listener configuration and isolation.
 
 ## Quick start
 
@@ -228,34 +229,17 @@ Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you
 - **Key management is host-only:** `kanata key` edits `keys.toml` directly (0600, one writer at a time) and has no network path. The optional `kanata portal` is a separate host command restricted to IPv4 loopback, with a one-use terminal login code and exact browser-origin checks. The gateway listeners have no key-management endpoint. The server rejects a group- or world-writable keys file and keeps the previous keys when a reload fails. Expired keys get `401 key_expired`; revoked keys are treated exactly like unknown keys.
 - **Suspected compromise:** run `kanata key rotate --owner --config <config> --expires <days> --key-out <file>` (takes effect within about 2 s), revoke other keys with `kanata key rm`, then rotate the Codex sign-in, the tunnel token, and proxy DNS tokens.
 
-## Development
+## Build from source
 
-Requires Rust **1.98+**.
+Requires Rust **1.98+**:
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets
-scripts/check-templates.sh
+cargo install --locked --path .
+kanata check --config /path/to/config.toml
+kanata serve --config /path/to/config.toml --plane private
 ```
 
-<details>
-<summary>Repository layout</summary>
-
-| Path | Contents |
-| --- | --- |
-| `src/api`, `src/server` | HTTP handlers, listeners, wire decoding |
-| `src/core`, `src/routing`, `src/auth` | Provider-neutral contracts, route registry, key auth |
-| `src/adapter/*` | Ollama (also Apple FM), vLLM, OpenRouter, Codex, ChatGPT sign-in, speech, shared transport |
-| `src/telemetry` | Access logs, diagnostics, metrics |
-| `config/` | Templates (your `config.toml` is git-ignored) |
-| `compose.kanata*.yml`, `Dockerfile` | Container and Compose profiles |
-| `src/keys` | Host key CLI, `keys.toml`, reload, usage state, audit log |
-| `src/portal` | Separate loopback-only browser portal for host key management |
-| `scripts/` | Compose lifecycle, Codex login, local model helpers |
-| `tests/` | Integration tests and sanitized fixtures (`tests/fixtures/config/example.toml` is a schema fixture; never serve it) |
-
-</details>
+Use the host binary for key management, the [private portal](docs/guides/private-portal.md) and ChatGPT sign-in, including when inference runs in Docker.
 
 ## Non-goals
 

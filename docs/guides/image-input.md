@@ -44,8 +44,6 @@ Malformed or unsupported content returns `400 invalid_request`; image count, byt
 
 Authenticated `/v1/models` returns `kanata.input_images` and, when enabled for an authorized chat route, `kanata.images` with formats and limits, including `max_json_body_bytes_without_audio`. These declarations describe gateway configuration, not a successful live vision probe.
 
-## Evidence
+## Provider references
 
-Wire validation, capability gating, private/public discovery and payload forwarding are covered by local fixtures, including mock HTTP upstreams and a pinned TLS fixture. No live provider availability or deployment is implied.
-
-Provider wire references: [Ollama compatibility](https://docs.ollama.com/api/openai-compatibility), [vLLM multimodal inputs](https://docs.vllm.ai/en/latest/features/multimodal_inputs/), and [OpenRouter image inputs](https://openrouter.ai/blog/tutorials/send-image-to-llm/).
+[Ollama compatibility](https://docs.ollama.com/api/openai-compatibility), [vLLM multimodal inputs](https://docs.vllm.ai/en/latest/features/multimodal_inputs/), and [OpenRouter image inputs](https://openrouter.ai/blog/tutorials/send-image-to-llm/).

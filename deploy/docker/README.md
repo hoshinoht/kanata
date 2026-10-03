@@ -30,7 +30,7 @@ Kanata makes its outbound calls to model backends over the separate `backend_egr
 - **Keys and state mounts** (required): `KANATA_KEYS_DIR` must be `<config dir>/keys` and `KANATA_STATE_DIR` must be `<config dir>/state`, the same paths the host CLI derives from the config's `[keys]` table. The keys directory is mounted read-only at `/etc/kanata/keys` in both containers; `state/private` and `state/public` are mounted writable at `/etc/kanata/state` in `kanata` and `kanata-public`. `scripts/kanata.sh` checks these paths and creates missing directories (0700).
 - **Why a directory:** the CLI replaces `keys.toml` by atomic rename. A single-file bind mount keeps pointing at the old inode, so the container would never see the change; mounting the directory does.
 - **Ownership:** the container runs as uid 10001 and must read `keys.toml` (0600).
-  - macOS (OrbStack, checked; Docker Desktop should behave the same): file sharing maps host ownership, so run `kanata key ...` as your own user.
+  - macOS: when the Docker runtime maps host ownership, run `kanata key ...` as your own user. Verify that the container can read the key file before starting services.
   - Linux: `sudo chown -R 10001:10001 <config dir>/keys <config dir>/state`, then run the CLI as the container uid: `sudo -u '#10001' kanata key ... --config <config>`. Do not change the container uid.
 - **File permissions:** bind mounts and Compose file secrets keep their host ownership and mode. Make the config file, and the tunnel token if used, readable by the container user, e.g. `0444` inside a `0700` directory.
 - **Codex credentials** live only in the dedicated `codex_state` volume. Log in with `scripts/kanata.sh codex login`. No host home directory, keychain or Docker socket is mounted.
@@ -66,6 +66,10 @@ scripts/kanata.sh chatgpt models
 
 Complete sign-in in a browser **on the Docker host**. Select a returned account model `slug` for an explicit private chat route, then grant its alias to a gateway key using the portal or host CLI. Run `scripts/kanata.sh build` and `scripts/kanata.sh restart` to install the image and credential mount. Later route changes can use the [configuration reload](../../docs/guides/config-reload.md) procedure.
 
+On macOS, verify that the Docker runtime maps host ownership and the private container can access the protected state directory. On Linux, keep container UID `10001`: create/chown the dedicated directory to `10001:10001` and run host auth commands as that UID, as with key management. Keep credentials `0600`; do not broaden permissions to make them readable. For a remote Docker host, use the [official self-hosted procedure](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms); a browser on another device cannot reach its loopback callback directly.
+
+The directory must stay writable because refresh rotates saved credentials. A static Compose secret cannot replace this state store. Verify sign-in consent, the account catalog and a short inference request with your account before relying on the integration.
+
 ### Retire the experimental Codex provider
 
 Keep the adapter implementation and `config/codex.example.toml` for restoration. Back up the operator-managed config, then replace its Codex routes with explicit ChatGPT routes using the same aliases and upstream IDs. Replace `codex_reasoning_effort` with `reasoning_effort`; explicitly pin formerly unpinned Codex defaults to `medium`. Remove `codex_reasoning_summary`, the unused Codex adapter and `[codex_auth]`. Preserve existing key scopes and publication rules. Verify each service's requested models through ChatGPT before switching.
@@ -73,10 +77,6 @@ Keep the adapter implementation and `config/codex.example.toml` for restoration.
 Append `compose.kanata.chatgpt-only.yml` after `compose.kanata.chatgpt.yml` in `COMPOSE_FILE`, then run `scripts/kanata.sh check` and `scripts/kanata.sh restart`. This overlay requires [Compose support for `!override`](https://docs.docker.com/reference/compose-file/merge/#replace-value) (2.24.4 or newer). It replaces the private service's volume mounts with config, keys, usage state and ChatGPT state; include any other custom mounts explicitly. API-key secrets and public service mounts are preserved. The existing `codex_state` volume stays on disk and is unmounted; do not delete it when retaining a restoration path.
 
 To restore Codex, remove the ChatGPT-only overlay, restore the saved Codex adapter/auth configuration and selected exact routes, reconcile key grants against those routes, validate, and recreate the gateway. The base Compose file mounts the retained volume again. Restoration is an explicit operator action; failed ChatGPT requests never fall back to Codex.
-
-On macOS/OrbStack, host ownership is mapped into the container; a disposable `0700` directory passed the non-root image's auth storage check. On Linux, keep container UID `10001`: create/chown the dedicated directory to `10001:10001` and run host auth commands as that UID, as with key management. Keep credentials `0600`; do not broaden permissions to make them readable. For a remote Docker host, the browser's loopback callback cannot reach it directly; use the [official self-hosted procedure](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms) and the [ChatGPT guide](../../docs/guides/sign-in-with-chatgpt.md).
-
-The directory is writable because refresh rotates saved credentials. A static Compose secret cannot replace this state store. Sign-in consent, the account catalog and a successful inference request must be checked with your own account; fixture and storage checks do not establish plan availability.
 
 ## Private route (reverse proxy)
 

@@ -2,45 +2,33 @@
 
 ## [Unreleased]
 
+## [1.0.0-beta.6] - 2026-10-03
+
+Private account integration, host key management and expanded inference APIs.
+
 ### Added
 
-- An opt-in ChatGPT-only Compose overlay detaches the retained Codex credential volume. The local deployment retired its active Codex adapter while preserving service aliases and exact grants through explicit ChatGPT routes. Added private GPT-6-Sol and GPT-6.1-Sol routes and restoration instructions; both models and the preserved Luna alias passed deployed complete inference checks at low. Other migrated models, tools, streaming and efforts were not checked live in this switch. Source, examples and the dormant credential volume remain available for explicit restoration; publication rules are unchanged.
+- Private-only Sign in with ChatGPT: host browser login, protected account profiles, refresh/sign-out, account model discovery, and stateless text/function inference. Account eligibility and model access must be verified by each operator.
+- Host-only key portal at `127.0.0.1:9091` for key creation, permissions, expiry, limits, rotation, revocation and usage. One-use login codes can be renewed from the terminal or an unlocked session.
+- Material 3 Expressive portal with the Relay identity, collapsible provider groups, model names and aliases, reasoning controls, and staged bulk selection.
+- Grouped reasoning discovery through `kanata.reasoning_efforts`; Chat and Responses select exact authorized variants from a base ID and effort. Legacy suffix requests remain accepted and responses return canonical model IDs.
+- Host deployment helpers for the portal and ChatGPT sign-in, a private credential mount, and a ChatGPT-only overlay that detaches the retained Codex volume. Experimental Codex code and templates remain available for explicit restoration.
+- Stateless `POST /v1/responses` for text, function-call replay and typed streaming, sharing chat routes and permissions; final output is bounded to 8 MiB.
+- Text embeddings through Ollama at `POST /v1/embeddings`, with scoped discovery, bounded batches and float/base64 output.
+- Inline PNG/JPEG image input for explicitly enabled Ollama, vLLM and OpenRouter chat routes, with bounded bytes, counts and dimensions.
+- Bounded MP3/WAV speech output at `POST /v1/audio/speech`, with exact scopes and voice/format allowlists.
+- Durable daily request and token allowances per key and process plane, token reservations, persisted usage reports and optional cost estimates.
+- SIGHUP configuration reload with atomic request generations, preserved active streams and accounting, failure retention, and visible reload status.
+- Exact route diagnostics and opt-in model/inference probes through `routes explain` and `doctor`.
 
-- Private portal ChatGPT cards show actual configured upstream model names alongside their API aliases, making the full private inventory identifiable without changing route IDs or key permissions. Model mappings are exposed only through the authenticated portal snapshot. Checked with snapshot and grouping fixtures.
+### Changed
 
-- The private portal gives each model a separate bordered surface, consistent spacing and a divider between its heading and reasoning choices. Provider lists remain collapsible.
+- Setup and operating guides replace development trackers and deployment-specific handoff notes. Client migration and Codex restoration procedures remain documented.
 
-- Host portal login codes can be renewed with Enter in the running terminal or **New login code** in an authenticated browser session. Renewal replaces the previous code, resets expiry and failed attempts, and preserves the current session until a new login. The locked page keeps requiring a host-issued code. Verified with isolated lifecycle and subprocess fixtures.
+### Security
 
-- Private ChatGPT routes can pin standard reasoning efforts and advertise key-filtered model families through the same Chat/Responses selector contract. Account catalog output includes supported/default levels and separately reports unsupported levels such as `ultra`. Legacy adapters with reasoning controls disabled retain their defaults. Checked with protocol, config, discovery and authorization fixtures. The local deployment advertises six private ChatGPT families to the existing client key; GPT-6 Luna at low completed both complete and streaming smoke checks. Other inference levels/models remain unverified.
-
-- Collapsible provider sections in the private portal, with selected-model counts and scoped or global bulk selection. Bulk actions stage the current key's exact route scopes, including reasoning variants, until saved; collapsed sections preserve selections and revoked keys remain read-only. Verified with grouping fixtures and isolated browser checks.
-
-- The private portal organizes configured models into named provider sections, including ChatGPT, while retaining reasoning controls and exact scope indices. Private-only sections state their access boundary. Provider metadata comes from the configured adapter; labels are not inferred from aliases. Checked with snapshot and grouping fixtures.
-
-- Pinned reasoning families with enabled reasoning controls now advertise one model ID and an ordered, deduplicated array of key-accessible efforts. Chat and stateless Responses select an exact authorized variant from a base ID plus effort, preserve legacy suffix requests and return canonical model IDs. Family policy validation prevents incompatible backend mappings. The portal groups effort controls while retaining exact key scopes. Checked with synthetic providers and browser fixtures; a subsequent local ChatGPT Luna low-effort check succeeded, while grouped Codex inference remains fixture-only. Added a service migration handoff.
-
-- Deployment helpers for the host-only key portal and ChatGPT browser authentication, plus an opt-in private-container credential mount. The portal uses the deployed keys and usage files; ChatGPT uses a separate owner-only writable directory shared with host sign-in. No gateway management endpoint or published callback port is added. Helper validation uses isolated fixtures; macOS/OrbStack sign-in and authenticated complete/streaming inference succeeded for the requested `gpt-6-luna` with one account. Other account/model availability is unverified.
-
-- The private key portal adopts the API guide's Material 3 Expressive styles, Relay logo and locally served fonts. Login, dashboard controls and dialogs retain the host-only session boundary.
-
-- Private-only Sign in with ChatGPT provider with host browser PKCE login, verified identity, protected named profiles, refresh/sign-out, account model discovery and stateless text/function inference. The public plane excludes its authentication state and scoped keys. Added an operator walkthrough; validation uses isolated fixtures plus one account's live consent, catalog and complete/streaming `gpt-6-luna` checks. Broader account/model availability remains unverified.
-
-- SIGHUP configuration reload on Linux/macOS: validates a complete replacement and reapplies process-plane narrowing before atomically publishing per-request route, adapter, key and public-policy snapshots. Active streams finish with their old snapshot. Admission pools, unchanged key limiters, usage, quotas and telemetry survive reload; incompatible listener/global/state-path or existing adapter-limit changes require restart. Admin status reports reload generations, outcomes and the process ID. Verified with synthetic adapters and subprocess loopback fixtures; no live deployment is implied.
-
-- Bounded speech output at `POST /v1/audio/speech` through an explicit speech backend, exact speech key scopes, route voice/format allowlists, MP3/WAV responses, speed control, scoped discovery and guide examples. Shared deadlines, cancellation, admission and usage quotas apply; audio without token metadata is recorded as missing usage. Verified with local fixtures; live model/voice availability is unverified.
-- Host-only key portal at `kanata portal --config <path> [--port <port>]`, bound strictly to `127.0.0.1` (default port 9091). A one-use terminal code unlocks an in-memory browser session for scoped key creation, expiry/limit edits, rotation, revocation and persisted usage inspection. Exact Host/Origin checks, a required request header, bounded requests, stale-write detection and the existing locked atomic key store protect changes. No gateway listener exposes key management. Verified with isolated HTTP fixtures and a local browser; no live keys or deployment were changed.
-
-- Opt-in inline PNG/JPEG image input in chat for declared Ollama, vLLM and OpenRouter routes, with strict data URLs, bounded files/count/dimensions/pixels, scoped discovery and examples. Header validation never decompresses pixels or fetches remote images. Fixture coverage does not imply live vision model availability.
-- Stateless `POST /v1/responses` for text, function-call replay and typed streaming events, sharing exact chat routes and key permissions. Stored conversations, hosted tools and unsupported options are rejected. Final output is bounded to 8 MiB. Contract checks use fixtures; this does not imply full Responses API compatibility or live deployment.
-
-- Durable daily request allowances and token reservations per key and process plane, with cancellation/crash reservations retained, reported-token reconciliation, UTC-day rollover and explicit storage failures. `kanata key usage` reports key/model/operation/day counts and optional cost estimates from supplied rates. Token allowances govern admission; reported overruns are recorded and can exceed the configured allowance. Verified with temporary-state fixtures; no live billing accuracy is implied.
-
-- Opt-in `doctor --probe-models` and exact `--probe-inference <alias> --operation <operation>` checks, with bounded requests and sanitized results. Catalog listing and fixture success do not imply live model availability.
-
-- Text embeddings through Ollama at authenticated `POST /v1/embeddings`: exact embedding routes and key scopes, bounded string batches, optional dimensions, float/base64 results, scoped model discovery and browser examples. Upstream vector shapes, indices and reported usage are checked. Shares upload reservations, admission, deadlines and usage accounting. Verified with fixtures and local mock upstreams; no live model availability or deployment is implied.
-- Host key commands accept `--embeddings`, `--add-embeddings` and `--remove-embeddings`; public embedding routes still require an explicit publication allowlist.
-- `kanata routes explain` reports exact route selection, declared capabilities, key scope/expiry and listener decisions for a selected process plane without resolving secrets or contacting backends. Its output describes a configuration snapshot, not live availability.
+- Public-plane narrowing excludes ChatGPT credentials and keys with account-provider scopes. Portal management stays separate from gateway listeners and requires exact local Host/Origin checks.
+- Reasoning families must share compatible route policies. Grouped discovery and bulk selection preserve exact key scopes.
 
 ## [1.0.0-beta.5] - 2026-10-03
 
