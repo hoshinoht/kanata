@@ -1,0 +1,26 @@
+# Apply after compose.kanata.chatgpt.yml to detach the retained Codex credential volume.
+services:
+  kanata:
+    volumes: !override
+      - type: bind
+        source: "${KANATA_CONFIG_FILE:?Set KANATA_CONFIG_FILE}"
+        target: /etc/kanata/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${KANATA_KEYS_DIR:?Set KANATA_KEYS_DIR}"
+        target: /etc/kanata/keys
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${KANATA_STATE_DIR:?Set KANATA_STATE_DIR}/private"
+        target: /etc/kanata/state
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${KANATA_CHATGPT_STATE_DIR:?Set KANATA_CHATGPT_STATE_DIR}"
+        target: "${KANATA_CHATGPT_STATE_DIR:?Set KANATA_CHATGPT_STATE_DIR}"
+        bind:
+          create_host_path: false

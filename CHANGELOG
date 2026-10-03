@@ -4,6 +4,8 @@
 
 ### Added
 
+- An opt-in ChatGPT-only Compose overlay detaches the retained Codex credential volume. The local deployment retired its active Codex adapter while preserving service aliases and exact grants through explicit ChatGPT routes. Added private GPT-6-Sol and GPT-6.1-Sol routes and restoration instructions; both models and the preserved Luna alias passed deployed complete inference checks at low. Other migrated models, tools, streaming and efforts were not checked live in this switch. Source, examples and the dormant credential volume remain available for explicit restoration; publication rules are unchanged.
+
 - Private portal ChatGPT cards show actual configured upstream model names alongside their API aliases, making the full private inventory identifiable without changing route IDs or key permissions. Model mappings are exposed only through the authenticated portal snapshot. Checked with snapshot and grouping fixtures.
 
 - The private portal gives each model a separate bordered surface, consistent spacing and a divider between its heading and reasoning choices. Provider lists remain collapsible.

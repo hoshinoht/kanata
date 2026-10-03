@@ -20,6 +20,7 @@ Kanata makes its outbound calls to model backends over the separate `backend_egr
 | `compose.kanata.openrouter.yml` | Opt-in OpenRouter API key as a Compose secret at `/run/secrets/openrouter-api-key`, from `KANATA_OPENROUTER_KEY_FILE` |
 | `compose.kanata.omnilion.yml` | Opt-in OmniLion API key as a Compose secret at `/run/secrets/omnilion-api-key` in both `kanata` and `kanata-public`, from `KANATA_OMNILION_KEY_FILE`; needs `compose.kanata.public.yml` |
 | `compose.kanata.chatgpt.yml` | Opt-in writable ChatGPT credential directory in the private container; host browser sign-in uses the same protected directory |
+| `compose.kanata.chatgpt-only.yml` | Apply after the ChatGPT overlay to replace private mounts and detach the retained Codex credential volume |
 | `.env` (git-ignored; from `.env.example`) | `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`, and paths to the config, the host-side owner key and the tunnel token. Paths only, never secrets |
 
 ## Config and secrets
@@ -64,6 +65,14 @@ scripts/kanata.sh chatgpt models
 ```
 
 Complete sign-in in a browser **on the Docker host**. Select a returned account model `slug` for an explicit private chat route, then grant its alias to a gateway key using the portal or host CLI. Run `scripts/kanata.sh build` and `scripts/kanata.sh restart` to install the image and credential mount. Later route changes can use the [configuration reload](../../docs/guides/config-reload.md) procedure.
+
+### Retire the experimental Codex provider
+
+Keep the adapter implementation and `config/codex.example.toml` for restoration. Back up the operator-managed config, then replace its Codex routes with explicit ChatGPT routes using the same aliases and upstream IDs. Replace `codex_reasoning_effort` with `reasoning_effort`; explicitly pin formerly unpinned Codex defaults to `medium`. Remove `codex_reasoning_summary`, the unused Codex adapter and `[codex_auth]`. Preserve existing key scopes and publication rules. Verify each service's requested models through ChatGPT before switching.
+
+Append `compose.kanata.chatgpt-only.yml` after `compose.kanata.chatgpt.yml` in `COMPOSE_FILE`, then run `scripts/kanata.sh check` and `scripts/kanata.sh restart`. This overlay requires [Compose support for `!override`](https://docs.docker.com/reference/compose-file/merge/#replace-value) (2.24.4 or newer). It replaces the private service's volume mounts with config, keys, usage state and ChatGPT state; include any other custom mounts explicitly. API-key secrets and public service mounts are preserved. The existing `codex_state` volume stays on disk and is unmounted; do not delete it when retaining a restoration path.
+
+To restore Codex, remove the ChatGPT-only overlay, restore the saved Codex adapter/auth configuration and selected exact routes, reconcile key grants against those routes, validate, and recreate the gateway. The base Compose file mounts the retained volume again. Restoration is an explicit operator action; failed ChatGPT requests never fall back to Codex.
 
 On macOS/OrbStack, host ownership is mapped into the container; a disposable `0700` directory passed the non-root image's auth storage check. On Linux, keep container UID `10001`: create/chown the dedicated directory to `10001:10001` and run host auth commands as that UID, as with key management. Keep credentials `0600`; do not broaden permissions to make them readable. For a remote Docker host, the browser's loopback callback cannot reach it directly; use the [official self-hosted procedure](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms) and the [ChatGPT guide](../../docs/guides/sign-in-with-chatgpt.md).
 
