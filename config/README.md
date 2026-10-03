@@ -13,6 +13,8 @@
 
 The offline schema fixture used by the tests lives in `tests/fixtures/config/example.toml`. Never serve it.
 
+The Codex adapter and Codex sections in legacy templates are deprecated and retained for explicit restoration. Use `chatgpt.example.toml` for new ChatGPT plan integrations.
+
 For Docker sign-in with ChatGPT, add `compose.kanata.chatgpt.yml` and set `KANATA_CHATGPT_STATE_DIR` to the same absolute path as `[chatgpt_auth].state_dir`. It is a dedicated owner-only writable directory outside the checkout, shared by host sign-in and the private container. See [deployment setup](../deploy/docker/README.md#sign-in-with-chatgpt). Manage the deployed client key file with `scripts/kanata.sh portal`.
 
 ## Reloading route changes

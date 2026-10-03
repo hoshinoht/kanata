@@ -1,6 +1,6 @@
 # Sign in with ChatGPT
 
-Kanata has a separate `chatgpt` provider for the documented ChatGPT plan usage preview. Authentication runs on the host; chat routes stay private. The existing experimental `codex` provider remains separate and its credentials are not imported.
+Kanata's `chatgpt` provider uses OpenAI's [documented OAuth integration](https://developers.openai.com/siwc/token-sharing-open-source) for eligible ChatGPT plan usage (preview). Authentication runs on the host; chat routes stay private. The legacy `codex` provider is deprecated and retained for explicit restoration; its credentials are not imported.
 
 Your account permissions, workspace policy and current model catalog determine what is available. Verify a short inference request with your selected account after configuring a route.
 

@@ -29,7 +29,7 @@
 | | |
 | --- | --- |
 | **Endpoints** | `GET /v1/models` · `POST /v1/chat/completions` (JSON and SSE) · `POST /v1/responses` (stateless text/tools/SSE) · `POST /v1/audio/transcriptions` · `POST /v1/embeddings` · `POST /v1/audio/speech` |
-| **Backends** | Ollama · vLLM · OpenRouter · Apple Foundation Models (macOS 27+) · Codex (experimental) · Sign in with ChatGPT · speech |
+| **Backends** | Ollama · vLLM · OpenRouter · Apple Foundation Models (macOS 27+) · Sign in with ChatGPT · speech · Codex (deprecated) |
 | **Auth** | Static `kanata_sk_…` bearer keys with exact per-model scopes, stored as SHA-256 digests |
 | **Listeners** | Private (behind your tailnet proxy) · optional public (Cloudflare tunnel) · loopback admin |
 | **Deploy** | Distroless, non-root, read-only container; Compose profiles publish **no** host ports |
@@ -72,13 +72,15 @@ A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md
 | **vLLM** | Text, inline-image and inline-audio chat with streaming and tools, native ASR, and transcription through audio chat; local, private or remote over HTTPS with an API key |
 | **OpenRouter** | Chat with inline images, sampling, structured output, reasoning and tools; inline-audio chat (also with tools) and speech-to-text |
 | **Apple Foundation Models** | Apple's on-device model through macOS 27's `fm serve`: chat, streaming, JSON-schema output and sampling. 8,192-token context, no tools. Expect loose formatting; guardrail refusals return `finish_reason: "content_filter"` |
-| **ChatGPT** | Documented plan usage preview with browser sign-in; private text and function chat, complete or streaming |
+| **ChatGPT** | Official OAuth integration for eligible ChatGPT plan usage (preview); private text and function chat, complete or streaming |
 | **Speech** | Bounded MP3/WAV output through a Kokoro-FastAPI compatible backend with voice and format allowlists |
-| **Codex** ⚠️ *experimental* | ChatGPT-subscription models via device-code sign-in (private listener only), with effort aliases like `gpt-6-sol:high`. Uses an unofficial private backend that may change or break without notice |
+| **Codex** ⚠️ *deprecated* | Legacy device-code integration with an unofficial private backend that may change or break without notice. Retained for explicit restoration; use the ChatGPT adapter for new setups |
 
 ### Sign in with ChatGPT
 
-A separate private `chatgpt` provider supports host browser sign-in, protected account profiles, model discovery, and text/function chat through the documented plan usage preview. Start with [the setup and trial guide](docs/guides/sign-in-with-chatgpt.md) and [`config/chatgpt.example.toml`](config/chatgpt.example.toml). Compose deployments can use the [ChatGPT overlay and host sign-in helper](deploy/docker/README.md#sign-in-with-chatgpt). Verify model access with your own account after sign-in. The [Codex retirement overlay](deploy/docker/README.md#retire-the-experimental-codex-provider) preserves the experimental implementation while detaching its credentials; see the [client migration guide](docs/guides/service-handoff.md#move-existing-codex-routes-to-chatgpt) for preserving service aliases.
+The private `chatgpt` provider uses OpenAI's [documented OAuth flow](https://developers.openai.com/siwc/token-sharing-open-source) for eligible ChatGPT plan usage and the [public Responses API](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference). It supports host browser sign-in, protected account profiles, model discovery, and text/function chat. Start with [the setup and trial guide](docs/guides/sign-in-with-chatgpt.md) and [`config/chatgpt.example.toml`](config/chatgpt.example.toml). Compose deployments can use the [ChatGPT overlay and host sign-in helper](deploy/docker/README.md#sign-in-with-chatgpt). Verify model access with your own account after sign-in.
+
+The deprecated Codex adapter remains available for explicit restoration. The [Codex retirement overlay](deploy/docker/README.md#retire-the-experimental-codex-provider) detaches its credentials; see the [client migration guide](docs/guides/service-handoff.md#move-existing-codex-routes-to-chatgpt) for preserving service aliases.
 
 ### 🎛️ Typed generation options
 - **Supported fields:** `response_format` (JSON object / JSON schema), `temperature`, `top_p`, `seed`, `max_tokens` / `max_completion_tokens` and `reasoning_effort`.
@@ -130,7 +132,7 @@ flowchart LR
   CORE --> R[OpenRouter]
   CORE --> A[Apple FM]
   CORE --> G[ChatGPT]
-  CORE --> C[Codex · optional]
+  CORE --> C[Codex · deprecated]
   PCORE --> O
 ```
 
@@ -163,7 +165,7 @@ scripts/kanata.sh logs
 | --- | --- |
 | Put your reverse proxy on `kanata_private_ingress` → `172.30.0.2:8080` | [deploy/docker](deploy/docker/README.md) |
 | Expose chosen models publicly through a Cloudflare tunnel | [deploy/cloudflared](deploy/cloudflared/README.md) |
-| Sign in to Codex | `scripts/kanata.sh codex login` |
+| Legacy Codex sign-in (deprecated) | `scripts/kanata.sh codex login` |
 | Issue a key for someone else | `kanata key new --config config/config.toml --id alice --chat <alias> --expires 30` |
 | List, inspect, change or revoke keys | `kanata key list`, `key show`, `key edit`, `key rm` (each with `--config`); see `kanata key` |
 | Manage deployed keys in your browser | `scripts/kanata.sh portal`; see [private portal](docs/guides/private-portal.md) |
@@ -215,19 +217,19 @@ Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you
 ## Security
 
 > [!IMPORTANT]
-> Keys are bearer credentials: whoever holds one gets its scopes. Only one key may be `owner = true`. Any key may hold Codex scopes on the private listener; treat such keys like the owner key.
+> Keys are bearer credentials: whoever holds one gets its scopes. Only one key may be `owner = true`. Any key may hold ChatGPT or Codex scopes on the private listener; treat such keys like the owner key.
 
 > [!WARNING]
-> **Separate processes, shared host.** With the public profile, the public listener runs in its own `kanata-public` container (`kanata serve --plane public`) that loads only public routes, their adapters and public keys: no Codex adapter, credentials or volume. It still shares the host, the Docker daemon and backends such as Ollama, and Docker bridges alone don't isolate containers from each other. Running both listeners in one process (`--plane all`, the default outside Compose) puts the Codex credentials in the public process again.
+> **Separate processes, shared host.** With the public profile, the public listener runs in its own `kanata-public` container (`kanata serve --plane public`) that loads only public routes, their adapters and public keys. ChatGPT and Codex adapters and credentials stay in the private container. Both containers share the host, the Docker daemon and backends such as Ollama, and Docker bridges alone don't isolate containers from each other. Running both listeners in one process (`--plane all`, the default outside Compose) puts account credentials in the public process again.
 
 > [!CAUTION]
-> **Codex** uses ChatGPT's private backend with *your* sign-in; it may change without notice. OpenAI's [Terms of Use](https://openai.com/policies/terms-of-use/) forbid sharing account access, so never expose Codex to other people.
+> **Deprecated Codex adapter.** The legacy `codex` adapter uses an unofficial private backend that may change or break without notice. It remains private-only and is retained for explicit restoration. Use the [ChatGPT OAuth integration](#sign-in-with-chatgpt) for new setups.
 
 - **Public documentation:** only `GET`/`HEAD /v1` and `/v1/` serve a generic page without authentication. `/v1/models` and inference endpoints still require a key. No configured models, backend addresses or credentials are embedded in the public page. Scripts and styles are embedded with a restrictive Content Security Policy; personalized discovery responses are not cached.
 - **Host isolation:** Docker bridges alone don't isolate containers from each other or from the host, so use a host firewall.
 - **Cloudflare Access** on the public route is optional defence in depth, never a replacement for keys.
 - **Key management is host-only:** `kanata key` edits `keys.toml` directly (0600, one writer at a time) and has no network path. The optional `kanata portal` is a separate host command restricted to IPv4 loopback, with a one-use terminal login code and exact browser-origin checks. The gateway listeners have no key-management endpoint. The server rejects a group- or world-writable keys file and keeps the previous keys when a reload fails. Expired keys get `401 key_expired`; revoked keys are treated exactly like unknown keys.
-- **Suspected compromise:** run `kanata key rotate --owner --config <config> --expires <days> --key-out <file>` (takes effect within about 2 s), revoke other keys with `kanata key rm`, then rotate the Codex sign-in, the tunnel token, and proxy DNS tokens.
+- **Suspected compromise:** run `kanata key rotate --owner --config <config> --expires <days> --key-out <file>` (takes effect within about 2 s), revoke other keys with `kanata key rm`, then revoke affected account sign-ins and rotate the tunnel token and proxy DNS tokens.
 
 ## Build from source
 

@@ -86,7 +86,7 @@ Operators can preserve each existing alias, operation and key grant while changi
 
 For configuration changes, replace `codex_reasoning_effort` with `reasoning_effort`, explicitly pin formerly unpinned Codex defaults to `medium`, and replace any legacy `codex_reasoning_summary` with `reasoning_summary` using the same value. Enable adapter `reasoning_control` for selectable families. Routes in a family must share the same adapter, upstream, policies and capabilities; only their effort pin differs. Validation rejects incompatible mappings with `inconsistent_reasoning_family`.
 
-Keep the experimental Codex implementation and credentials if restoration is needed. Follow the [Docker migration and restoration procedure](../../deploy/docker/README.md#retire-the-experimental-codex-provider) to detach its credential volume and restore it later. Keep protected configuration backups outside version control. There is no automatic provider fallback.
+The legacy Codex adapter is deprecated. Keep its implementation and credentials if restoration is needed. Follow the [Docker migration and restoration procedure](../../deploy/docker/README.md#retire-the-experimental-codex-provider) to detach its credential volume and restore it later. Keep protected configuration backups outside version control. There is no automatic provider fallback.
 
 ## Operate client access
 

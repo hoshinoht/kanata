@@ -7,6 +7,10 @@
 - Optional `routes[].reasoning_summary` (`auto`, `concise` or `detailed`) requests reasoning summaries on private account chat routes. The existing `codex_reasoning_summary` setting remains supported; combining both settings is rejected.
 - Private Responses replies include returned reasoning summaries as `reasoning` output items and typed summary events. Chat replies use `reasoning_content`. Summary text is bounded to 256 KiB and counts toward the Responses 8 MiB output limit; replayed summary-only items are discarded from conversation context. Upstream reasoning token counts remain unchanged, including explicit zero and missing counts.
 
+### Changed
+
+- Deprecated Kanata's legacy Codex adapter in setup documentation while retaining its implementation and restoration path. The README recommends the official ChatGPT OAuth integration and scopes the unofficial-backend warning to Codex.
+
 ## [1.0.0-beta.6] - 2026-10-03
 
 Private account integration, host key management and expanded inference APIs.
