@@ -4,6 +4,8 @@
 
 ### Added
 
+- The private portal gives each model a separate bordered surface, consistent spacing and a divider between its heading and reasoning choices. Provider lists remain collapsible.
+
 - Host portal login codes can be renewed with Enter in the running terminal or **New login code** in an authenticated browser session. Renewal replaces the previous code, resets expiry and failed attempts, and preserves the current session until a new login. The locked page keeps requiring a host-issued code. Verified with isolated lifecycle and subprocess fixtures.
 
 - Private ChatGPT routes can pin standard reasoning efforts and advertise key-filtered model families through the same Chat/Responses selector contract. Account catalog output includes supported/default levels and separately reports unsupported levels such as `ultra`. Legacy adapters with reasoning controls disabled retain their defaults. Checked with protocol, config, discovery and authorization fixtures. The local deployment advertises six private ChatGPT families to the existing client key; GPT-6 Luna at low completed both complete and streaming smoke checks. Other inference levels/models remain unverified.
