@@ -309,16 +309,18 @@ impl CodexReasoningEffort {
     }
 }
 
-/// Reasoning summary detail requested from Codex.
+/// Requested reasoning summary detail.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub enum CodexReasoningSummary {
+pub enum ReasoningSummary {
     Auto,
     Concise,
     Detailed,
 }
 
-impl CodexReasoningSummary {
+pub type CodexReasoningSummary = ReasoningSummary;
+
+impl ReasoningSummary {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
@@ -461,6 +463,7 @@ pub struct ValidatedRoute {
     adapter_id: String,
     codex_reasoning_effort: Option<CodexReasoningEffort>,
     reasoning_effort: Option<ReasoningEffort>,
+    reasoning_summary: Option<ReasoningSummary>,
     codex_reasoning_summary: Option<CodexReasoningSummary>,
     extension_allowlist: BTreeSet<ExtensionKey>,
     requires_streaming_chat: bool,
@@ -489,6 +492,9 @@ impl ValidatedRoute {
     }
     pub fn codex_reasoning_summary(&self) -> Option<CodexReasoningSummary> {
         self.codex_reasoning_summary
+    }
+    pub fn reasoning_summary(&self) -> Option<ReasoningSummary> {
+        self.reasoning_summary.or(self.codex_reasoning_summary)
     }
     pub fn extension_allowlist(&self) -> &BTreeSet<ExtensionKey> {
         &self.extension_allowlist

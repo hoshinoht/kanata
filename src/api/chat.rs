@@ -195,8 +195,10 @@ async fn dispatch_chat(
         chat.options.max_output_tokens = Some(cap);
     }
     chat.model = response_model.clone();
+    // Reasoning stays on the private listener.
+    let expose_reasoning = state.listener() == crate::telemetry::Listener::Private;
     let response_options = matches!(output_format, OutputFormat::Responses)
-        .then(|| super::responses::Options::new(&chat));
+        .then(|| super::responses::Options::new(&chat, expose_reasoning, route.reasoning_summary));
     chat.model = routed_model.clone();
     let request = CoreRequest::Chat(chat);
     match check_supported(&route.capabilities, adapter.capabilities(), &request) {
@@ -269,8 +271,6 @@ async fn dispatch_chat(
         observer.begin_upstream();
         observer.annotate_adapter(&route.adapter_id, &provider_label(route));
     }
-    // Reasoning stays on the private listener.
-    let expose_reasoning = state.listener() == crate::telemetry::Listener::Private;
     let result = deadline.run(move || adapter.execute(routed)).await;
     if !matches!(&result, Ok(Ok(AdapterOutput::Events(_))))
         && let Some(observer) = observer.as_ref()

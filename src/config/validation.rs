@@ -446,6 +446,22 @@ pub(super) fn validate(
                 "chatgpt_only",
             ));
         }
+        if route.reasoning_summary.is_some() {
+            if !matches!(adapter.kind, ProviderKind::Chatgpt | ProviderKind::Codex)
+                || route.operation != Operation::Chat
+            {
+                return Err(ConfigError::new(
+                    format!("{path}.reasoning_summary"),
+                    "unsupported_by_adapter",
+                ));
+            }
+            if route.codex_reasoning_summary.is_some() {
+                return Err(ConfigError::new(
+                    format!("{path}.reasoning_summary"),
+                    "conflicting_summary_options",
+                ));
+            }
+        }
         if route.codex_reasoning_summary.is_some() {
             if adapter.kind != ProviderKind::Codex {
                 return Err(ConfigError::new(
@@ -607,6 +623,7 @@ pub(super) fn validate(
             adapter_id: route.adapter_id,
             codex_reasoning_effort,
             reasoning_effort: route.reasoning_effort,
+            reasoning_summary: route.reasoning_summary,
             codex_reasoning_summary: route.codex_reasoning_summary,
             extension_allowlist,
             requires_streaming_chat: route.requires_streaming_chat,
@@ -648,7 +665,7 @@ pub(super) fn validate(
                 || route.requires_function_tools != other.requires_function_tools
                 || route.context_tokens != other.context_tokens
                 || route.max_output_tokens != other.max_output_tokens
-                || route.codex_reasoning_summary != other.codex_reasoning_summary
+                || route.reasoning_summary() != other.reasoning_summary()
             {
                 return Err(ConfigError::new(
                     format!("routes[{index}]"),

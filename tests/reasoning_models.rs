@@ -215,6 +215,96 @@ fn reasoning_families_reject_conflicting_backends_and_capabilities() {
     }
 }
 
+#[test]
+fn summaries_validate_provider_operation_and_legacy_compatibility() {
+    let fixture = std::fs::read_to_string("tests/fixtures/config/example.toml").unwrap();
+    for id in ["ollama-chat", "vllm-transcription"] {
+        let text = fixture.replace(
+            &format!("id = \"{id}\"\nmodel_alias"),
+            &format!("id = \"{id}\"\nreasoning_summary = \"auto\"\nmodel_alias"),
+        );
+        assert_ne!(text, fixture);
+        assert!(
+            load(&text)
+                .unwrap_err()
+                .to_string()
+                .contains("reasoning_summary: unsupported_by_adapter")
+        );
+    }
+    let generic = fixture.replace(
+        "id = \"codex-chat\"\nmodel_alias",
+        "id = \"codex-chat\"\nreasoning_summary = \"detailed\"\nmodel_alias",
+    );
+    let legacy = generic.replace("reasoning_summary =", "codex_reasoning_summary =");
+    let generic_config = load(&generic).unwrap();
+    let legacy_config = load(&legacy).unwrap();
+    let summary = |config: &kanata::config::ValidatedConfig| {
+        config
+            .routes()
+            .iter()
+            .find(|route| route.identity().route_id == "codex-chat")
+            .unwrap()
+            .reasoning_summary()
+    };
+    assert_eq!(
+        summary(&generic_config),
+        Some(kanata::config::ReasoningSummary::Detailed)
+    );
+    assert_eq!(summary(&generic_config), summary(&legacy_config));
+    let mut wrong_operation: toml::Value = toml::from_str(&generic).unwrap();
+    let route = wrong_operation["routes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|route| route["id"].as_str() == Some("codex-chat"))
+        .unwrap();
+    route["operation"] = toml::Value::String("transcription".into());
+    assert!(
+        load(&toml::to_string(&wrong_operation).unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("reasoning_summary: unsupported_by_adapter")
+    );
+    let conflict = generic.replace(
+        "reasoning_summary = \"detailed\"",
+        "reasoning_summary = \"detailed\"\ncodex_reasoning_summary = \"detailed\"",
+    );
+    assert!(
+        load(&conflict)
+            .unwrap_err()
+            .to_string()
+            .contains("conflicting_summary_options")
+    );
+}
+
+#[test]
+fn summary_policy_must_match_every_private_reasoning_variant() {
+    let source = chatgpt_source(&["reasoning-model"]);
+    let mut document: toml::Value = toml::from_str(&source).unwrap();
+    for route in document["routes"].as_array_mut().unwrap() {
+        if route["adapter_id"].as_str() == Some("codex-private") {
+            route.as_table_mut().unwrap().insert(
+                "reasoning_summary".into(),
+                toml::Value::String("auto".into()),
+            );
+        }
+    }
+    let configured = toml::to_string(&document).unwrap();
+    assert!(load(&configured).is_ok());
+    let routes = document["routes"].as_array_mut().unwrap();
+    let low = routes
+        .iter_mut()
+        .find(|route| route["model_alias"].as_str() == Some("reasoning-model:low"))
+        .unwrap();
+    low["reasoning_summary"] = toml::Value::String("concise".into());
+    assert!(
+        load(&toml::to_string(&document).unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("inconsistent_reasoning_family")
+    );
+}
+
 struct StreamAdapter {
     caps: kanata::core::Capabilities,
     wrong_model: bool,

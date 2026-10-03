@@ -76,6 +76,26 @@ pub(in crate::api) fn parse(
                     return input_error();
                 };
                 match item.remove("type").unwrap_or(json!("message")).as_str() {
+                    Some("reasoning") => {
+                        replay_metadata(&mut item)?;
+                        let Some(Value::Array(parts)) = item.remove("summary") else {
+                            return input_error();
+                        };
+                        for part in parts {
+                            let Value::Object(mut part) = part else {
+                                return input_error();
+                            };
+                            if part.remove("type") != Some(json!("summary_text"))
+                                || !part.remove("text").is_some_and(|text| text.is_string())
+                                || !part.is_empty()
+                            {
+                                return input_error();
+                            }
+                        }
+                        if !item.is_empty() {
+                            return input_error();
+                        }
+                    }
                     Some("message") => {
                         if !pending.is_empty() {
                             return input_error();

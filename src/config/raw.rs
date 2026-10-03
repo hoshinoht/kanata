@@ -132,6 +132,8 @@ pub(super) struct RawRoute {
     #[serde(default)]
     pub(super) reasoning_effort: Option<ReasoningEffort>,
     #[serde(default)]
+    pub(super) reasoning_summary: Option<ReasoningSummary>,
+    #[serde(default)]
     pub(super) codex_reasoning_effort: Option<CodexReasoningEffort>,
     #[serde(default)]
     pub(super) codex_reasoning_summary: Option<CodexReasoningSummary>,

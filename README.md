@@ -85,7 +85,7 @@ A separate private `chatgpt` provider supports host browser sign-in, protected a
 - **Bounds:** each field is validated and size-limited.
 - **Capability-gated:** if a route can't honour an option, the request gets **400 naming the parameter** instead of a silent drop.
 - **Tools pass through:** tool declarations, calls and results are forwarded. Kanata never executes tools.
-- **Reasoning (private listener only):** backend reasoning text is returned as `reasoning_content` (Codex gives a summary), with `completion_tokens_details.reasoning_tokens` when reported.
+- **Reasoning (private listener only):** backend reasoning text is returned as `reasoning_content`, with `completion_tokens_details.reasoning_tokens` when reported. ChatGPT and Codex routes can opt into summaries with `reasoning_summary = "auto"`; Responses exposes them as reasoning output items. See [configuration](config/README.md#concepts).
 
 ### 🔐 Keys and exposure
 - **Host key CLI:** `kanata key new|list|show|edit|rm|rotate|migrate` manages keys in `keys.toml` on the host (no network or admin endpoint). Keys are shown once and stored only as SHA-256 digests; every key has an expiry (1–60 days or `unlimited`). Changes apply within about 2 s, without a restart.

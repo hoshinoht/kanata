@@ -55,7 +55,13 @@ Use the nested effort field on `POST /v1/responses`:
 }
 ```
 
-Send full conversation history. Stored responses and reasoning summaries remain unsupported. See [Responses](responses.md) for the supported subset and terminal streaming events.
+Send full conversation history. Stored responses remain unsupported. Private routes can return operator-enabled reasoning summaries; see [Responses](responses.md) for output items, replay rules and streaming events.
+
+### Reasoning summaries for debugging
+
+Operators can enable summaries on private ChatGPT and Codex routes with `reasoning_summary = "auto"`, `"concise"` or `"detailed"`. Clients keep their request shape; `reasoning.summary` is not accepted. Chat completions return optional `message.reasoning_content`, and streams use `delta.reasoning_content`. Responses returns `type: "reasoning"` output items with `summary_text` parts and typed summary events. Replayed summary-only items are accepted and discarded; preserve the actual message and tool history because summaries do not become conversation context.
+
+Treat missing summary text as “No reasoning summary was returned for this request.” Keep missing token counts distinct from a reported `0`: requesting a summary or selecting an effort does not guarantee reasoning tokens. Raw internal reasoning and encrypted reasoning are not exposed for ChatGPT or Codex.
 
 ### Compatibility and errors
 
@@ -78,7 +84,7 @@ The portal displays the configured upstream name and its API alias. For example,
 
 Operators can preserve each existing alias, operation and key grant while changing its provider. Clients can keep their URL, bearer key and model ID when the replacement supports the same request fields. Refresh authenticated discovery after the switch because supported reasoning levels and capabilities may change. Inference uses the selected ChatGPT account's plan usage and authentication.
 
-For configuration changes, replace `codex_reasoning_effort` with `reasoning_effort`, explicitly pin formerly unpinned Codex defaults to `medium`, and remove Codex summary options. Enable adapter `reasoning_control` for selectable families. Routes in a family must share the same adapter, upstream, policies and capabilities; only their effort pin differs. Validation rejects incompatible mappings with `inconsistent_reasoning_family`.
+For configuration changes, replace `codex_reasoning_effort` with `reasoning_effort`, explicitly pin formerly unpinned Codex defaults to `medium`, and replace any legacy `codex_reasoning_summary` with `reasoning_summary` using the same value. Enable adapter `reasoning_control` for selectable families. Routes in a family must share the same adapter, upstream, policies and capabilities; only their effort pin differs. Validation rejects incompatible mappings with `inconsistent_reasoning_family`.
 
 Keep the experimental Codex implementation and credentials if restoration is needed. Follow the [Docker migration and restoration procedure](../../deploy/docker/README.md#retire-the-experimental-codex-provider) to detach its credential volume and restore it later. Keep protected configuration backups outside version control. There is no automatic provider fallback.
 

@@ -579,3 +579,66 @@ async fn pinned_reasoning_effort_reaches_responses_with_complete_and_stream_outp
         fixture.server.await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn summaries_and_reported_reasoning_counts_survive_complete_and_stream_output() {
+    const SUMMARY: &str = "SYNTHETIC_SUMMARY_MARKER";
+    let config = tests::config_with_summary("auto");
+    for reasoning_tokens in [0, 2] {
+        for streaming in [false, true] {
+            let events = started_text()
+                + &record(json!({"type":"response.reasoning_summary_text.delta",
+                    "item_id":"reasoning_fixture", "summary_index":0, "delta":SUMMARY}))
+                + &record(
+                    json!({"type":"response.completed", "response":{"id":"response_fixture",
+                    "usage":{"input_tokens":4, "output_tokens":3, "total_tokens":7,
+                        "output_tokens_details":{"reasoning_tokens":reasoning_tokens}}}}),
+                );
+            let fixture = fixture(&config, 200, events, None).await;
+            let output =
+                execute_with_token(&fixture.transport, TOKEN, inference(&config, streaming))
+                    .await
+                    .unwrap();
+            let expected = Usage {
+                input_tokens: 4,
+                output_tokens: 3,
+                total_tokens: 7,
+                reasoning_tokens: Some(reasoning_tokens),
+            };
+            match output {
+                AdapterOutput::Complete(Response::Chat(response)) => {
+                    assert!(!streaming);
+                    assert_eq!(response.reasoning.as_deref(), Some(SUMMARY));
+                    assert_eq!(response.usage, Some(expected));
+                    assert_eq!(
+                        response.message.content,
+                        vec![ChatContent::Text { text: TEXT.into() }]
+                    );
+                }
+                AdapterOutput::Events(mut events) => {
+                    assert!(streaming);
+                    let mut summary = String::new();
+                    let mut usage = None;
+                    while let Some(event) = events.next().await {
+                        match event.unwrap() {
+                            NormalizedEvent::ChatReasoningDelta { text } => summary.push_str(&text),
+                            NormalizedEvent::ChatCompleted {
+                                usage: reported, ..
+                            } => usage = reported,
+                            _ => {}
+                        }
+                    }
+                    assert_eq!(summary, SUMMARY);
+                    assert_eq!(usage, Some(expected));
+                }
+                _ => panic!("chat response"),
+            }
+            let record = fixture.request.await.unwrap();
+            assert_eq!(
+                record.body["reasoning"],
+                json!({"effort":"medium", "summary":"auto"})
+            );
+            fixture.server.await.unwrap();
+        }
+    }
+}

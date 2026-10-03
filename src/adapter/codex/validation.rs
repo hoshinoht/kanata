@@ -64,7 +64,7 @@ pub(super) fn bind_route(
     Ok(RouteBinding {
         identity: identity.clone(),
         reasoning_effort,
-        reasoning_summary: route.codex_reasoning_summary(),
+        reasoning_summary: route.reasoning_summary(),
     })
 }
 

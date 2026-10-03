@@ -11,7 +11,7 @@ use super::super::{
 use crate::{
     core::{
         ChatContent, ChatRequest, ChatResponse, ChatRole, ErrorKind, FinishReason, GatewayError,
-        ModelAlias, NormalizedEvent, Usage,
+        MAX_REASONING_BYTES, ModelAlias, NormalizedEvent, Usage,
     },
     telemetry::Observer,
 };
@@ -26,10 +26,16 @@ pub(in crate::api) struct Options {
     temperature: Option<f64>,
     top_p: Option<f64>,
     reasoning_effort: Option<crate::core::ReasoningEffort>,
+    expose_reasoning: bool,
+    reasoning_summary: Option<&'static str>,
 }
 
 impl Options {
-    pub(in crate::api) fn new(chat: &ChatRequest) -> Self {
+    pub(in crate::api) fn new(
+        chat: &ChatRequest,
+        expose_reasoning: bool,
+        reasoning_summary: Option<&'static str>,
+    ) -> Self {
         Self {
             model: chat.model.clone(),
             tools: Value::Array(chat.tools.iter().map(|tool| json!({"type":"function","name":tool.name,"description":tool.description,"parameters":tool.parameters,"strict":false})).collect()),
@@ -43,6 +49,8 @@ impl Options {
             temperature: chat.options.sampling.temperature.map(|value| value.get()),
             top_p: chat.options.sampling.top_p.map(|value| value.get()),
             reasoning_effort: chat.options.reasoning_effort,
+            expose_reasoning,
+            reasoning_summary: reasoning_summary.filter(|_| expose_reasoning),
         }
     }
 }
@@ -57,6 +65,9 @@ pub(in crate::api) fn complete(
             return Err(failure());
         }
         let mut output = Output::new(options);
+        if let Some(text) = response.reasoning {
+            output.accept(NormalizedEvent::ChatReasoningDelta { text }, false)?;
+        }
         let mut calls = std::collections::BTreeSet::new();
         for content in response.message.content {
             match content {
@@ -97,6 +108,9 @@ pub(super) struct Output {
     sequence: u64,
     bytes: usize,
     message_index: Option<usize>,
+    reasoning_index: Option<usize>,
+    expose_reasoning: bool,
+    reasoning_bytes: usize,
     tools: std::collections::BTreeMap<String, usize>,
 }
 
@@ -110,12 +124,15 @@ impl Output {
                 "store":false,"background":false,"previous_response_id":null,"instructions":null,
                 "max_output_tokens":options.max_output_tokens,"parallel_tool_calls":true,"tool_choice":options.tool_choice,
                 "tools":options.tools,"temperature":options.temperature,"top_p":options.top_p,
-                "text":{"format":{"type":"text"}},"reasoning":{"effort":options.reasoning_effort,"summary":null},
+                "text":{"format":{"type":"text"}},"reasoning":{"effort":options.reasoning_effort,"summary":options.reasoning_summary},
                 "truncation":"disabled","usage":null,"metadata":{},"user":null
             }),
             sequence: 0,
             bytes: 0,
             message_index: None,
+            reasoning_index: None,
+            expose_reasoning: options.expose_reasoning,
+            reasoning_bytes: 0,
             tools: std::collections::BTreeMap::new(),
         }
     }
@@ -220,7 +237,42 @@ impl Output {
                     current.push_str(&arguments_delta);
                 }
             }
-            NormalizedEvent::ChatReasoningDelta { .. } => {}
+            NormalizedEvent::ChatReasoningDelta { mut text } => {
+                if !self.expose_reasoning {
+                    return Ok(frames);
+                }
+                super::super::serialization::truncate_at_char_boundary(
+                    &mut text,
+                    MAX_REASONING_BYTES.saturating_sub(self.reasoning_bytes),
+                );
+                if text.is_empty() {
+                    return Ok(frames);
+                }
+                self.reserve(text.len())?;
+                self.reasoning_bytes += text.len();
+                let index = match self.reasoning_index {
+                    Some(index) => index,
+                    None => {
+                        let index = self.items().len();
+                        let id =
+                            format!("{}_rs_{index}", self.response["id"].as_str().expect("id"));
+                        let item =
+                            json!({"id":id,"type":"reasoning","status":"in_progress","summary":[]});
+                        frames.push(json!({"type":"response.output_item.added","output_index":index,"item":item}));
+                        let part = json!({"type":"summary_text","text":""});
+                        frames.push(json!({"type":"response.reasoning_summary_part.added","item_id":id,"output_index":index,"summary_index":0,"part":part}));
+                        self.items().push(item);
+                        self.response["output"][index]["summary"] = json!([part]);
+                        self.reasoning_index = Some(index);
+                        index
+                    }
+                };
+                let item = &mut self.response["output"][index];
+                frames.push(json!({"type":"response.reasoning_summary_text.delta","item_id":item["id"],"output_index":index,"summary_index":0,"delta":text}));
+                if let Value::String(current) = &mut item["summary"][0]["text"] {
+                    current.push_str(&text);
+                }
+            }
             _ => return Err(failure()),
         }
         Ok(frames)
@@ -234,7 +286,8 @@ impl Output {
         if !finish_matches_tool_calls(reason, !self.tools.is_empty()) {
             return Err(failure());
         }
-        if self.items().is_empty()
+        if self.message_index.is_none()
+            && self.tools.is_empty()
             && !matches!(
                 reason,
                 FinishReason::Length | FinishReason::ContentFilter | FinishReason::Cancelled
@@ -262,6 +315,13 @@ impl Output {
             if item["type"] == "message" {
                 frames.push(json!({"type":"response.output_text.done","item_id":item["id"],"output_index":index,"content_index":0,"text":item["content"][0]["text"],"logprobs":[]}));
                 frames.push(json!({"type":"response.content_part.done","item_id":item["id"],"output_index":index,"content_index":0,"part":item["content"][0]}));
+            } else if item["type"] == "reasoning" {
+                frames.push(json!({"type":"response.reasoning_summary_text.done","item_id":item["id"],"output_index":index,"summary_index":0,"text":item["summary"][0]["text"]}));
+                let mut part_done = json!({"type":"response.reasoning_summary_part.done","item_id":item["id"],"output_index":index,"summary_index":0,"part":item["summary"][0]});
+                if incomplete.is_some() {
+                    part_done["status"] = json!("incomplete");
+                }
+                frames.push(part_done);
             } else {
                 frames.push(json!({"type":"response.function_call_arguments.done","item_id":item["id"],"output_index":index,"arguments":item["arguments"]}));
             }

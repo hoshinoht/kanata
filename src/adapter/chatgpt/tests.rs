@@ -7,7 +7,7 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
-fn load(contents: &str) -> Result<ValidatedConfig, crate::config::ConfigError> {
+pub(super) fn load(contents: &str) -> Result<ValidatedConfig, crate::config::ConfigError> {
     let root = std::env::temp_dir().join(format!(
         "kanata-chatgpt-config-{}-{}",
         std::process::id(),
@@ -49,6 +49,15 @@ pub(super) fn config_with_effort(effort: crate::core::ReasoningEffort) -> Valida
                 "upstream_id = \"fixture-model\"\nreasoning_effort = \"{}\"",
                 effort.as_str()
             ),
+        );
+    load(&text).unwrap()
+}
+pub(super) fn config_with_summary(summary: &str) -> ValidatedConfig {
+    let text = legacy_template()
+        .replace("\nfunction_tools = true\n", "\nfunction_tools = true\nreasoning_control = true\n")
+        .replace(
+            "upstream_id = \"replace-with-account-model-slug\"",
+            &format!("upstream_id = \"fixture-model\"\nreasoning_effort = \"medium\"\nreasoning_summary = \"{summary}\""),
         );
     load(&text).unwrap()
 }
@@ -233,6 +242,7 @@ fn pinned_reasoning_payload_supports_standard_efforts_and_rejects_overrides() {
             chat.options.reasoning_effort = explicit;
             let payload = request::encode(&routed(&config, chat), caps, &bindings).unwrap();
             assert_eq!(payload["reasoning"]["effort"], effort.as_str());
+            assert!(payload["reasoning"].get("summary").is_none());
             assert_eq!(payload["store"], false);
             assert_eq!(payload["stream"], true);
             assert_eq!(payload["tools"][0]["type"], "namespace");
@@ -256,6 +266,26 @@ fn pinned_reasoning_payload_supports_standard_efforts_and_rejects_overrides() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn summaries_preserve_effort_and_namespaced_tools() {
+    for summary in ["auto", "concise", "detailed"] {
+        let config = config_with_summary(summary);
+        let payload = request::encode(
+            &routed(&config, chat()),
+            config.adapters()[0].capabilities(),
+            &[request::RouteBinding::from_route(&config.routes()[0])],
+        )
+        .unwrap();
+        assert_eq!(
+            payload["reasoning"],
+            json!({"effort":"medium", "summary":summary})
+        );
+        assert_eq!(payload["tools"][0]["name"], NAMESPACE);
+        assert_eq!(payload["store"], false);
+        assert_eq!(payload["stream"], true);
+    }
 }
 
 #[test]
