@@ -137,6 +137,7 @@ fieldset { border:0; padding:0; margin:24px 0; min-width:0; }
 .scope span { flex:1; min-width:0; }
 .scope b { display:block; font:12px/1.7 var(--mono); overflow-wrap:anywhere; }
 .scope small { color:var(--muted); }
+.scope .scope-alias { display:block; font:11px/1.7 var(--mono); overflow-wrap:anywhere; }
 .scope em { font-style:normal; color:var(--muted); font-size:10px; white-space:nowrap; }
 .scope-group { padding:16px; }
 .scope-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; padding-bottom:12px; border-bottom:1px solid var(--line); }

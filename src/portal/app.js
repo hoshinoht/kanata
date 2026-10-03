@@ -66,8 +66,9 @@
     const renderModel = (group) => {
       const badge = text('em', group.exposure === 'never_public' ? 'Never public' : group.exposure === 'public' ? 'Public' : 'Private');
       const label = text('span', '');
-      const name = group.levels.length ? group.alias.replace(/^gpt-(\d+(?:\.\d+)?)-(.+)$/i, (_, version, model) => `GPT-${version}-${model.replace(/(^|-)[a-z]/g, (part) => part.toUpperCase())}`) : group.alias;
+      const name = modelName(group);
       label.append(text('b', name), text('small', group.operation));
+      if (group.provider === 'chatgpt' && group.upstream_id) label.append(text('small', `API alias: ${group.alias}`, 'scope-alias'));
       if (!group.levels.length) {
         const row = text('label', '', 'check scope'); row.append(inputs[group.indices[0]], label, badge); return row;
       }

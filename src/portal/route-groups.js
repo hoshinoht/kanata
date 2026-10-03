@@ -5,7 +5,7 @@ function routeGroups(routes) {
     const alias = route.display_alias || route.model_alias;
     const provider = route.provider || 'unknown';
     const groupId = route.reasoning_effort ? JSON.stringify([provider, alias, route.operation]) : `route-${index}`;
-    if (!groups.has(groupId)) groups.set(groupId, { provider, alias, operation: route.operation, exposure: route.exposure, levels: [], indices: [] });
+    if (!groups.has(groupId)) groups.set(groupId, { provider, alias, upstream_id: route.upstream_id, operation: route.operation, exposure: route.exposure, levels: [], indices: [] });
     const group = groups.get(groupId);
     group.indices.push(index);
     if (route.reasoning_effort) {
@@ -30,4 +30,9 @@ function providerGroups(routes) {
 
 function selectScopes(inputs, indices, checked) {
   for (const index of indices) if (!inputs[index].disabled) inputs[index].checked = checked;
+}
+
+function modelName(group) {
+  const model = group.provider === 'chatgpt' && group.upstream_id ? group.upstream_id : group.alias;
+  return model.replace(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i, (_, version, name) => `GPT-${version}${name ? `-${name.replace(/(^|-)[a-z]/g, (part) => part.toUpperCase())}` : ''}`);
 }

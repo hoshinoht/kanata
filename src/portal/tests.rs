@@ -253,6 +253,10 @@ async fn key_lifecycle_is_atomic_scoped_audited_and_reveals_secrets_once() {
         initial["routes"][0]["provider"],
         config.adapters()[0].kind().label()
     );
+    assert_eq!(
+        initial["routes"][0]["upstream_id"],
+        config.routes()[0].identity().upstream_id
+    );
     let created = fixture
         .send(
             "/api/change",

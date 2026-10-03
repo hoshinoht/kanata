@@ -147,6 +147,7 @@ impl KeyService {
                 json!({
                     "model_alias": route.selector.model_alias.0, "operation": route.selector.operation.as_str(),
                     "provider": adapter.map(|adapter| adapter.kind().label()),
+                    "upstream_id": configured.map(|configured| &configured.identity().upstream_id),
                     "display_alias": selectable.map(|configured| configured.model_family_alias()).unwrap_or(&route.selector.model_alias.0),
                     "reasoning_effort": selectable.and_then(|configured| configured.pinned_reasoning_effort()),
                     "exposure": match route.exposure { Exposure::Public => "public", Exposure::Private => "private", Exposure::Never => "never_public" }

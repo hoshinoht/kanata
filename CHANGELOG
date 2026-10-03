@@ -4,6 +4,8 @@
 
 ### Added
 
+- Private portal ChatGPT cards show actual configured upstream model names alongside their API aliases, making the full private inventory identifiable without changing route IDs or key permissions. Model mappings are exposed only through the authenticated portal snapshot. Checked with snapshot and grouping fixtures.
+
 - The private portal gives each model a separate bordered surface, consistent spacing and a divider between its heading and reasoning choices. Provider lists remain collapsible.
 
 - Host portal login codes can be renewed with Enter in the running terminal or **New login code** in an authenticated browser session. Renewal replaces the previous code, resets expiry and failed attempts, and preserves the current session until a new login. The locked page keeps requiring a host-issued code. Verified with isolated lifecycle and subprocess fixtures.

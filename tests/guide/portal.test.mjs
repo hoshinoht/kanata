@@ -50,3 +50,18 @@ test('bulk selection respects provider indices and disabled scopes', () => {
   context.selectScopes(inputs, [0, 3], false);
   assert.deepEqual(inputs.map(x => x.checked), [false, true, false, false]);
 });
+
+test('ChatGPT labels use the configured upstream while keeping aliases and grants separate', () => {
+  const routes = [
+    {model_alias: 'chatgpt-luna', display_alias: 'chatgpt-luna', upstream_id: 'gpt-6-luna', provider: 'chatgpt', operation: 'chat', reasoning_effort: 'medium'},
+    {model_alias: 'chatgpt-luna:low', display_alias: 'chatgpt-luna', upstream_id: 'gpt-6-luna', provider: 'chatgpt', operation: 'chat', reasoning_effort: 'low'},
+    {model_alias: 'another-luna', display_alias: 'another-luna', upstream_id: 'gpt-6-luna', provider: 'chatgpt', operation: 'chat', reasoning_effort: 'low'},
+  ];
+  const groups = group(routes);
+  assert.deepEqual(groups.map(x => x.alias), ['chatgpt-luna', 'another-luna']);
+  assert.deepEqual(groups.map(x => x.indices), [[0, 1], [2]]);
+  assert.deepEqual(groups.map(context.modelName), ['GPT-6-Luna', 'GPT-6-Luna']);
+  assert.equal(context.modelName({provider: 'chatgpt', upstream_id: 'gpt-5.5', alias: 'chatgpt-5.5'}), 'GPT-5.5');
+  assert.equal(context.modelName({provider: 'chatgpt', alias: 'legacy-alias'}), 'legacy-alias');
+  assert.equal(context.modelName({provider: 'ollama', upstream_id: 'system', alias: 'local-model'}), 'local-model');
+});

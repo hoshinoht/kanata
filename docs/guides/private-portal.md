@@ -33,6 +33,8 @@ The portal manages gateway keys and quotas. Set up account authentication separa
 
 ## Manage keys
 
+ChatGPT cards show the configured upstream model, such as **GPT-6-Luna**, and its **API alias**, such as `chatgpt-luna`. Use the alias in requests and the reasoning choices below it for permissions. All configured models appear in their provider section, including models the selected key cannot access yet. The portal reads this inventory from configuration; it does not fetch account credentials or automatically add new catalog entries.
+
 Models are organized into sections by their configured provider, such as ChatGPT, Codex and Ollama. Private-only sections state that boundary. Selectable reasoning families appear as one model with separate effort controls. The portal retains exact route scopes underneath, including duplicate default/medium grants on unrelated edits. Toggling an effort explicitly selects or clears its configured scopes. Clients discover one base ID and accessible levels; see the [service handoff](service-handoff.md).
 
 Provider sections start collapsed and show how many models are selected. Expand a section to choose individual models or reasoning levels. **Select all** and **Deselect all** act on one provider or the entire configured list, including every effort in a selected family. These controls stage changes for the current key. Choose at least one route, then use **Save changes** to update its access. Collapsing a section preserves its selections; unrelated providers are unchanged by a provider's bulk controls. Revoked keys cannot be edited.
