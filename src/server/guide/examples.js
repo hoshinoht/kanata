@@ -1,7 +1,9 @@
-function requestExamples(base, model, audio = false) {
+function requestExamples(base, model, audio = false, effort) {
   const url = JSON.stringify(base + (audio ? "/audio/transcriptions" : "/chat/completions"));
   const alias = JSON.stringify(model);
-  const payload = JSON.stringify({model, messages: [{role: "user", content: "Hello!"}]});
+  const reasoning = !audio && effort ? {reasoning_effort: effort} : {};
+  const payload = JSON.stringify({model, ...reasoning, messages: [{role: "user", content: "Hello!"}]});
+  const effortLine = reasoning.reasoning_effort ? `\n        "reasoning_effort": ${JSON.stringify(effort)},` : "";
   const rustString = (value) => value.replace(/\\(?:["\\/bfnrt]|u[0-9a-f]{4})/gi, (escape) => {
     if (escape.startsWith("\\u")) return `\\u{${escape.slice(2)}}`;
     if (escape === "\\b") return "\\u{8}";
@@ -50,7 +52,7 @@ ${audio ? `with open("sample.wav", "rb") as audio:
     ${url},
     headers=headers,
     json={
-        "model": ${alias},
+        "model": ${alias},${effortLine}
         "messages": [{"role": "user", "content": "Hello!"}],
     },
     timeout=60,
@@ -128,7 +130,7 @@ ${audio ? `    let file = Part::file("sample.wav")?.mime_str("audio/wav")?;
     let body = Form::new()
         .text("model", ${rustString(alias)})
         .part("file", file);` : `    let body = json!({
-        "model": ${rustString(alias)},
+        "model": ${rustString(alias)},${effortLine}
         "messages": [{"role": "user", "content": "Hello!"}],
     });`}
     let response = client.post(${rustString(url)})

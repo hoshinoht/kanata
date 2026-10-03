@@ -29,3 +29,5 @@
 - Parser mutation fuzzing is `cargo test --lib parser_mutation_smoke` (`KANATA_FUZZ_CASES` controls its bounded case count). The manual transport benchmark is the single ignored `connection_reuse_benchmark` unit test; it uses only loopback fixtures.
 
 - `guide/code.test.mjs`: run with `node --test tests/guide/code.test.mjs`; checks highlighted text preservation and code-literal escaping.
+- `guide/portal.test.mjs`: verifies grouped reasoning levels retain their exact underlying key-scope indices.
+- `deploy/helper_test.py`: run with `python3 tests/deploy/helper_test.py`; mocked Compose and host commands check deployed paths and private credential boundaries without Docker or live credentials.

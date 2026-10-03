@@ -1,10 +1,13 @@
 mod chat;
 mod deadline;
+mod embeddings;
 mod errors;
 mod extensions;
 mod lifecycle;
 mod multipart;
+mod responses;
 mod serialization;
+mod speech;
 mod sse;
 mod stream_timeout;
 mod transcription;
@@ -21,6 +24,9 @@ pub(super) use extensions::validate_extensions;
 pub(crate) fn routes() -> Router<ClientState> {
     Router::new()
         .route("/chat/completions", post(chat::chat_completions))
+        .route("/responses", post(responses::create))
+        .route("/embeddings", post(embeddings::embeddings))
+        .route("/audio/speech", post(speech::speech))
         .route("/audio/transcriptions", post(transcription::transcriptions))
 }
 

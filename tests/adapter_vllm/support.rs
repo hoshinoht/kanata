@@ -237,10 +237,7 @@ pub fn config_with(
     tools: bool,
     secret_ref: bool,
 ) -> ValidatedConfig {
-    let operation = match operation {
-        Operation::Chat => "chat",
-        Operation::Transcription => "transcription",
-    };
+    let operation = operation.as_str();
     let secret_ref = if secret_ref {
         "secret_ref = \"env:VLLM_KEY\"\n"
     } else {

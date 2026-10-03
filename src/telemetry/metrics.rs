@@ -10,7 +10,7 @@ use super::labels::{Endpoint, Outcome, Phase, StatusClass};
 
 const BUCKETS: [f64; 6] = [0.01, 0.1, 1.0, 10.0, 60.0, f64::INFINITY];
 const BUCKET_LABELS: [&str; 6] = ["0.01", "0.1", "1", "10", "60", "+Inf"];
-const CELL_COUNT: usize = 4 * Outcome::COUNT * StatusClass::COUNT * Phase::COUNT;
+const CELL_COUNT: usize = Endpoint::COUNT * Outcome::COUNT * StatusClass::COUNT * Phase::COUNT;
 
 struct CompletionCell {
     finished: AtomicU64,
@@ -29,12 +29,12 @@ impl CompletionCell {
 }
 
 pub(crate) struct Metrics {
-    started: [AtomicU64; 4],
-    inflight: [AtomicU64; 4],
+    started: [AtomicU64; Endpoint::COUNT],
+    inflight: [AtomicU64; Endpoint::COUNT],
     completions: [CompletionCell; CELL_COUNT],
     // Keys and aliases come only from configuration, which bounds cardinality.
     by_key_model: Mutex<BTreeMap<(String, String, usize), u64>>,
-    timings: [CompletionCell; 12],
+    timings: [CompletionCell; Endpoint::COUNT * 3],
 }
 
 impl Metrics {

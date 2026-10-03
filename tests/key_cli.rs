@@ -21,6 +21,257 @@ permissions = [
 ]
 ";
 
+#[test]
+fn embedding_scopes_can_be_created_removed_and_added_without_chat_access() {
+    let scratch = Scratch::with(|_| {
+        let mut text = include_str!("../config/embeddings.example.toml").to_owned();
+        text.push_str("\n[[routes]]\nid = \"other-embeddings\"\nmodel_alias = \"other-embed\"\noperation = \"embeddings\"\nadapter_id = \"ollama-embeddings\"\nupstream_id = \"other-model\"\nrequires_streaming_chat = false\nrequires_function_tools = false\n");
+        text
+    });
+    scratch.new_key(
+        "search",
+        &["--embeddings", "local-embed", "--embeddings", "other-embed"],
+    );
+    let config = kanata::config::load(scratch.config()).expect("embedding config");
+    assert_eq!(
+        config.application_keys()[0].permissions()[0].operation,
+        kanata::core::Operation::Embeddings
+    );
+    let denied = scratch.key(&["edit", "search", "--add-chat", "local-embed"]);
+    assert!(!denied.status.success());
+    let added_chat = scratch.key(&[
+        "new",
+        "--id",
+        "wrong",
+        "--chat",
+        "local-embed",
+        "--expires",
+        "7",
+    ]);
+    assert!(!added_chat.status.success());
+    let removed = scratch.key(&["edit", "search", "--remove-embeddings", "local-embed"]);
+    assert!(removed.status.success(), "{}", stderr(&removed));
+    let added = scratch.key(&["edit", "search", "--add-embeddings", "local-embed"]);
+    assert!(added.status.success(), "{}", stderr(&added));
+    let config = kanata::config::load(scratch.config()).expect("embedding config");
+    assert_eq!(config.application_keys()[0].permissions().len(), 2);
+}
+
+#[test]
+fn speech_scopes_are_separate_and_support_add_remove() {
+    let scratch = Scratch::with(|_| {
+        let mut text = include_str!("../config/speech.example.toml").to_owned();
+        text.push_str("\n[[routes]]\nid = \"other-speech\"\nmodel_alias = \"other-speech\"\noperation = \"speech\"\nadapter_id = \"speech-local\"\nupstream_id = \"kokoro\"\nrequires_streaming_chat = false\nrequires_function_tools = false\nspeech_voices = [\"af_heart\"]\nspeech_formats = [\"mp3\"]\n");
+        text
+    });
+    scratch.new_key(
+        "reader",
+        &["--speech", "local-speech", "--speech", "other-speech"],
+    );
+    let config = kanata::config::load(scratch.config()).unwrap();
+    assert!(
+        config.application_keys()[0]
+            .permissions()
+            .iter()
+            .all(|scope| scope.operation == kanata::core::Operation::Speech)
+    );
+    assert!(
+        !scratch
+            .key(&["edit", "reader", "--add-chat", "local-speech"])
+            .status
+            .success()
+    );
+    assert!(
+        scratch
+            .key(&["edit", "reader", "--remove-speech", "local-speech"])
+            .status
+            .success()
+    );
+    assert!(
+        scratch
+            .key(&["edit", "reader", "--add-speech", "local-speech"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        kanata::config::load(scratch.config())
+            .unwrap()
+            .application_keys()[0]
+            .permissions()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn daily_quota_flags_validate_preserve_rotation_and_clear_independently() {
+    let scratch = Scratch::new();
+    scratch.new_key(
+        "metered",
+        &[
+            "--chat",
+            "local-chat",
+            "--daily-requests",
+            "10",
+            "--daily-tokens",
+            "1000",
+            "--reservation-tokens",
+            "100",
+        ],
+    );
+    let quota = || {
+        kanata::config::load(scratch.config())
+            .unwrap()
+            .application_keys()[0]
+            .daily_quota()
+            .unwrap()
+    };
+    assert_eq!(quota().requests, Some(10));
+    assert_eq!(quota().tokens, Some(1000));
+    let edited = scratch.key(&["edit", "metered", "--daily-requests", "3"]);
+    assert!(edited.status.success(), "{}", stderr(&edited));
+    assert_eq!(quota().requests, Some(3));
+    assert_eq!(quota().reservation_tokens, Some(100));
+    let rotated = scratch.key(&["rotate", "metered", "--expires", "7"]);
+    assert!(rotated.status.success(), "{}", stderr(&rotated));
+    assert_eq!(quota().tokens, Some(1000));
+    let bad = scratch.key(&["edit", "metered", "--reservation-tokens", "1001"]);
+    assert!(!bad.status.success());
+    assert_eq!(quota().reservation_tokens, Some(100));
+    let limits = scratch.key(&["edit", "metered", "--clear-limits"]);
+    assert!(limits.status.success(), "{}", stderr(&limits));
+    assert_eq!(quota().requests, Some(3));
+    let cleared = scratch.key(&["edit", "metered", "--clear-quota"]);
+    assert!(cleared.status.success(), "{}", stderr(&cleared));
+    assert!(
+        kanata::config::load(scratch.config())
+            .unwrap()
+            .application_keys()[0]
+            .daily_quota()
+            .is_none()
+    );
+}
+
+#[test]
+fn usage_reports_keep_plane_sources_and_missing_estimates_explicit() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let state = scratch.0.join("state");
+    let day = kanata::keys::time::parse("2026-10-03T00:00:00Z").unwrap() / 86_400;
+    for plane in ["private", "public"] {
+        let dir = state.join(plane);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("daily-{plane}.json")), json!({"version":1,"plane":plane,"latest_day":day,"rows":[{
+            "day":day,"key_id":"client","model":"local-chat","operation":"chat","requests":1,"charged_tokens":100,"retained_reservation_tokens":100,"overrun_tokens":0,"tokens":{"reported":0,"missing":1,"input_tokens":0,"output_tokens":0,"reasoning_tokens":0,"reasoning_reported":0}
+        }]}).to_string()).unwrap();
+    }
+    let output = scratch.key(&[
+        "usage",
+        "--key-id",
+        "client",
+        "--from",
+        "2026-10-03",
+        "--to",
+        "2026-10-03",
+        "--input-cost-per-million",
+        "1",
+        "--output-cost-per-million",
+        "1",
+        "--cost-unit",
+        "units",
+        "--json",
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["rows"].as_array().unwrap().len(), 2);
+    for row in report["rows"].as_array().unwrap() {
+        assert_eq!(row["cost_incomplete"], true);
+        assert_eq!(row["estimated_reported_cost"], 0.0);
+        assert!(
+            row["source"]
+                .as_str()
+                .unwrap()
+                .starts_with(row["plane"].as_str().unwrap())
+        );
+    }
+    let invalid_dates = scratch.key(&["usage", "--from", "2026-10-04", "--to", "2026-10-03"]);
+    assert!(!invalid_dates.status.success());
+    fs::write(state.join("public/daily-public.json"), "broken").unwrap();
+    let incomplete = scratch.key(&["usage", "--json"]);
+    assert!(!incomplete.status.success());
+    assert!(stderr(&incomplete).contains("report is incomplete"));
+}
+
+#[test]
+fn route_explanations_follow_process_narrowing_scopes_and_expiry_without_secrets() {
+    let scratch = Scratch::public();
+    let client_secret = scratch.new_key("client", &["--chat", "local-chat"]);
+    scratch.new_key("owner", &["--owner", "--chat", "local-chat"]);
+    let explain = |key: &str, model: &str, operation: &str, plane: &str| {
+        let output = kanata(&[
+            "routes",
+            "explain",
+            "--config",
+            &scratch.config(),
+            "--key-id",
+            key,
+            "--model",
+            model,
+            "--operation",
+            operation,
+            "--plane",
+            plane,
+            "--json",
+        ]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let text = stdout(&output);
+        for private in [
+            &client_secret,
+            "sha256:",
+            "http://",
+            "https://",
+            "KANATA_CLIENT_KEY",
+            "llama3.2:latest",
+        ] {
+            assert!(!text.contains(private));
+        }
+        serde_json::from_str::<serde_json::Value>(&text).unwrap()
+    };
+    let both = explain("client", "local-chat", "chat", "all");
+    assert_eq!(both["private"]["allowed"], true);
+    assert_eq!(both["public"]["allowed"], true);
+    assert_eq!(both["backend_verification"], "not_probed");
+    assert_eq!(
+        explain("client", "local-chat", "chat", "private")["public"]["reason"],
+        "listener_disabled"
+    );
+    assert_eq!(
+        explain("owner", "local-chat", "chat", "public")["public"]["reason"],
+        "key_not_loaded_or_revoked"
+    );
+    assert_eq!(
+        explain("client", "private-chat", "chat", "all")["private"]["reason"],
+        "scope_missing"
+    );
+    assert_eq!(
+        explain("client", "private-chat", "chat", "public")["public"]["reason"],
+        "route_not_loaded_in_plane"
+    );
+    assert_eq!(
+        explain("client", "local-chat", "transcription", "all")["private"]["reason"],
+        "route_not_configured"
+    );
+    let keys = scratch.keys_text();
+    let mut parsed: toml::Table = toml::from_str(&keys).unwrap();
+    parsed["keys"].as_array_mut().unwrap()[0]["expires_at"] =
+        toml::Value::String("2026-01-02T00:00:00Z".into());
+    fs::write(scratch.keys_path(), toml::to_string(&parsed).unwrap()).unwrap();
+    assert_eq!(
+        explain("client", "local-chat", "chat", "all")["private"]["reason"],
+        "key_expired"
+    );
+}
+
 /// Temp dir with a fixture-based `config.toml`; keys live in `keys/` (created by the CLI).
 struct Scratch(PathBuf);
 

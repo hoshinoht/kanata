@@ -25,6 +25,16 @@ pub(crate) struct EncodedBody {
 }
 
 impl EncodedBody {
+    pub(crate) fn empty() -> Self {
+        Self {
+            content_type: String::new(),
+            chunks: Vec::new(),
+            index: 0,
+            remaining: 0,
+            sensitive: false,
+        }
+    }
+
     pub(crate) fn json<T: Serialize>(value: &T, budget: usize) -> Result<Self, GatewayError> {
         Self::json_with_sensitivity(value, budget, false)
     }

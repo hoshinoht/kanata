@@ -26,7 +26,7 @@ impl RouteBinding {
     }
 }
 
-/// A request effort overrides the route's alias effort.
+/// A request effort must match its authorized route.
 pub(super) fn reasoning_effort(
     routed: &RoutedRequest,
     binding: &RouteBinding,
@@ -35,7 +35,9 @@ pub(super) fn reasoning_effort(
         return Err(unsupported_operation());
     };
     match chat.options.reasoning_effort {
-        Some(effort) => CodexReasoningEffort::from_request(effort).ok_or_else(invalid_request),
+        Some(effort) => CodexReasoningEffort::from_request(effort)
+            .filter(|effort| *effort == binding.reasoning_effort())
+            .ok_or_else(invalid_request),
         None => Ok(binding.reasoning_effort()),
     }
 }

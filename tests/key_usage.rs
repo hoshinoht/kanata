@@ -433,3 +433,355 @@ async fn tokens_are_recorded_for_complete_and_streamed_replies_with_missing_usag
     );
     assert_eq!(totals.reasoning_reported, 2);
 }
+
+fn set_quota(scratch: &Scratch, quota: kanata::keys::quota::DailyQuota) {
+    let path = scratch.0.join("keys.toml");
+    let bytes = fs::read(&path).unwrap();
+    let mut keys = kanata::keys::file::parse_without_routes(&bytes).unwrap();
+    keys.records_mut()[0].set_daily_quota(Some(quota));
+    fs::write(path, keys.render()).unwrap();
+}
+
+fn inference(id: &str) -> Request<Body> {
+    support::chat_request_with(
+        r#"{"model":"local-chat","messages":[{"role":"user","content":"CONTENT_MUST_NOT_BE_STORED"}]}"#,
+        Some("application/json"),
+        Some(&format!("Bearer {}", token(id))),
+        &[],
+    )
+}
+
+#[tokio::test]
+async fn daily_request_quotas_block_before_dispatch_and_survive_restart() {
+    use kanata::keys::quota::{DailyLedger, DailyQuota};
+    let scratch = Scratch::new(false);
+    set_quota(
+        &scratch,
+        DailyQuota {
+            requests: Some(2),
+            tokens: None,
+            reservation_tokens: None,
+        },
+    );
+    let config = scratch.load();
+    let build = || {
+        support::server_with(
+            &config,
+            vec![support::adapter_spec(
+                "ollama-local",
+                support::capabilities(&config, "ollama-local"),
+                support::chat_outcome("reply"),
+            )],
+        )
+    };
+    let (server, requests) = build();
+    server.open_usage(Plane::All).unwrap();
+    assert_eq!(send(&server, "alpha").await, StatusCode::OK);
+    let responses =
+        futures_util::future::join_all((0..8).map(|_| server.client_oneshot(inference("alpha"))))
+            .await;
+    let mut successes = 0;
+    for response in responses {
+        let response = response.unwrap();
+        if response.status() == StatusCode::OK {
+            successes += 1;
+            support::response_body(response).await;
+        } else {
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            assert!(response.headers().contains_key("retry-after"));
+            assert_eq!(
+                support::response_json(response).await["error"]["code"],
+                "daily_quota_exceeded"
+            );
+        }
+    }
+    assert_eq!(successes, 2);
+    assert_eq!(support::recorded_len(&requests), 2);
+    let (restarted, requests) = build();
+    restarted.open_usage(Plane::All).unwrap();
+    assert_eq!(
+        restarted
+            .client_oneshot(inference("alpha"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(support::recorded_len(&requests), 0);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if DailyLedger::new(&scratch.state(), Plane::All)
+                .read()
+                .unwrap()[0]
+                .tokens
+                .reported
+                == 2
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let stored = fs::read_to_string(scratch.state().join("daily-all.json")).unwrap();
+    for private in [
+        "CONTENT_MUST_NOT_BE_STORED",
+        "reply",
+        "sha256:",
+        &token("alpha"),
+    ] {
+        assert!(!stored.contains(private));
+    }
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_kanata"))
+        .args([
+            "key",
+            "usage",
+            "--config",
+            scratch.0.join("config.toml").to_str().unwrap(),
+            "--key-id",
+            "alpha",
+            "--input-cost-per-million",
+            "2",
+            "--output-cost-per-million",
+            "4",
+            "--cost-unit",
+            "units",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(report["rows"][0]["requests"], 2);
+    assert_eq!(report["rows"][0]["tokens"]["input_tokens"], 22);
+    assert_eq!(report["rows"][0]["estimated_reported_cost"], 0.0001);
+    assert_eq!(report["rows"][0]["cost_incomplete"], false);
+}
+
+#[tokio::test]
+async fn cancellation_keeps_token_reservation_and_storage_failure_rejects_dispatch() {
+    use kanata::{
+        adapter::{Adapter, AdapterFuture},
+        core::*,
+        keys::quota::{DailyLedger, DailyQuota},
+    };
+    struct Pending {
+        caps: Capabilities,
+        calls: Arc<AtomicUsize>,
+    }
+    impl Adapter for Pending {
+        fn id(&self) -> &str {
+            "ollama-local"
+        }
+        fn capabilities(&self) -> &Capabilities {
+            &self.caps
+        }
+        fn execute(&self, _: RoutedRequest) -> AdapterFuture {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::pending())
+        }
+    }
+    let scratch = Scratch::new(false);
+    set_quota(
+        &scratch,
+        DailyQuota {
+            requests: None,
+            tokens: Some(100),
+            reservation_tokens: Some(100),
+        },
+    );
+    let config = scratch.load();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let server = Arc::new(
+        TwoPlaneServer::from_validated_with_adapters(
+            &config,
+            &support::Resolver,
+            kanata::server::Readiness::new(true),
+            vec![Arc::new(Pending {
+                caps: support::capabilities(&config, "ollama-local"),
+                calls: calls.clone(),
+            })],
+        )
+        .unwrap(),
+    );
+    server.open_usage(Plane::All).unwrap();
+    let running = {
+        let server = server.clone();
+        tokio::spawn(async move { server.client_oneshot(inference("alpha")).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    running.abort();
+    let _ = running.await;
+    assert_eq!(
+        server
+            .client_oneshot(inference("alpha"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let row = DailyLedger::new(&scratch.state(), Plane::All)
+        .read()
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        (row.requests, row.charged_tokens, row.tokens.missing),
+        (1, 100, 1)
+    );
+    let (restarted, requests) = support::server_with(
+        &config,
+        vec![support::adapter_spec(
+            "ollama-local",
+            support::capabilities(&config, "ollama-local"),
+            support::chat_outcome("reply"),
+        )],
+    );
+    restarted.open_usage(Plane::All).unwrap();
+    assert_eq!(
+        restarted
+            .client_oneshot(inference("alpha"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(support::recorded_len(&requests), 0);
+    fs::write(scratch.state().join("daily-all.json"), "broken").unwrap();
+    let response = server.client_oneshot(inference("alpha")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        support::response_json(response).await["error"]["code"],
+        "quota_unavailable"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn final_usage_reconciles_token_reservations_while_missing_usage_blocks_after_restart() {
+    use kanata::keys::quota::{DailyLedger, DailyQuota};
+    for reported in [false, true] {
+        let scratch = Scratch::new(false);
+        set_quota(
+            &scratch,
+            DailyQuota {
+                requests: None,
+                tokens: Some(100),
+                reservation_tokens: Some(80),
+            },
+        );
+        let config = scratch.load();
+        let outcome = if reported {
+            support::chat_outcome("reply")
+        } else {
+            support::Outcome::Chat {
+                model: None,
+                message: support::assistant_text("reply"),
+                finish_reason: kanata::core::FinishReason::Stop,
+                usage: None,
+            }
+        };
+        let (server, _) = support::server_with(
+            &config,
+            vec![support::adapter_spec(
+                "ollama-local",
+                support::capabilities(&config, "ollama-local"),
+                outcome,
+            )],
+        );
+        server.open_usage(Plane::All).unwrap();
+        let response = server.client_oneshot(inference("alpha")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        support::response_body(response).await;
+        if reported {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while DailyLedger::new(&scratch.state(), Plane::All)
+                    .read()
+                    .unwrap()[0]
+                    .charged_tokens
+                    != 18
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        let row = DailyLedger::new(&scratch.state(), Plane::All)
+            .read()
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            row.retained_reservation_tokens,
+            if reported { 0 } else { 80 }
+        );
+        assert_eq!(row.tokens.missing, u64::from(!reported));
+        let (restarted, requests) = support::server_with(
+            &config,
+            vec![support::adapter_spec(
+                "ollama-local",
+                support::capabilities(&config, "ollama-local"),
+                support::chat_outcome("reply"),
+            )],
+        );
+        restarted.open_usage(Plane::All).unwrap();
+        let response = restarted.client_oneshot(inference("alpha")).await.unwrap();
+        assert_eq!(
+            response.status(),
+            if reported {
+                StatusCode::OK
+            } else {
+                StatusCode::TOO_MANY_REQUESTS
+            }
+        );
+        support::response_body(response).await;
+        assert_eq!(support::recorded_len(&requests), usize::from(reported));
+    }
+}
+
+#[test]
+fn quota_requires_durable_usage_directory_at_startup_and_reload() {
+    use kanata::keys::quota::DailyQuota;
+    let scratch = Scratch::new(false);
+    let path = scratch.0.join("config.toml");
+    let text = fs::read_to_string(&path)
+        .unwrap()
+        .replace("usage_dir = \"state\"\n", "");
+    fs::write(&path, text).unwrap();
+    let config = scratch.load();
+    set_quota(
+        &scratch,
+        DailyQuota {
+            requests: Some(1),
+            tokens: None,
+            reservation_tokens: None,
+        },
+    );
+    assert!(
+        kanata::config::load(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("required_for_daily_quota")
+    );
+    let keys =
+        kanata::keys::file::parse_without_routes(&fs::read(scratch.0.join("keys.toml")).unwrap())
+            .unwrap();
+    assert!(
+        config
+            .with_application_keys(&keys)
+            .unwrap_err()
+            .to_string()
+            .contains("required_for_daily_quota")
+    );
+}

@@ -26,6 +26,15 @@ pub(super) fn to_responses_request(
     reasoning_effort: CodexReasoningEffort,
     reasoning_summary: Option<CodexReasoningSummary>,
 ) -> Result<Value, GatewayError> {
+    let mut payload = to_text_request(routed)?;
+    payload["reasoning"] = json!({ "effort": reasoning_effort.as_str() });
+    if let Some(summary) = reasoning_summary {
+        payload["reasoning"]["summary"] = json!(summary.as_str());
+    }
+    Ok(payload)
+}
+
+pub(crate) fn to_text_request(routed: &RoutedRequest) -> Result<Value, GatewayError> {
     let context = routed.context();
     let request = routed.request();
     if context.trust_zone != TrustZone::External {
@@ -48,13 +57,9 @@ pub(super) fn to_responses_request(
     let mut payload = json!({
         "model": context.route.upstream_id,
         "input": input,
-        "reasoning": { "effort": reasoning_effort.as_str() },
         "store": false,
         "stream": true,
     });
-    if let Some(summary) = reasoning_summary {
-        payload["reasoning"]["summary"] = json!(summary.as_str());
-    }
     if !instructions.is_empty() {
         payload["instructions"] = json!(instructions.join("\n\n"));
     }
@@ -144,7 +149,9 @@ fn validate_chat(chat: &ChatRequest) -> Result<(), GatewayError> {
                         return Err(invalid_request());
                     }
                 }
-                ChatContent::InputAudio { .. } => return Err(unsupported_operation()),
+                ChatContent::InputAudio { .. } | ChatContent::InputImage { .. } => {
+                    return Err(unsupported_operation());
+                }
             }
         }
 
@@ -194,7 +201,9 @@ fn map_messages(chat: &ChatRequest) -> (Vec<Value>, Vec<String>) {
                                 "arguments": call.arguments,
                             }));
                         }
-                        ChatContent::ToolResult { .. } | ChatContent::InputAudio { .. } => {
+                        ChatContent::ToolResult { .. }
+                        | ChatContent::InputAudio { .. }
+                        | ChatContent::InputImage { .. } => {
                             unreachable!("validated before mapping")
                         }
                     }

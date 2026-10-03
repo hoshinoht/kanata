@@ -1,9 +1,11 @@
 fn main() {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
-    let result = if arguments
-        .first()
-        .is_some_and(|argument| matches!(argument.as_str(), "auth" | "serve" | "doctor" | "health"))
-    {
+    let result = if arguments.first().is_some_and(|argument| {
+        matches!(
+            argument.as_str(),
+            "auth" | "serve" | "doctor" | "health" | "portal"
+        )
+    }) {
         match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

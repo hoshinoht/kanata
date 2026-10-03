@@ -1,5 +1,6 @@
 mod args;
 mod display;
+mod report;
 use args::*;
 use display::*;
 
@@ -20,13 +21,14 @@ use crate::keys::store::{self, AuditEvent, LockedKeys, SecretFile};
 use crate::keys::time;
 use crate::keys::usage::{self, KeyUsage};
 
-pub const KEY_USAGE: &str = "usage: kanata key new --config <path> --id <id> [--chat <alias>]... [--transcription <alias>]... --expires <1|3|7|13|30|60|unlimited> [--owner] [--max-in-flight N] [--rate-limit N/MS] [--key-out <path>] [--keys <path>]
+pub const KEY_USAGE: &str = "usage: kanata key new --config <path> --id <id> [--chat <alias>]... [--transcription <alias>]... [--embeddings <alias>]... [--speech <alias>]... --expires <1|3|7|13|30|60|unlimited> [--owner] [--max-in-flight N] [--rate-limit N/MS] [--daily-requests N] [--daily-tokens N --reservation-tokens N] [--key-out <path>] [--keys <path>]
        kanata key list (--config <path>|--keys <path>) [--usage-dir <path>] [--all] [--json]
        kanata key show <id> (--config <path>|--keys <path>) [--usage-dir <path>] [--json]
-       kanata key edit <id> --config <path> [--add-chat A]... [--remove-chat A]... [--add-transcription A]... [--remove-transcription A]... [--expires <choice>] [--max-in-flight N] [--rate-limit N/MS] [--clear-limits] [--force] [--keys <path>]
+       kanata key edit <id> --config <path> [--add-chat A]... [--remove-chat A]... [--add-transcription A]... [--remove-transcription A]... [--add-embeddings A]... [--remove-embeddings A]... [--add-speech A]... [--remove-speech A]... [--expires <choice>] [--max-in-flight N] [--rate-limit N/MS] [--daily-requests N] [--daily-tokens N --reservation-tokens N] [--clear-quota] [--clear-limits] [--force] [--keys <path>]
        kanata key rm <id> --config <path> [--force] [--keys <path>]
        kanata key rotate (<id>|--owner) --config <path> --expires <choice> [--key-out <path>] [--keys <path>]
-       kanata key migrate --config <path> [--keys <path>]";
+       kanata key migrate --config <path> [--keys <path>]
+       kanata key usage (--config <path>|--usage-dir <path>) [--plane all|private|public] [--key-id <id>] [--model <alias>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--input-cost-per-million N --output-cost-per-million N --cost-unit <label>] [--json]";
 
 const KEY_PREFIX: &str = "kanata_sk_";
 const SECONDS_PER_DAY: u64 = 86_400;
@@ -63,6 +65,7 @@ pub fn run(
         "new" => new(rest, catalog),
         "list" => list(rest),
         "show" => show(rest),
+        "usage" => report::run(rest),
         "edit" => edit(rest, catalog),
         "rm" => rm(rest),
         "rotate" => rotate(rest),
@@ -199,10 +202,7 @@ fn read_location(args: &Args) -> Result<ReadLocation, String> {
 // ---- scopes ----
 
 fn operation_name(operation: Operation) -> &'static str {
-    match operation {
-        Operation::Chat => "chat",
-        Operation::Transcription => "transcription",
-    }
+    operation.as_str()
 }
 
 fn scope_label(selector: &RouteSelector) -> String {
@@ -289,16 +289,16 @@ fn edit_distance(left: &str, right: &str) -> usize {
 fn scope_flags(
     args: &Args,
     routes: &[RouteChoice],
-    chat_flag: &str,
-    transcription_flag: &str,
     flag: fn(Operation) -> &'static str,
 ) -> Result<Vec<RouteSelector>, String> {
     let mut scopes = Vec::new();
-    for (name, operation) in [
-        (chat_flag, Operation::Chat),
-        (transcription_flag, Operation::Transcription),
+    for operation in [
+        Operation::Chat,
+        Operation::Transcription,
+        Operation::Embeddings,
+        Operation::Speech,
     ] {
-        for alias in args.all(name) {
+        for alias in args.all(flag(operation)) {
             if parse_model_alias(alias).is_none() {
                 return Err(format!("model alias \"{alias}\" is invalid"));
             }
@@ -316,6 +316,8 @@ fn new_flag(operation: Operation) -> &'static str {
     match operation {
         Operation::Chat => "--chat",
         Operation::Transcription => "--transcription",
+        Operation::Embeddings => "--embeddings",
+        Operation::Speech => "--speech",
     }
 }
 
@@ -323,6 +325,8 @@ fn add_flag(operation: Operation) -> &'static str {
     match operation {
         Operation::Chat => "--add-chat",
         Operation::Transcription => "--add-transcription",
+        Operation::Embeddings => "--add-embeddings",
+        Operation::Speech => "--add-speech",
     }
 }
 
@@ -552,9 +556,14 @@ fn new(
             "--id",
             "--chat",
             "--transcription",
+            "--embeddings",
+            "--speech",
             "--expires",
             "--max-in-flight",
             "--rate-limit",
+            "--daily-requests",
+            "--daily-tokens",
+            "--reservation-tokens",
             "--key-out",
         ],
         &["--owner"],
@@ -577,12 +586,12 @@ fn new(
     let owner = args.has("--owner");
     let (config, keys_path) = mutating_location(&args, "new")?;
     let routes = catalog(&config);
-    let mut scopes = scope_flags(&args, &routes, "--chat", "--transcription", new_flag)?;
+    let mut scopes = scope_flags(&args, &routes, new_flag)?;
     if scopes.is_empty() {
         scopes = run_picker(
             &routes,
             &[],
-            "pass --chat <alias> or --transcription <alias>",
+            "pass --chat <alias>, --transcription <alias> --embeddings <alias> or --speech <alias>",
         )?;
     }
 
@@ -605,7 +614,7 @@ fn new(
             "an owner key already exists; use `kanata key rotate --owner` to replace it".to_owned(),
         );
     }
-    keys.push(StoredKey::new(
+    let mut record = StoredKey::new(
         id.clone(),
         digest,
         owner,
@@ -614,7 +623,9 @@ fn new(
         rate_limit,
         now,
         expires_at,
-    ));
+    );
+    record.set_daily_quota(quota_flags(&args, None, &config)?);
+    keys.push(record);
     let event = AuditEvent {
         action: "new",
         key_id: id.clone(),
@@ -737,11 +748,18 @@ fn edit(
             "--remove-chat",
             "--add-transcription",
             "--remove-transcription",
+            "--add-embeddings",
+            "--remove-embeddings",
+            "--add-speech",
+            "--remove-speech",
             "--expires",
             "--max-in-flight",
             "--rate-limit",
+            "--daily-requests",
+            "--daily-tokens",
+            "--reservation-tokens",
         ],
-        &["--clear-limits", "--force"],
+        &["--clear-limits", "--clear-quota", "--force"],
         1,
     )?;
     let id = parse_id(
@@ -766,17 +784,13 @@ fn edit(
     }
     let (config, keys_path) = mutating_location(&args, "edit")?;
     let routes = catalog(&config);
-    let mut added = scope_flags(
-        &args,
-        &routes,
-        "--add-chat",
-        "--add-transcription",
-        add_flag,
-    )?;
+    let mut added = scope_flags(&args, &routes, add_flag)?;
     let mut removed = Vec::new();
     for (flag, operation) in [
         ("--remove-chat", Operation::Chat),
         ("--remove-transcription", Operation::Transcription),
+        ("--remove-embeddings", Operation::Embeddings),
+        ("--remove-speech", Operation::Speech),
     ] {
         for alias in args.all(flag) {
             let scope = selector(alias, operation);
@@ -786,8 +800,12 @@ fn edit(
             removed.push(scope);
         }
     }
+    let quota_given = args.has("--clear-quota")
+        || ["--daily-requests", "--daily-tokens", "--reservation-tokens"]
+            .iter()
+            .any(|flag| !args.all(flag).is_empty());
     let limits_given = max_in_flight.is_some() || rate_limit.is_some() || clear_limits;
-    if added.is_empty() && removed.is_empty() && days.is_none() && !limits_given {
+    if added.is_empty() && removed.is_empty() && days.is_none() && !limits_given && !quota_given {
         let current = match file::read(&keys_path).map_err(|error| error.to_string())? {
             Some(bytes) => file::parse_without_routes(&bytes).map_err(|error| error.to_string())?,
             None => KeysFile::default(),
@@ -800,7 +818,7 @@ fn edit(
         let selection = run_picker(
             &routes,
             record.permissions(),
-            "nothing to change; pass --add-chat/--remove-chat/--add-transcription/--remove-transcription, --expires or limit flags",
+            "nothing to change; pass --add-chat/--remove-chat/--add-transcription/--remove-transcription/--add-embeddings/--remove-embeddings/--add-speech/--remove-speech, --expires or limit flags",
         )?;
         added = selection
             .iter()
@@ -882,6 +900,8 @@ fn edit(
         }
     }
 
+    let quota = quota_flags(&args, record.daily_quota(), &config)?;
+    record.set_daily_quota(quota);
     record.set_permissions(after.clone());
     let mut changes = serde_json::Map::new();
     let scope_json = |scopes: &[RouteSelector]| -> Value {
@@ -895,12 +915,18 @@ fn edit(
             })
             .collect()
     };
+    if quota_given {
+        changes.insert("daily_quota".into(), json!(quota));
+    }
     changes.insert("added".into(), scope_json(&added));
     changes.insert("removed".into(), scope_json(&removed));
     let mut lines = vec![
         format!("updated key {id}"),
         format!("scopes: {} -> {}", scope_list(&before), scope_list(&after)),
     ];
+    if quota_given {
+        lines.push(format!("daily quota: {}", format_daily_quota(quota)));
+    }
     if let Some(days) = days {
         let expires_at = expires_at(time::now(), days);
         record.set_expires_at(expires_at);
@@ -1021,6 +1047,49 @@ fn migrate(arguments: &[String]) -> Result<String, String> {
         keys_path.display(),
         toml_string(&file_value)
     ))
+}
+
+fn quota_flags(
+    args: &Args,
+    existing: Option<crate::keys::quota::DailyQuota>,
+    config: &ValidatedConfig,
+) -> Result<Option<crate::keys::quota::DailyQuota>, String> {
+    let number = |flag| {
+        args.one(flag)?
+            .map(|value| parse_positive(flag, value))
+            .transpose()
+    };
+    let requests = number("--daily-requests")?;
+    let tokens = number("--daily-tokens")?;
+    let reservation_tokens = number("--reservation-tokens")?;
+    if args.has("--clear-quota") {
+        if requests.is_some() || tokens.is_some() || reservation_tokens.is_some() {
+            return Err("--clear-quota cannot be combined with quota flags".into());
+        }
+        return Ok(None);
+    }
+    if requests.is_none() && tokens.is_none() && reservation_tokens.is_none() {
+        return Ok(existing);
+    }
+    if !matches!(
+        config.key_source(),
+        KeySource::File {
+            usage_dir: Some(_),
+            ..
+        }
+    ) {
+        return Err("daily quotas require [keys] usage_dir".into());
+    }
+    let quota = crate::keys::quota::DailyQuota {
+        requests: requests.or(existing.and_then(|quota| quota.requests)),
+        tokens: tokens.or(existing.and_then(|quota| quota.tokens)),
+        reservation_tokens: reservation_tokens
+            .or(existing.and_then(|quota| quota.reservation_tokens)),
+    };
+    quota
+        .validate()
+        .map_err(|class| format!("invalid daily quota: {class}"))?;
+    Ok(Some(quota))
 }
 
 #[cfg(test)]

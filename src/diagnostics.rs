@@ -1,15 +1,27 @@
 use crate::config::{self, KeySource, Plane};
+use crate::{
+    adapter::Adapter,
+    auth::EnvironmentSecretResolver,
+    core::{ModelAlias, Operation, RouteSelector},
+    routing::Registry,
+};
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-const USAGE: &str = "usage: kanata doctor --config <path> [--plane all|private|public] [--probe-backends] | kanata health --config <path>";
+const USAGE: &str = "usage: kanata doctor --config <path> [--plane all|private|public] [--probe-backends] [--probe-models] [--probe-inference <alias> --operation chat|transcription|embeddings|speech] | kanata health --config <path>";
 const TIMEOUT: Duration = Duration::from_secs(3);
 
-pub(crate) async fn run(args: &[String]) -> Result<String, String> {
+pub(crate) async fn run(
+    args: &[String],
+    build_adapter: impl Fn(&config::ValidatedConfig, &str) -> Result<std::sync::Arc<dyn Adapter>, ()>,
+) -> Result<String, String> {
     let health = args[0] == "health";
     let mut path = None;
     let mut plane = None;
     let mut probes = false;
+    let mut models = false;
+    let mut inference = None;
+    let mut operation = None;
     let mut flags = args[1..].iter();
     while let Some(flag) = flags.next() {
         match flag.as_str() {
@@ -18,10 +30,20 @@ pub(crate) async fn run(args: &[String]) -> Result<String, String> {
                 plane = Some(Plane::parse(flags.next().ok_or(USAGE)?).ok_or(USAGE)?)
             }
             "--probe-backends" if !health && !probes => probes = true,
+            "--probe-models" if !health && !models => models = true,
+            "--probe-inference" if !health && inference.is_none() => {
+                inference = Some(flags.next().ok_or(USAGE)?.clone())
+            }
+            "--operation" if !health && operation.is_none() => {
+                operation = Some(Operation::parse(flags.next().ok_or(USAGE)?).ok_or(USAGE)?)
+            }
             _ => return Err(USAGE.into()),
         }
     }
     let path = path.ok_or(USAGE)?;
+    if inference.is_some() != operation.is_some() {
+        return Err(USAGE.into());
+    }
     let config = if health {
         config::load_deferring_keys(&path)
     } else {
@@ -29,6 +51,21 @@ pub(crate) async fn run(args: &[String]) -> Result<String, String> {
     }
     .and_then(|config| config.for_plane(plane.unwrap_or_default()))
     .map_err(|error| error.to_string())?;
+    if models || inference.is_some() {
+        crate::telemetry::logging::install(config.logging());
+    }
+    let registry = Registry::from_validated(&config);
+    let inference_route = inference
+        .zip(operation)
+        .map(|(alias, operation)| {
+            registry
+                .resolve(&RouteSelector {
+                    model_alias: ModelAlias(alias),
+                    operation,
+                })
+                .ok_or("inference probe: exact route is not loaded in this plane")
+        })
+        .transpose()?;
     let admin = config.listeners().admin();
     let address = SocketAddr::new(admin.bind(), admin.port());
     if health {
@@ -57,6 +94,9 @@ pub(crate) async fn run(args: &[String]) -> Result<String, String> {
                 serde_json::from_str(&body).map_err(|_| "invalid admin status")?;
             report.push(format!("gateway ready: {}", value["ready"]));
             report.push(format!("key reload: {}", value["key_reload"]));
+            if let Some(reload) = value.get("configuration_reload") {
+                report.push(format!("configuration reload: {reload}"));
+            }
         }
         Err(_) => report.push(
             "gateway: admin status unavailable (check the process and its network namespace)"
@@ -89,6 +129,49 @@ pub(crate) async fn run(args: &[String]) -> Result<String, String> {
                 }
             ));
         }
+    }
+    if models {
+        for adapter in config.adapters().iter().filter(|adapter| {
+            registry
+                .routes()
+                .any(|route| route.adapter_id == adapter.id())
+        }) {
+            let catalog = crate::adapter::probe::models(
+                adapter,
+                config.timeouts(),
+                &EnvironmentSecretResolver,
+            )
+            .await;
+            for route in registry
+                .routes()
+                .filter(|route| route.adapter_id == adapter.id())
+            {
+                let status = match &catalog {
+                    Ok(ids) if ids.contains(&route.identity.upstream_id) => "listed",
+                    Ok(_) => "not_listed",
+                    Err(status) => status,
+                };
+                report.push(format!(
+                    "model {}/{}: {status} (catalog only; inference untested)",
+                    route.identity.selector.model_alias.0,
+                    route.identity.selector.operation.as_str()
+                ));
+            }
+        }
+    }
+    if let Some(route) = inference_route {
+        let status = match build_adapter(&config, &route.adapter_id) {
+            Ok(adapter) => crate::routing::probe::inference(route, adapter.as_ref()).await,
+            Err(()) => Err("adapter_or_credentials_unavailable"),
+        };
+        report.push(format!(
+            "inference {}/{}: {} {}",
+            route.identity.selector.model_alias.0,
+            route.identity.selector.operation.as_str(),
+            if status.is_ok() { "verified" } else { "failed" },
+            status.unwrap_or_else(|status| status)
+        ));
+        report.push("probe: synthetic input; 15-second deadline; bypasses client key admission and usage accounting; tools, images and other capabilities untested".into());
     }
     Ok(report.join("\n"))
 }

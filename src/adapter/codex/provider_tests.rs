@@ -847,7 +847,7 @@ async fn explicit_low_effort_route_preserves_alias_upstream_and_effort() {
 }
 
 #[tokio::test]
-async fn request_reasoning_effort_overrides_the_route_effort() {
+async fn request_reasoning_effort_must_match_the_route_effort() {
     let temp = TempState::new();
     let config = temp.config();
     let coordinator = temp.coordinator().await;
@@ -869,6 +869,12 @@ async fn request_reasoning_effort_overrides_the_route_effort() {
     };
 
     for (configure, kind) in [
+        (
+            (|options: &mut crate::core::ChatOptions| {
+                options.reasoning_effort = Some(crate::core::ReasoningEffort::High);
+            }) as fn(&mut crate::core::ChatOptions),
+            ErrorKind::InvalidRequest,
+        ),
         (
             (|options: &mut crate::core::ChatOptions| {
                 options.reasoning_effort = Some(crate::core::ReasoningEffort::Xhigh);
@@ -894,16 +900,16 @@ async fn request_reasoning_effort_overrides_the_route_effort() {
             &config,
             LOW_ROUTE,
             with_options(|options| {
-                options.reasoning_effort = Some(crate::core::ReasoningEffort::High);
+                options.reasoning_effort = Some(crate::core::ReasoningEffort::Low);
             }),
         ))
         .await
-        .expect("override response");
+        .expect("matching effort response");
     let (records, extra) = server.await.expect("fixture server");
     assert!(!extra);
     assert_eq!(records.len(), 1);
     let payload: Value = serde_json::from_slice(&records[0].body).expect("request body");
-    assert_eq!(payload["reasoning"]["effort"], "high");
+    assert_eq!(payload["reasoning"]["effort"], "low");
 }
 
 #[tokio::test]

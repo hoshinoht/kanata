@@ -24,7 +24,7 @@ Kanata is a single Rust crate (edition 2024, `rust-version = "1.98"`): an OpenAI
 - `deploy/docker/`, `deploy/cloudflared/`: Compose and public-tunnel runbooks (READMEs).
 - `Dockerfile`, `compose.kanata.yml` (private base), `compose.kanata.public.yml` (separate `kanata-public` container, `--plane public`), `compose.kanata.host-ollama.yml`, `compose.kanata.openrouter.yml`, `compose.kanata.omnilion.yml` (opt-in overlays).
 - `scripts/kanata.sh`: operator helper (`build`, `check`, `up`, `down`, `restart`, `status`, `logs`, `codex`, `key ...` and `owner-key rotate` (deprecated wrappers for the host `kanata key`), `ollama-context`, `fm-serve`); run `scripts/kanata.sh help`.
-- `docs/architecture/kanata-mvp.md` (contracts, plane boundaries), `docs/guides/public-api-quickstart.md` (client guide, error table).
+- `docs/guides/operations.md` (deployment, diagnostics and listener boundaries), `docs/guides/public-api-quickstart.md` (client guide, error table).
 - Ignored, not part of the repo: `research/` (local security/threat docs), `luna-sonata/` (separate project with its own AGENTS.md), `.opencode/`.
 
 ## Commands
@@ -32,7 +32,8 @@ Kanata is a single Rust crate (edition 2024, `rust-version = "1.98"`): an OpenAI
   - `cargo fmt --all -- --check`
   - `cargo clippy --locked --all-targets --all-features -- -D warnings`
   - `cargo test --locked --all-targets`
-  - `node --test tests/guide/code.test.mjs`
+  - `node --test tests/guide/*.test.mjs`
+  - `python3 tests/deploy/helper_test.py`
   - `scripts/check-templates.sh`
 - One suite: `cargo test --test <file-stem>` (e.g. `--test admission`); unit tests in a module: `cargo test --lib <filter>`.
 - Validate a config: `cargo run -q -- check --config <path> [--plane all|private|public]`, or `scripts/kanata.sh check` for the Compose config.

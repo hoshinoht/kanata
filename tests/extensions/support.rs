@@ -57,6 +57,9 @@ impl Adapter for RecordingAdapter {
 
     fn execute(&self, request: RoutedRequest) -> AdapterFuture {
         let response = match request.request() {
+            CoreRequest::Speech(_) | CoreRequest::Embeddings(_) => {
+                panic!("unexpected embedding request")
+            }
             CoreRequest::Chat(chat) => CoreResponse::Chat(ChatResponse {
                 model: chat.model.clone(),
                 message: ChatMessage {

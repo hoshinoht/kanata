@@ -38,7 +38,9 @@ jobs:
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked --all-targets
       - name: Guide source and highlighting
-        run: node --test tests/guide/code.test.mjs
+        run: node --test tests/guide/*.test.mjs
+      - name: Deployment helpers
+        run: python3 tests/deploy/helper_test.py
       - name: Validate config templates
         run: scripts/check-templates.sh
       - name: Dependency advisories

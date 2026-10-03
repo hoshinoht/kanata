@@ -386,6 +386,11 @@ impl Adapter for VllmAdapter {
         let credential = self.credential();
         let enable_thinking = self.enable_thinking(&context.route.route_id);
         match request {
+            Request::Speech(_) | Request::Embeddings(_) => Box::pin(async {
+                Err(GatewayError {
+                    kind: ErrorKind::UnsupportedOperation,
+                })
+            }),
             Request::Chat(chat) => {
                 let public_model = context.route.selector.model_alias.clone();
                 let has_audio = chat.messages.iter().any(|message| {

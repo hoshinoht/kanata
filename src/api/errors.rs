@@ -236,3 +236,55 @@ pub(super) fn upload_busy() -> Response {
         .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
     response
 }
+
+pub(super) fn quota_rejected(
+    error: crate::keys::quota::QuotaError,
+    observer: Option<&Observer>,
+) -> Response {
+    use crate::keys::quota::QuotaError;
+    let (status, code, message) = match error {
+        QuotaError::Exhausted { .. } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "daily_quota_exceeded",
+            "Daily quota exceeded",
+        ),
+        QuotaError::ClockRollback => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "quota_unavailable",
+            "Daily quota clock unavailable",
+        ),
+        QuotaError::Unavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "quota_unavailable",
+            "Daily quota storage unavailable",
+        ),
+    };
+    if let Some(observer) = observer {
+        observer.record_error(GatewayError {
+            kind: if status == StatusCode::TOO_MANY_REQUESTS {
+                ErrorKind::RateLimited
+            } else {
+                ErrorKind::Internal
+            },
+        });
+    }
+    let mut response = error_response(status, message, "quota_error", code);
+    if let QuotaError::Exhausted { retry_after } = error {
+        response.headers_mut().insert(
+            header::RETRY_AFTER,
+            HeaderValue::from_str(&retry_after.to_string()).expect("numeric retry"),
+        );
+    }
+    response
+}
+
+pub(super) async fn reserve_usage(
+    auth: &crate::server::Authenticated,
+    observer: Option<&Observer>,
+) -> Result<(), crate::keys::quota::QuotaError> {
+    match observer {
+        Some(observer) => observer.reserve_usage(auth.daily_quota()).await,
+        None if auth.daily_quota().is_some() => Err(crate::keys::quota::QuotaError::Unavailable),
+        None => Ok(()),
+    }
+}

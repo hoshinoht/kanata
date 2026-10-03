@@ -9,6 +9,7 @@ use crate::{
 pub(super) struct RouteBinding {
     identity: RouteIdentity,
     allows_input_audio: bool,
+    allows_input_images: bool,
     allows_audio_function_tools: bool,
 }
 
@@ -31,6 +32,8 @@ pub(super) fn bind_route(
         || route.identity().upstream_id.trim().is_empty()
         || (route.requires_streaming_chat() && !capabilities.streaming_chat)
         || (route.requires_function_tools() && !capabilities.function_tools)
+        || (route.allows_input_images()
+            && (operation != Operation::Chat || !capabilities.input_images))
         || (route.allows_input_audio()
             && (operation != Operation::Chat || !capabilities.input_audio))
         || (route.allows_audio_streaming_chat() && !capabilities.audio_streaming_chat)
@@ -42,6 +45,7 @@ pub(super) fn bind_route(
     Ok(RouteBinding {
         identity: route.identity().clone(),
         allows_input_audio: route.allows_input_audio(),
+        allows_input_images: route.allows_input_images(),
         allows_audio_function_tools: route.allows_audio_function_tools(),
     })
 }
@@ -72,6 +76,8 @@ pub(super) fn validate(
     };
 
     match request {
+        Request::Speech(_) => Err(unsupported_operation()),
+        Request::Embeddings(_) => Err(unsupported_operation()),
         Request::Chat(chat) => {
             validate_chat(chat, binding, capabilities.function_tools, max_audio_bytes)
         }
@@ -157,7 +163,11 @@ fn validate_chat(
                         .filter(|total| *total <= max_audio_bytes)
                         .ok_or_else(invalid_request)?;
                 }
-                ChatContent::InputAudio { .. } => return Err(unsupported_operation()),
+                ChatContent::InputImage { .. }
+                    if binding.allows_input_images && message.role == ChatRole::User => {}
+                ChatContent::InputAudio { .. } | ChatContent::InputImage { .. } => {
+                    return Err(unsupported_operation());
+                }
                 ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. } => {
                     return Err(invalid_request());
                 }

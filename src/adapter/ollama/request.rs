@@ -41,11 +41,30 @@ struct StreamOptions {
 #[derive(Serialize)]
 struct MessagePayload {
     role: &'static str,
-    content: Option<String>,
+    content: Option<MessageContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<ToolCallPayload>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum MessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrl },
+}
+
+#[derive(Serialize)]
+struct ImageUrl {
+    url: String,
 }
 
 #[derive(Serialize)]
@@ -157,6 +176,34 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
         ChatRole::Assistant => "assistant",
         ChatRole::Tool => "tool",
     };
+    if message
+        .content
+        .iter()
+        .any(|part| matches!(part, ChatContent::InputImage { .. }))
+    {
+        if message.role != ChatRole::User {
+            return Err(unsupported_operation());
+        }
+        let parts = message
+            .content
+            .iter()
+            .map(|part| match part {
+                ChatContent::Text { text } => Ok(ContentPart::Text { text: text.clone() }),
+                ChatContent::InputImage { image } => Ok(ContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: image.data_url().to_owned(),
+                    },
+                }),
+                _ => Err(unsupported_operation()),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(MessagePayload {
+            role,
+            content: Some(MessageContent::Parts(parts)),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
     let mut text = String::new();
     let mut calls = Vec::new();
     let mut result = None;
@@ -176,7 +223,9 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
                     return Err(invalid_request());
                 }
             }
-            ChatContent::InputAudio { .. } => return Err(unsupported_operation()),
+            ChatContent::InputAudio { .. } | ChatContent::InputImage { .. } => {
+                return Err(unsupported_operation());
+            }
         }
     }
     let (content, tool_calls, tool_call_id) = match message.role {
@@ -203,7 +252,7 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
     };
     Ok(MessagePayload {
         role,
-        content,
+        content: content.map(MessageContent::Text),
         tool_calls,
         tool_call_id,
     })

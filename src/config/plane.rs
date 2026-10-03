@@ -18,12 +18,12 @@ impl ValidatedConfig {
                     ));
                 }
                 let public = config.publication.public_routes.clone();
-                let codex_selectors: Vec<RouteSelector> = config
+                let private_selectors: Vec<RouteSelector> = config
                     .routes
                     .iter()
                     .filter(|route| {
                         config.adapters.iter().any(|adapter| {
-                            adapter.id == route.adapter_id && adapter.kind == ProviderKind::Codex
+                            adapter.id == route.adapter_id && adapter.kind.is_private_only()
                         })
                     })
                     .map(|route| route.identity.selector.clone())
@@ -42,16 +42,17 @@ impl ValidatedConfig {
                     .adapters
                     .retain(|adapter| adapter_ids.contains(&adapter.id));
                 config.codex_auth = None;
+                config.chatgpt_auth = None;
                 config.application_keys = config
                     .application_keys
                     .into_iter()
-                    // Keys that can reach Codex never enter the public process.
+                    // Keys that can reach private-only providers never enter the public process.
                     .filter(|key| {
                         !key.owner
                             && key
                                 .permissions
                                 .iter()
-                                .all(|selector| !codex_selectors.contains(selector))
+                                .all(|selector| !private_selectors.contains(selector))
                     })
                     .filter_map(|mut key| {
                         key.permissions.retain(|selector| public.contains(selector));

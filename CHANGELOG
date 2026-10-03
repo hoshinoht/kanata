@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [1.0.0-beta.6] - 2026-10-03
+
+Private account integration, host key management and expanded inference APIs.
+
+### Added
+
+- Private-only Sign in with ChatGPT: host browser login, protected account profiles, refresh/sign-out, account model discovery, and stateless text/function inference. Account eligibility and model access must be verified by each operator.
+- Host-only key portal at `127.0.0.1:9091` for key creation, permissions, expiry, limits, rotation, revocation and usage. One-use login codes can be renewed from the terminal or an unlocked session.
+- Material 3 Expressive portal with the Relay identity, collapsible provider groups, model names and aliases, reasoning controls, and staged bulk selection.
+- Grouped reasoning discovery through `kanata.reasoning_efforts`; Chat and Responses select exact authorized variants from a base ID and effort. Legacy suffix requests remain accepted and responses return canonical model IDs.
+- Host deployment helpers for the portal and ChatGPT sign-in, a private credential mount, and a ChatGPT-only overlay that detaches the retained Codex volume. Experimental Codex code and templates remain available for explicit restoration.
+- Stateless `POST /v1/responses` for text, function-call replay and typed streaming, sharing chat routes and permissions; final output is bounded to 8 MiB.
+- Text embeddings through Ollama at `POST /v1/embeddings`, with scoped discovery, bounded batches and float/base64 output.
+- Inline PNG/JPEG image input for explicitly enabled Ollama, vLLM and OpenRouter chat routes, with bounded bytes, counts and dimensions.
+- Bounded MP3/WAV speech output at `POST /v1/audio/speech`, with exact scopes and voice/format allowlists.
+- Durable daily request and token allowances per key and process plane, token reservations, persisted usage reports and optional cost estimates.
+- SIGHUP configuration reload with atomic request generations, preserved active streams and accounting, failure retention, and visible reload status.
+- Exact route diagnostics and opt-in model/inference probes through `routes explain` and `doctor`.
+
+### Changed
+
+- Setup and operating guides replace development trackers and deployment-specific handoff notes. Client migration and Codex restoration procedures remain documented.
+
+### Fixed
+
+- Deployment helpers use the default image when `.env` is absent, allowing help and host commands to start in a fresh checkout.
+
+### Security
+
+- Public-plane narrowing excludes ChatGPT credentials and keys with account-provider scopes. Portal management stays separate from gateway listeners and requires exact local Host/Origin checks.
+- Reasoning families must share compatible route policies. Grouped discovery and bulk selection preserve exact key scopes.
+
 ## [1.0.0-beta.5] - 2026-10-03
 
 Scoped browser documentation, bounded uploads, output-cap enforcement, usage accounting and operational diagnostics.
@@ -49,6 +81,8 @@ Scoped browser documentation, bounded uploads, output-cap enforcement, usage acc
 - Streamed reasoning now counts as stream activity for the first-byte and idle timeouts, on both listeners.
 
 ### Fixed
+
+- ChatGPT inference now accepts a valid completed SSE response when the upstream omits `Content-Type`, matching the existing private stream handling. Explicit non-SSE media types, unframed data and incomplete streams still fail. Host inference diagnostics and upstream failures use configured sanitized logs. Fixtures cover omitted/incorrect types and redaction; a local authenticated `gpt-6-luna` host probe completed successfully.
 
 - Updated the yanked transitive `yoke-derive` dependency from 0.8.3 to compatible 0.8.4.
 

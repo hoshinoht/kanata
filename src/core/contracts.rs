@@ -3,6 +3,7 @@ pub const MAX_TRANSCRIPTION_OVERHEAD_BYTES: usize = 104 * 1024;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use super::{EmbeddingRequest, EmbeddingResponse};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
@@ -12,6 +13,29 @@ use serde_json::Value;
 pub enum Operation {
     Chat,
     Transcription,
+    Embeddings,
+    Speech,
+}
+
+impl Operation {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "chat" => Some(Self::Chat),
+            "transcription" => Some(Self::Transcription),
+            "embeddings" => Some(Self::Embeddings),
+            "speech" => Some(Self::Speech),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Transcription => "transcription",
+            Self::Embeddings => "embeddings",
+            Self::Speech => "speech",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -264,8 +288,12 @@ pub enum RouteError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RequestValidationError {
+    InvalidEmbedding { param: &'static str },
+    InvalidSpeech { param: &'static str },
     RequiredToolChoiceWithoutTools,
     UndeclaredToolChoice { name: String },
+    InputImageRoleMismatch,
+    InputImagesTooLarge,
     InputAudioRoleMismatch,
     InputAudioTooLarge,
 }
@@ -354,6 +382,8 @@ impl<'de> Deserialize<'de> for ChatRequest {
         };
         chat.validate_audio()
             .map_err(|_| D::Error::custom("invalid chat audio content"))?;
+        chat.validate_images()
+            .map_err(|_| D::Error::custom("invalid chat image content"))?;
         Ok(chat)
     }
 }
@@ -400,6 +430,7 @@ pub enum MaxTokensParam {
     #[default]
     MaxTokens,
     MaxCompletionTokens,
+    MaxOutputTokens,
 }
 
 impl MaxTokensParam {
@@ -407,6 +438,7 @@ impl MaxTokensParam {
         match self {
             Self::MaxTokens => "max_tokens",
             Self::MaxCompletionTokens => "max_completion_tokens",
+            Self::MaxOutputTokens => "max_output_tokens",
         }
     }
 }
@@ -742,6 +774,7 @@ pub enum ChatContent {
     ToolCall { call: ToolCall },
     ToolResult { call_id: String, content: String },
     InputAudio { audio: ValidatedAudio },
+    InputImage { image: super::ValidatedImage },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -965,6 +998,8 @@ pub struct TranscriptionRequest {
 pub enum Request {
     Chat(ChatRequest),
     Transcription(TranscriptionRequest),
+    Embeddings(EmbeddingRequest),
+    Speech(super::SpeechRequest),
 }
 
 impl Request {
@@ -972,6 +1007,8 @@ impl Request {
         match self {
             Self::Chat(_) => Operation::Chat,
             Self::Transcription(_) => Operation::Transcription,
+            Self::Embeddings(_) => Operation::Embeddings,
+            Self::Speech(_) => Operation::Speech,
         }
     }
 
@@ -979,14 +1016,27 @@ impl Request {
         match self {
             Self::Chat(request) => &request.model,
             Self::Transcription(request) => &request.model,
+            Self::Embeddings(request) => &request.model,
+            Self::Speech(request) => &request.model,
         }
     }
 
     fn validate(&self) -> Result<(), RequestValidationError> {
+        if let Self::Speech(request) = self {
+            return request
+                .validate()
+                .map_err(|param| RequestValidationError::InvalidSpeech { param });
+        }
+        if let Self::Embeddings(request) = self {
+            return request
+                .validate()
+                .map_err(|param| RequestValidationError::InvalidEmbedding { param });
+        }
         let Self::Chat(chat) = self else {
             return Ok(());
         };
         chat.validate_audio()?;
+        chat.validate_images()?;
         match &chat.tool_choice {
             ToolChoice::Required if chat.tools.is_empty() => {
                 Err(RequestValidationError::RequiredToolChoiceWithoutTools)
@@ -1000,6 +1050,23 @@ impl Request {
 }
 
 impl ChatRequest {
+    fn validate_images(&self) -> Result<(), RequestValidationError> {
+        let mut budget = super::ImageBudget::default();
+        for message in &self.messages {
+            for content in &message.content {
+                if let ChatContent::InputImage { image } = content {
+                    if message.role != ChatRole::User {
+                        return Err(RequestValidationError::InputImageRoleMismatch);
+                    }
+                    budget
+                        .add(image)
+                        .map_err(|_| RequestValidationError::InputImagesTooLarge)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn validate_audio(&self) -> Result<(), RequestValidationError> {
         let mut total_bytes = 0_usize;
         for message in &self.messages {
@@ -1052,11 +1119,13 @@ pub struct TranscriptionResponse {
     pub text: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Response {
     Chat(ChatResponse),
     Transcription(TranscriptionResponse),
+    Embeddings(EmbeddingResponse),
+    Speech(super::SpeechResponse),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1112,6 +1181,8 @@ pub struct Capabilities {
     #[serde(default)]
     pub input_audio: bool,
     #[serde(default)]
+    pub input_images: bool,
+    #[serde(default)]
     pub audio_streaming_chat: bool,
     #[serde(default)]
     pub audio_function_tools: bool,
@@ -1138,6 +1209,16 @@ impl Capabilities {
             return Err(CapabilityError::UnsupportedOperation { operation });
         }
         if let Request::Chat(chat) = request {
+            if !self.input_images
+                && chat.messages.iter().any(|message| {
+                    message
+                        .content
+                        .iter()
+                        .any(|part| matches!(part, ChatContent::InputImage { .. }))
+                })
+            {
+                return Err(CapabilityError::InputImagesUnavailable);
+            }
             let has_audio = chat.messages.iter().any(|message| {
                 message
                     .content
@@ -1200,6 +1281,7 @@ pub enum CapabilityError {
     StreamingUnavailable,
     FunctionToolsUnavailable,
     InputAudioUnavailable,
+    InputImagesUnavailable,
     AudioStreamingUnavailable,
     AudioFunctionToolsUnavailable,
     ChatOptionUnavailable { param: &'static str },
@@ -1210,6 +1292,7 @@ impl CapabilityError {
     pub fn param(&self) -> Option<&'static str> {
         match self {
             Self::ChatOptionUnavailable { param } => Some(param),
+            Self::InputImagesUnavailable => Some("messages"),
             _ => None,
         }
     }

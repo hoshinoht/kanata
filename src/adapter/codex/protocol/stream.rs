@@ -84,6 +84,7 @@ impl StreamFailure {
 pub(crate) struct ResponsesStreamParser {
     framer: SseFramer,
     public_model: ModelAlias,
+    namespace: Option<&'static str>,
     response_id: Option<String>,
     parts: Vec<OutputPart>,
     tools: BTreeMap<usize, ToolState>,
@@ -112,6 +113,7 @@ impl ResponsesStreamParser {
             framer: SseFramer::new_with_named_events()
                 .with_limits(MAX_CODEX_EVENT_BYTES, MAX_CODEX_EVENT_BYTES),
             public_model,
+            namespace: None,
             response_id: None,
             parts: Vec::new(),
             tools: BTreeMap::new(),
@@ -132,6 +134,13 @@ impl ResponsesStreamParser {
             input_finished: false,
             failed: false,
             failure: None,
+        }
+    }
+
+    pub(crate) fn namespaced(public_model: ModelAlias, namespace: &'static str) -> Self {
+        Self {
+            namespace: Some(namespace),
+            ..Self::new(public_model)
         }
     }
 
@@ -274,6 +283,12 @@ impl ResponsesStreamParser {
         match item_type(&event.item) {
             "function_call" => {
                 let item: FunctionCallItem = parse_event(event.item)?;
+                if self
+                    .namespace
+                    .is_some_and(|expected| item.namespace.as_deref() != Some(expected))
+                {
+                    return Err(());
+                }
                 self.add_tool(index, item)
             }
             "message" => {
@@ -308,6 +323,12 @@ impl ResponsesStreamParser {
         match item_type(&event.item) {
             "function_call" => {
                 let item: FunctionCallItem = parse_event(event.item)?;
+                if self
+                    .namespace
+                    .is_some_and(|expected| item.namespace.as_deref() != Some(expected))
+                {
+                    return Err(());
+                }
                 let Some(tool) = self.tools.get(&index) else {
                     if self.messages.contains_key(&index) {
                         return Err(());
@@ -769,6 +790,7 @@ struct OutputItemEvent {
 
 #[derive(Deserialize)]
 struct FunctionCallItem {
+    namespace: Option<String>,
     id: Option<String>,
     call_id: String,
     name: String,

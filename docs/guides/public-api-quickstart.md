@@ -1,13 +1,13 @@
-# Kanata API: tester quickstart
+# Kanata API quickstart
 
-You have been given access to a small, personally run, OpenAI-compatible API. It works with the official OpenAI SDKs and any client that lets you set a base URL.
+Kanata exposes an OpenAI-compatible API. Use the base URL and gateway key supplied by your operator with an OpenAI SDK or any client that supports a custom base URL.
 
 | | |
 | --- | --- |
 | Base URL | `https://api.example.com/v1` |
 | Auth | `Authorization: Bearer <your key>` (keys start with `kanata_sk_`) |
 | Endpoints | `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/audio/transcriptions` (models with speech input) |
-| Models | Whatever `GET /v1/models` lists for your key (for example `qwen3-0.6b`, a tiny test model, so expect short and sometimes silly answers) |
+| Models | The aliases returned by authenticated `GET /v1/models` |
 
 ## Your key
 
@@ -109,10 +109,25 @@ const reply = await client.chat.completions.create({
 console.log(reply.choices[0].message.content);
 ```
 
+## Text embeddings
+
+An alias with the `embeddings` operation accepts `POST /v1/embeddings`:
+
+```sh
+curl https://kanata.example.com/v1/embeddings \
+  -H "Authorization: Bearer $KANATA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"your-embedding-model","input":["A document","A search query"],"encoding_format":"float"}'
+```
+
+`input` is a non-empty string or 1–128 non-empty strings. The configured JSON body limit applies. `encoding_format` is `float` (default) or `base64` (little-endian float32). Optional `dimensions` must be 1–16,384 and supported by the model; the batch has a maximum of 262,144 output values. Token arrays and streaming are unsupported. The response contains `object: "list"`, your model alias and ordered `data` entries with `object: "embedding"`, `index` and `embedding`. `usage.prompt_tokens` and `usage.total_tokens` appear when reported upstream.
+
+Embedding permissions are separate from chat permissions. `/v1/models` lists `embeddings` only for aliases your key can use on that listener. Its `kanata.embeddings` object describes request and output bounds. Model token limits are enforced by the upstream runtime.
+
 ## What is supported
 
 - **Request fields:** `model`, `messages` (`system` / `user` / `assistant` / `tool` roles with text content, plus assistant `tool_calls` and user `input_audio` parts), `stream`, `stream_options.include_usage`, and `tools` / `tool_choice` on models that support tools.
-- **Generation options,** where the model's route supports them (all do on `qwen3-0.6b`):
+- **Generation options,** where the model's route supports them:
 
   | Option | Accepted values |
   | --- | --- |
@@ -121,34 +136,45 @@ console.log(reply.choices[0].message.content);
   | `seed` | integer |
   | `max_tokens` or `max_completion_tokens` | 1 – 1,048,576, and no more than the model's `kanata.max_output_tokens` when set |
   | `response_format` | `{"type":"json_object"}` or `{"type":"json_schema","json_schema":{"name":…,"schema":{…},"strict":true}}` (schema ≤ 64 KiB, nesting ≤ 32 levels) |
-  | `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (the model decides which it honours) |
+  | `reasoning_effort` | On reasoning-enabled models, choose from `kanata.reasoning_efforts` when enumerated. Grouped models use one base ID with a separate effort; see [client integration and migration](service-handoff.md) |
   | `chat_template_kwargs` | only `{"enable_thinking": true\|false}`, on vLLM-served models (e.g. `omnilion`) |
 - **Strictness:** Kanata returns `400 invalid_request` for fields it doesn't support or a model can't honour, rather than silently ignoring them. The error's `param` names the field.
-- **Reasoning:** this listener never returns a model's reasoning text. `usage.completion_tokens_details.reasoning_tokens` is included when the backend reports it.
-- **Not available:** embeddings, images, the Responses/Assistants APIs, fine-tuning and files.
+- **Reasoning:** private listeners can return backend reasoning text as `reasoning_content`; public listeners never return it. `usage.completion_tokens_details.reasoning_tokens` is included when the backend reports it.
+- **Responses:** `/v1/responses` supports stateless text, function calls/results and typed SSE through chat routes and scopes. Send full history with `store: false`. See the [supported subset](responses.md).
+- **Not available:** stored Responses/conversations, Assistants, fine-tuning and files.
+
+## Speech output
+
+Use `POST /v1/audio/speech` with a separately permitted speech model, text and a declared voice. It returns MP3/WAV bytes, up to 8 MiB. Authenticated model discovery lists `kanata.speech` formats, voices and limits. See [speech request examples](speech-output.md).
+
+## Image input
+
+When `/v1/models` declares `kanata.input_images`, user messages can include inline PNG/JPEG `image_url` data URLs. `kanata.images` lists the limits. Remote image URLs and `detail` options are rejected. See [image request examples and limits](image-input.md).
 
 ## Errors
 
 | HTTP | `error.code` | Meaning / what to do |
 | --- | --- | --- |
-| 400 | `invalid_request` | Malformed JSON or an unsupported field. Check `param` |
+| 400 | `invalid_request` | Malformed JSON, unsupported/unconfigured effort, conflicting effort suffix, or omitted inaccessible default. Check `param` |
 | 401 | `key_expired` | Your key has expired. Ask the owner for a new one |
-| 403 | `permission_denied` | Missing, invalid or revoked key, or a model your key may not use publicly |
+| 403 | `permission_denied` | Missing, invalid or revoked key, or a model/configured effort your key may not use on this listener |
 | 404 | `not_found` | Wrong path. Use `/v1/models`, `/v1/chat/completions` or `/v1/audio/transcriptions` |
 | 408 | `request_cancelled` | The request was cancelled, for example because the client disconnected |
-| 413 | `invalid_request` | Request body larger than 1 MiB |
+| 413 | `invalid_request` | Request body or image count, file bytes, dimensions or total pixels exceed gateway limits |
 | 429 | `gateway_queue_full` | The gateway queue for this model is full. Retry after the `Retry-After` seconds |
 | 429 | `gateway_key_busy` / `gateway_key_rate_limited` | Your key has too many requests running, or sent too many recently. Retry after the `Retry-After` seconds |
+| 429 | `daily_quota_exceeded` | Your key has exhausted its daily request allowance, or another full token reservation does not fit. `Retry-After` points to the next UTC midnight |
+| 503 | `quota_unavailable` | The gateway cannot durably reserve your daily allowance, or its clock moved to an earlier UTC day. Contact the operator |
 | 429 | `rate_limit_exceeded` | The model backend is rate-limiting. Wait and retry with backoff |
 | 502 / 503 | `upstream_failure` / `upstream_unavailable` | The model backend is down or restarting. Try again later (after `Retry-After` seconds if present) |
 | 503 | `gateway_busy` | No slot freed up in time. Retry after the `Retry-After` seconds |
 | 503 | `gateway_upload_busy` | Request-buffer capacity is full. Retry after `Retry-After` seconds |
 | 408 | `request_upload_timeout` | The request body did not arrive before the upload deadline |
 | 504 | `upstream_timeout` | The model took too long |
-| 5xx page from Cloudflare | — | The gateway itself is offline, for example because the host is asleep or restarting |
+| 5xx page from Cloudflare | — | If Cloudflare is configured, the gateway or tunnel may be unavailable |
 
 ## Good to know
 
-- This runs on a personal machine. There is no uptime guarantee, it may be offline at times, and capacity is small (a handful of concurrent requests), so please don't load-test it without asking.
-- Traffic passes through Cloudflare, which terminates TLS, to the owner's machine. Kanata keeps only aggregate counters (endpoint, outcome, timing), never message content. Cloudflare and the model server may keep their own operational logs, so don't send secrets or sensitive personal data.
+- Availability and capacity depend on the deployment and its model backends. Coordinate load tests with your operator.
+- Kanata records aggregate usage and timing rather than message content. Proxies and model providers can have their own logging policies; check with your operator before sending sensitive data.
 - When reporting a problem, include the time (with timezone), the model, the HTTP status and the `error.code`. **Never include your key.**

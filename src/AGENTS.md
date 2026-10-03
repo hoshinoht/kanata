@@ -1,10 +1,12 @@
 ## Module map
 - `main.rs`: parses args, starts a tokio runtime for `auth`/`serve`, prints CLI results.
-- `cli.rs`: command parsing, `check`, `routes`, dispatch to `keys::cli`, Codex auth commands, and `build_serve_adapters` (the one place that matches `ProviderKind` to concrete adapters).
+- `cli.rs`: command parsing, `check`, `routes`, dispatch to `keys::cli`, Codex and ChatGPT auth commands, and `build_serve_adapters` (the one place that matches `ProviderKind` to concrete adapters).
+- `serve/reload.rs`: serializes SIGHUP config replacement and keys-file polls; `server/reload.rs` publishes complete per-request generations while preserving shared admission/accounting. `config/reload.rs` defines settings that require restart.
 - `serve.rs`: `serve` lifecycle: load config, `for_plane`, logging, build server and adapters, bind, `serve_until`.
 - `config.rs`: validated types and config loading; `config/raw.rs`: TOML schema; `config/validation.rs`: validation; `config/plane.rs`: plane narrowing.
 - `core/contracts.rs`: provider-neutral IR: selectors, `RoutedRequest`, chat/transcription request and response types, `NormalizedEvent`, `ErrorKind` and its `mapping()` to HTTP status/code/type.
 - `keys/`: key lifecycle. `time.rs` UTC timestamps; `file.rs` `keys.toml` schema, 0600/permission checks, 1000-record cap; `reload.rs` hot reload (~2 s poll, invalid file keeps the old set); `usage.rs` `usage-<plane>.json` recorder and reader; `store.rs` locked atomic writes and `audit.jsonl`; `cli/args.rs` argument parsing; `cli/display.rs` presentation; `cli.rs` host-only `kanata key` commands (no network path).
+- `portal/`: separate host-only `kanata portal` command, IPv4 loopback dashboard, one-use terminal login and browser session boundary. Uses the host key store; never mounted on gateway listeners.
 - `auth/`: secret resolution, bearer-key authentication, per-key route authorization.
 - `routing/mod.rs`: `Registry` of exact `(model_alias, operation)` routes. `routing/admission.rs`: per-route queues, optional adapter and key limits, token bucket, `Retry-After`. `routing/breaker.rs`: per-adapter circuit breaker.
 - `server/mod.rs`: `TwoPlaneServer` assembly, client/public/admin routers, auth extractor, `/v1/models`, admin `/live` `/ready` `/metrics` `/status`, test entry points `client_oneshot`/`public_oneshot`/`admin_oneshot`. `server/runtime.rs`: listeners, connection caps, header read timeout, drain. `server/shutdown.rs`: connection sets.
@@ -23,7 +25,7 @@
 - `Raw*` structs are `#[serde(deny_unknown_fields)]`; `validate()` turns them into `Validated*` types with private fields and getters.
 - Errors are `ConfigError::new(path, class)`, rendered `config error at <path>: <class>`, with short snake_case classes (`zero`, `limit_too_large`, `duplicate`, `timeout_too_large`). Never include secret values in paths or classes.
 - Optional settings use `#[serde(default)] Option<_>`, with defaults applied in validation.
-- `ValidatedConfig::for_plane` narrows a config per process: `Private` drops the public listener; `Public` keeps only public routes, their adapters and keys without owner/Codex scopes.
+- `ValidatedConfig::for_plane` narrows a config per process: `Private` drops the public listener; `Public` keeps only public routes, their adapters and keys without owner/private-provider scopes.
 
 - `diagnostics.rs`: host `doctor` and native `health` commands; loopback admin reads, opt-in TCP probes without credentials.
 - `routing/uploads.rs`: shared input payload reservations and upload slots.

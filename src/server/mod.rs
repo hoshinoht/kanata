@@ -30,6 +30,9 @@ use crate::keys::usage::UsageHandle;
 use crate::routing::{Registry, admission::Admission};
 
 mod guide;
+pub(crate) mod reload;
+#[cfg(test)]
+mod reload_tests;
 mod runtime;
 mod shutdown;
 
@@ -196,6 +199,7 @@ pub enum ServerBuildError {
     Plan(ServerPlanError),
     AdmissionLimits,
     AdapterBindings,
+    ReloadRequiresRestart,
 }
 
 impl fmt::Display for ServerBuildError {
@@ -204,6 +208,9 @@ impl fmt::Display for ServerBuildError {
             Self::Auth(error) => error.fmt(formatter),
             Self::Plan(error) => error.fmt(formatter),
             Self::AdmissionLimits => formatter.write_str("admission limits are not representable"),
+            Self::ReloadRequiresRestart => {
+                formatter.write_str("reload admission pools: restart_required")
+            }
             Self::AdapterBindings => {
                 formatter.write_str("adapter bindings do not match validated configuration")
             }
@@ -220,7 +227,7 @@ pub struct TwoPlaneServer {
     admin: Router,
     admission: Arc<Admission>,
     readiness: Readiness,
-    keys: KeyHandle,
+    configuration: reload::ConfigurationHandle,
     usage: Arc<OnceLock<UsageHandle>>,
     /// `(usage_dir, keys file)` when usage is persisted.
     usage_paths: Option<(PathBuf, PathBuf)>,
@@ -266,19 +273,7 @@ impl TwoPlaneServer {
         let auth =
             ApplicationAuth::from_validated(config, resolver).map_err(ServerBuildError::Auth)?;
         let plan = ServerPlan::from_validated(config).map_err(ServerBuildError::Plan)?;
-        let mut bound = BTreeMap::new();
-        for adapter in adapters {
-            if bound.insert(adapter.id().to_owned(), adapter).is_some() {
-                return Err(ServerBuildError::AdapterBindings);
-            }
-        }
-        if !bound.iter().all(|(id, adapter)| {
-            config.adapters().iter().any(|configured| {
-                configured.id() == id && configured.capabilities() == adapter.capabilities()
-            })
-        }) {
-            return Err(ServerBuildError::AdapterBindings);
-        }
+        let bound = bind_adapters(config, adapters)?;
         let registry = Arc::new(Registry::from_validated(config));
         let admission = Arc::new(
             Admission::from_config(&registry, config)
@@ -331,6 +326,12 @@ impl TwoPlaneServer {
                 Some(Arc::new(config.publication().public_routes().to_vec()));
             public_client_router(public_state)
         });
+        let configuration = reload::ConfigurationHandle::new(client_state, client, public);
+        let client = configuration.client_router();
+        let public = config
+            .listeners()
+            .public()
+            .map(|_| configuration.public_service());
         Ok(Self {
             plan,
             client,
@@ -340,11 +341,11 @@ impl TwoPlaneServer {
                 admission.clone(),
                 telemetry,
                 uploads,
-                keys.clone(),
+                configuration.clone(),
             ),
             admission,
             readiness,
-            keys,
+            configuration,
             usage,
             usage_paths,
         })
@@ -357,7 +358,11 @@ impl TwoPlaneServer {
     /// Handle to the live key set, for the keys-file reloader.
     #[doc(hidden)]
     pub fn key_handle(&self) -> KeyHandle {
-        self.keys.clone()
+        self.configuration.keys()
+    }
+
+    pub(crate) fn configuration_handle(&self) -> reload::ConfigurationHandle {
+        self.configuration.clone()
     }
 
     /// Loads `usage-<plane>.json` and starts recording; `None` without `[keys] usage_dir`.
@@ -401,12 +406,36 @@ impl TwoPlaneServer {
     }
 }
 
+fn bind_adapters(
+    config: &ValidatedConfig,
+    adapters: Vec<Arc<dyn Adapter>>,
+) -> Result<BTreeMap<String, Arc<dyn Adapter>>, ServerBuildError> {
+    let mut bound = BTreeMap::new();
+    for adapter in adapters {
+        if bound.insert(adapter.id().to_owned(), adapter).is_some() {
+            return Err(ServerBuildError::AdapterBindings);
+        }
+    }
+    if !bound.iter().all(|(id, adapter)| {
+        config.adapters().iter().any(|configured| {
+            configured.id() == id && configured.capabilities() == adapter.capabilities()
+        })
+    }) {
+        return Err(ServerBuildError::AdapterBindings);
+    }
+    Ok(bound)
+}
+
 pub(crate) struct Authenticated {
     context: AuthContext,
     public_routes: Option<Arc<Vec<RouteSelector>>>,
 }
 
 impl Authenticated {
+    pub(crate) fn daily_quota(&self) -> Option<crate::keys::quota::DailyQuota> {
+        self.context.daily_quota()
+    }
+
     pub(crate) fn key_limits(&self) -> Option<&crate::routing::admission::KeyLimits> {
         self.context.key_limits()
     }
@@ -546,7 +575,7 @@ async fn authenticate_public_request(
 
 #[derive(Clone)]
 struct AdminState {
-    keys: KeyHandle,
+    configuration: reload::ConfigurationHandle,
     uploads: Arc<crate::routing::uploads::Uploads>,
     readiness: Readiness,
     admission: Arc<Admission>,
@@ -558,7 +587,7 @@ fn admin_router(
     admission: Arc<Admission>,
     telemetry: Arc<crate::telemetry::Telemetry>,
     uploads: Arc<crate::routing::uploads::Uploads>,
-    keys: KeyHandle,
+    configuration: reload::ConfigurationHandle,
 ) -> Router {
     Router::new()
         .route("/live", get(live))
@@ -567,7 +596,7 @@ fn admin_router(
         .route("/status", get(status))
         .fallback(not_found)
         .with_state(AdminState {
-            keys,
+            configuration,
             uploads,
             readiness,
             admission,
@@ -585,7 +614,11 @@ async fn list_models(auth: Authenticated, State(state): State<ClientState>) -> R
         .filter(|route| state.route_is_bound(route))
     {
         aliases
-            .entry(route.identity.selector.model_alias.0.clone())
+            .entry(if route.capabilities.reasoning_control {
+                route.model_family_alias().to_owned()
+            } else {
+                route.identity.selector.model_alias.0.clone()
+            })
             .or_default()
             .push(route);
     }
@@ -596,6 +629,36 @@ async fn list_models(auth: Authenticated, State(state): State<ClientState>) -> R
         .into_iter()
         .map(|(alias, routes)| {
             let mut kanata = model_capabilities(&routes);
+            if kanata["input_images"] == true {
+                kanata["images"]["max_json_body_bytes_without_audio"] = json!(state.max_body_bytes());
+            }
+            if let Some(route) = routes.iter().find(|route| route.identity.selector.operation == crate::core::Operation::Chat) {
+                kanata["responses"] = json!({
+                    "endpoint": "/v1/responses", "operation": "chat", "stateless": true,
+                    "input": ["text"], "function_tools": route.capabilities.function_tools,
+                    "streaming": route.capabilities.streaming_chat, "max_output_bytes": 8 * 1024 * 1024,
+                });
+            }
+            if routes.iter().any(|route| {
+                route.identity.selector.operation == crate::core::Operation::Embeddings
+            }) {
+                kanata["embeddings"] = json!({
+                    "input": ["string", "string_array"],
+                    "encoding_formats": ["float", "base64"],
+                    "max_inputs": crate::core::MAX_EMBEDDING_INPUTS,
+                    "max_dimensions": crate::core::MAX_EMBEDDING_DIMENSIONS,
+                    "max_total_values": crate::core::MAX_EMBEDDING_VALUES,
+                });
+            }
+            if let Some(policy) = routes.iter().find_map(|route| route.speech.as_ref()) {
+                kanata["speech"] = json!({
+                    "voices": policy.voices, "formats": policy.formats,
+                    "max_input_characters": crate::core::MAX_SPEECH_CHARACTERS,
+                    "max_input_bytes": crate::core::MAX_SPEECH_INPUT_BYTES,
+                    "max_response_bytes": crate::core::MAX_SPEECH_RESPONSE_BYTES,
+                    "speed": {"min": 0.25, "max": 4.0},
+                });
+            }
             if publish_admission {
                 let adapter = routes
                     .iter()
@@ -628,15 +691,29 @@ fn model_capabilities(routes: &[&crate::routing::RouteEntry]) -> serde_json::Val
         .map(|route| route.identity.selector.operation)
         .collect();
     operations.sort();
+    operations.dedup();
     let chat = routes
         .iter()
         .find(|route| route.identity.selector.operation == crate::core::Operation::Chat);
     let caps = chat.map(|route| &route.capabilities);
     let flag = |get: fn(&crate::core::Capabilities) -> bool| caps.is_some_and(get);
     let reasoning_control = flag(|c| c.reasoning_control);
-    let reasoning_efforts = chat
-        .filter(|_| reasoning_control)
-        .and_then(|route| route.provider_kind.restricted_reasoning_efforts());
+    let reasoning_efforts =
+        if reasoning_control && chat.is_some_and(|route| route.pinned_reasoning_effort.is_some()) {
+            let efforts: std::collections::BTreeSet<_> = routes
+                .iter()
+                .filter(|_| reasoning_control)
+                .filter_map(|route| {
+                    route
+                        .pinned_reasoning_effort
+                        .and_then(crate::core::ReasoningEffort::parse)
+                })
+                .collect();
+            Some(efforts.into_iter().collect())
+        } else {
+            chat.filter(|_| reasoning_control)
+                .and_then(|route| route.provider_kind.restricted_reasoning_efforts())
+        };
     let trust_zone = chat.or(routes.first()).map(|route| route.trust_zone);
     json!({
         "operations": operations,
@@ -646,6 +723,16 @@ fn model_capabilities(routes: &[&crate::routing::RouteEntry]) -> serde_json::Val
         "function_tools": flag(|c| c.function_tools),
         "streaming": flag(|c| c.streaming_chat),
         "input_audio": flag(|c| c.input_audio),
+        "input_images": flag(|c| c.input_images),
+        "images": flag(|c| c.input_images).then(|| json!({
+            "transport": "data_url", "media_types": ["image/png", "image/jpeg"],
+            "max_count": crate::core::MAX_INPUT_IMAGES,
+            "max_bytes_per_image": crate::core::MAX_IMAGE_BYTES,
+            "max_total_bytes": crate::core::MAX_IMAGE_TOTAL_BYTES,
+            "max_base64_bytes_per_image": crate::core::MAX_IMAGE_BASE64_BYTES,
+            "max_dimension": crate::core::MAX_IMAGE_DIMENSION,
+            "max_total_pixels": crate::core::MAX_IMAGE_TOTAL_PIXELS,
+        })),
         "trust_zone": trust_zone,
         "reasoning_efforts": reasoning_efforts,
         "context_tokens": chat.and_then(|route| route.context_tokens),
@@ -719,7 +806,9 @@ async fn ready(State(state): State<AdminState>) -> Response {
 async fn status(State(state): State<AdminState>) -> Response {
     Json(json!({
         "ready": state.readiness.is_ready() && !state.admission.is_closed(),
-        "key_reload": state.keys.reload_status(),
+        "key_reload": state.configuration.keys().reload_status(),
+        "configuration_reload": state.configuration.status(),
+        "pid": std::process::id(),
         "version": crate::VERSION,
     }))
     .into_response()
@@ -732,12 +821,12 @@ async fn metrics(State(state): State<AdminState>) -> Response {
             "text/plain; version=0.0.4",
         )],
         {
-            state.telemetry.retain_keys(&state.keys.current().key_ids());
+            state.telemetry.retain_keys(&state.configuration.keys().current().key_ids());
             let mut body = state.telemetry.render(
                 true,
                 state.readiness.is_ready() && !state.admission.is_closed(),
             );
-            let reload = state.keys.reload_status();
+            let reload = state.configuration.keys().reload_status();
             body.push_str(&format!("# TYPE kanata_key_reload_enabled gauge\nkanata_key_reload_enabled {}\n", u8::from(reload.enabled)));
             body.push_str(&format!("# TYPE kanata_key_reload_failures_total counter\nkanata_key_reload_failures_total {}\n# TYPE kanata_key_reload_healthy gauge\nkanata_key_reload_healthy {}\n# TYPE kanata_key_reload_last_success_seconds gauge\nkanata_key_reload_last_success_seconds {}\n", reload.failures, u8::from(reload.healthy), reload.last_success));
             let (uploads, bytes) = state.uploads.snapshot();

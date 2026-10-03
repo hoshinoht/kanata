@@ -16,11 +16,10 @@ use crate::{
     },
     auth::EnvironmentSecretResolver,
     config::{self, ProviderKind, ValidatedConfig},
-    core::Operation,
     keys::cli::{Exposure, RouteChoice},
 };
 
-const USAGE: &str = "usage: kanata doctor --config <path> [--plane all|private|public] [--probe-backends] | kanata health --config <path> | kanata check --config <path> [--plane all|private|public] | kanata serve --config <path> [--plane all|private|public] | kanata auth codex {login,status,logout} --config <path> | kanata key {new,list,show,edit,rm,rotate,migrate} ... (see `kanata key`) | kanata routes --config <path> [--json]";
+const USAGE: &str = "usage: kanata portal --config <path> [--port <port>] | kanata doctor --config <path> [--plane all|private|public] [--probe-backends] [--probe-models] [--probe-inference <alias> --operation <operation>] | kanata health --config <path> | kanata check --config <path> [--plane all|private|public] | kanata serve --config <path> [--plane all|private|public] | kanata auth chatgpt {login,status,logout,models} --config <path> [--profile <name>] | kanata auth codex {login,status,logout} --config <path> | kanata key {new,list,show,edit,rm,rotate,migrate} ... (see `kanata key`) | kanata routes --config <path> [--json] | kanata routes explain --config <path> --model <alias> --operation <operation> --key-id <id> [--plane all|private|public] [--json]";
 
 pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>, String> {
     let arguments: Vec<_> = arguments.into_iter().collect();
@@ -61,7 +60,7 @@ fn parse_config_plane(arguments: &[String]) -> Option<(PathBuf, config::Plane)> 
 /// Codex routes are never public; others are public when listed in `publication.public_routes`.
 fn route_exposure(config: &ValidatedConfig, route: &config::ValidatedRoute) -> Exposure {
     let selector = &route.identity().selector;
-    if route_kind(config, route) == Some(ProviderKind::Codex) {
+    if route_kind(config, route).is_some_and(ProviderKind::is_private_only) {
         Exposure::Never
     } else if config.publication().public_routes().contains(selector) {
         Exposure::Public
@@ -91,6 +90,12 @@ fn route_choices(config: &ValidatedConfig) -> Vec<RouteChoice> {
 
 /// `kanata routes`: grantable aliases only; never upstream ids, URLs or secrets.
 fn run_routes(arguments: &[String]) -> Result<String, String> {
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "explain")
+    {
+        return crate::routing::explain::run(&arguments[1..]);
+    }
     let (path, json) = match arguments {
         [flag, path] if flag == "--config" => (path, false),
         [flag, path, json] if flag == "--config" && json == "--json" => (path, true),
@@ -104,11 +109,7 @@ fn run_routes(arguments: &[String]) -> Result<String, String> {
             let selector = &route.identity().selector;
             [
                 selector.model_alias.0.clone(),
-                match selector.operation {
-                    Operation::Chat => "chat",
-                    Operation::Transcription => "transcription",
-                }
-                .into(),
+                selector.operation.as_str().into(),
                 route_kind(&config, route)
                     .map_or("-", ProviderKind::label)
                     .into(),
@@ -182,7 +183,28 @@ where
         .first()
         .is_some_and(|argument| argument == "doctor" || argument == "health")
     {
-        return crate::diagnostics::run(&arguments).await.map(Some);
+        return crate::diagnostics::run(&arguments, |config, id| {
+            build_adapter(config, id, &EnvironmentSecretResolver)
+        })
+        .await
+        .map(Some);
+    }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "portal")
+    {
+        return crate::portal::run(&arguments[1..], route_choices, &mut output)
+            .await
+            .map(Some);
+    }
+    if arguments.first().is_some_and(|argument| argument == "auth")
+        && arguments
+            .get(1)
+            .is_some_and(|argument| argument == "chatgpt")
+    {
+        return run_chatgpt_auth(&arguments[2..], &mut output)
+            .await
+            .map(Some);
     }
     if arguments.first().is_some_and(|argument| argument == "auth") {
         let (action, path) = parse_auth_command(&arguments)?;
@@ -205,43 +227,68 @@ fn build_serve_adapters(
 ) -> Result<Vec<std::sync::Arc<dyn Adapter>>, ()> {
     let mut adapters: Vec<std::sync::Arc<dyn Adapter>> = Vec::new();
     for configured in config.adapters() {
-        let Some(route) = config
+        if !config
             .routes()
             .iter()
-            .find(|route| route.adapter_id() == configured.id())
-        else {
+            .any(|route| route.adapter_id() == configured.id())
+        {
             continue;
-        };
-        let adapter: std::sync::Arc<dyn Adapter> = match configured.kind() {
-            ProviderKind::Ollama | ProviderKind::AppleFm => std::sync::Arc::new(
-                OllamaAdapter::new(configured, config.timeouts(), config.limits())
-                    .map_err(|_| ())?,
-            ),
-            ProviderKind::Vllm => std::sync::Arc::new(
-                VllmAdapter::from_config_with_secrets(
-                    config,
-                    configured.id(),
-                    &route.identity().route_id,
-                    resolver,
-                )
-                .map_err(|_| ())?,
-            ),
-            ProviderKind::Openrouter => std::sync::Arc::new(
-                OpenRouterAdapter::from_config(
-                    config,
-                    configured.id(),
-                    &route.identity().route_id,
-                    resolver,
-                )
-                .map_err(|_| ())?,
-            ),
-            ProviderKind::Codex => std::sync::Arc::new(
-                CodexAdapter::from_config(config, configured.id()).map_err(|_| ())?,
-            ),
-        };
-        adapters.push(adapter);
+        }
+        adapters.push(build_adapter(config, configured.id(), resolver)?);
     }
     Ok(adapters)
+}
+
+fn build_adapter(
+    config: &ValidatedConfig,
+    id: &str,
+    resolver: &EnvironmentSecretResolver,
+) -> Result<std::sync::Arc<dyn Adapter>, ()> {
+    let configured = config
+        .adapters()
+        .iter()
+        .find(|adapter| adapter.id() == id)
+        .ok_or(())?;
+    let route = config
+        .routes()
+        .iter()
+        .find(|route| route.adapter_id() == id)
+        .ok_or(())?;
+    let adapter: std::sync::Arc<dyn Adapter> = match configured.kind() {
+        ProviderKind::Ollama | ProviderKind::AppleFm => std::sync::Arc::new(
+            OllamaAdapter::new(configured, config.timeouts(), config.limits()).map_err(|_| ())?,
+        ),
+        ProviderKind::Vllm => std::sync::Arc::new(
+            VllmAdapter::from_config_with_secrets(
+                config,
+                configured.id(),
+                &route.identity().route_id,
+                resolver,
+            )
+            .map_err(|_| ())?,
+        ),
+        ProviderKind::Openrouter => std::sync::Arc::new(
+            OpenRouterAdapter::from_config(
+                config,
+                configured.id(),
+                &route.identity().route_id,
+                resolver,
+            )
+            .map_err(|_| ())?,
+        ),
+        ProviderKind::Speech => std::sync::Arc::new(
+            crate::adapter::speech::SpeechAdapter::from_config(config, configured.id(), resolver)
+                .map_err(|_| ())?,
+        ),
+        ProviderKind::Chatgpt => std::sync::Arc::new(
+            crate::adapter::chatgpt::ChatgptAdapter::from_config(config, configured.id())
+                .map_err(|_| ())?,
+        ),
+        ProviderKind::Codex => {
+            std::sync::Arc::new(CodexAdapter::from_config(config, configured.id()).map_err(|_| ())?)
+        }
+    };
+    Ok(adapter)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -426,6 +473,69 @@ where
         .save(&credential)
         .map_err(|error| error.to_string())?;
     Ok("Codex credentials saved locally.".into())
+}
+
+async fn run_chatgpt_auth<F: FnMut(String)>(
+    arguments: &[String],
+    output: &mut F,
+) -> Result<String, String> {
+    let usage = "usage: kanata auth chatgpt {login,status,logout,models} --config <path> [--profile <name>]";
+    let (action, path, profile) = match arguments {
+        [action, flag, path] if flag == "--config" => (action.as_str(), path, None),
+        [action, flag, path, profile_flag, profile]
+            if flag == "--config"
+                && profile_flag == "--profile"
+                && matches!(action.as_str(), "login" | "logout") =>
+        {
+            (action.as_str(), path, Some(profile.as_str()))
+        }
+        _ => return Err(usage.into()),
+    };
+    if !matches!(action, "login" | "status" | "logout" | "models") {
+        return Err(usage.into());
+    }
+    let config = config::load(path).map_err(|error| error.to_string())?;
+    if action == "models" {
+        return serde_json::to_string_pretty(&crate::adapter::chatgpt::models(&config).await?)
+            .map_err(|_| "model catalog could not be formatted".into());
+    }
+    let settings = config
+        .chatgpt_auth()
+        .ok_or("ChatGPT authentication is not configured")?;
+    let manager = crate::adapter::chatgpt::auth::AuthManager::new(settings, config.timeouts())
+        .map_err(|error| error.to_string())?;
+    match action {
+        "login" => {
+            let flow = manager
+                .begin_login(profile.unwrap_or("default"))
+                .await
+                .map_err(|error| error.to_string())?;
+            output(format!(
+                "Continue with ChatGPT: open this URL in a browser on this host.\n{}",
+                flow.authorization_url()
+            ));
+            let status = flow
+                .finish(async {
+                    let _ = tokio::signal::ctrl_c().await;
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_string_pretty(&status)
+                .map_err(|_| "sign-in result could not be formatted".into())
+        }
+        "status" => serde_json::to_string_pretty(
+            &manager.status().await.map_err(|error| error.to_string())?,
+        )
+        .map_err(|_| "sign-in status could not be formatted".into()),
+        "logout" => serde_json::to_string_pretty(
+            &manager
+                .logout(profile)
+                .await
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|_| "sign-out result could not be formatted".into()),
+        _ => Err(usage.into()),
+    }
 }
 
 #[cfg(test)]

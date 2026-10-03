@@ -7,17 +7,32 @@ pub(crate) enum Endpoint {
     Chat,
     Transcription,
     Models,
+    Embeddings,
+    Responses,
+    Speech,
     Other,
 }
 
 impl Endpoint {
-    pub(crate) const ALL: [Self; 4] = [Self::Chat, Self::Transcription, Self::Models, Self::Other];
+    pub(crate) const COUNT: usize = 7;
+    pub(crate) const ALL: [Self; Self::COUNT] = [
+        Self::Chat,
+        Self::Transcription,
+        Self::Models,
+        Self::Embeddings,
+        Self::Responses,
+        Self::Speech,
+        Self::Other,
+    ];
 
     pub(crate) fn from_path(path: &str) -> Self {
         match path {
             "/v1/chat/completions" => Self::Chat,
             "/v1/audio/transcriptions" => Self::Transcription,
             "/v1/models" => Self::Models,
+            "/v1/embeddings" => Self::Embeddings,
+            "/v1/responses" => Self::Responses,
+            "/v1/audio/speech" => Self::Speech,
             _ => Self::Other,
         }
     }
@@ -28,6 +43,9 @@ impl Endpoint {
             Self::Transcription => 1,
             Self::Models => 2,
             Self::Other => 3,
+            Self::Embeddings => 4,
+            Self::Responses => 5,
+            Self::Speech => 6,
         }
     }
 
@@ -36,6 +54,9 @@ impl Endpoint {
             Self::Chat => "chat",
             Self::Transcription => "transcription",
             Self::Models => "models",
+            Self::Embeddings => "embeddings",
+            Self::Responses => "responses",
+            Self::Speech => "speech",
             Self::Other => "other",
         }
     }

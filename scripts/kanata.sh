@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Kanata deployment helper: Docker lifecycle, config checks, Codex sign-in and keys.
+# Kanata deployment helper: Docker lifecycle, config checks, sign-in and host keys.
 # Uses the repo's .env (COMPOSE_FILE, KANATA_CONFIG_FILE, ...) like `docker compose`.
 set -euo pipefail
 cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
 # Image tag: KANATA_IMAGE from the environment or .env, as Compose resolves it.
-IMAGE=${KANATA_IMAGE:-$(sed -n 's/^KANATA_IMAGE=//p' .env 2>/dev/null | tail -1)}
+IMAGE=${KANATA_IMAGE:-}
+if [[ -z $IMAGE && -f .env ]]; then
+  IMAGE=$(sed -n 's/^KANATA_IMAGE=//p' .env | tail -1)
+fi
 IMAGE=${IMAGE:-kanata:test}
 # Temp paths are global so EXIT traps can still see them.
 tmp=
@@ -25,6 +28,13 @@ Lifecycle
 
 Codex
   codex login|status|logout  Device-code sign-in inside the running container
+
+ChatGPT (host browser sign-in, compose.kanata.chatgpt.yml)
+  chatgpt login|status|logout|models [--profile NAME]
+                             Use deployed credentials; --profile for login/logout only
+
+Private dashboard (host `kanata` binary: cargo install --locked --path .)
+  portal [--port PORT]        Manage deployed keys at 127.0.0.1 (default port 9091)
 
 Keys (host `kanata` binary: cargo install --locked --path .; changes apply without restart)
   key <new|list|show|edit|rm|rotate|migrate> [args]
@@ -46,7 +56,7 @@ EOF
 die() { echo "error: $*" >&2; exit 1; }
 
 # Deployed paths exactly as Compose mounts them (honours .env): config, keys dir, state dir.
-config= keys_dir= state_dir=
+config= keys_dir= state_dir= chatgpt_dir=
 deploy_paths() {
   local model out
   [[ -z $config ]] || return 0
@@ -63,9 +73,9 @@ print(state[: -len("/private")] if state.endswith("/private") else "")' "$model"
     die "the kanata service must mount the config, KANATA_KEYS_DIR and KANATA_STATE_DIR/private"
   [[ -f $config ]] || die "config not found: $config"
   # Host CLI and containers must resolve the same keys file and state dir.
-  python3 - "$config" "$keys_dir" "$state_dir" <<'PY' || exit 1
-import os, sys, tomllib
-config, keys_dir, state_dir = sys.argv[1:4]
+  chatgpt_dir=$(python3 - "$config" "$keys_dir" "$state_dir" "$model" "$PWD" <<'PY'
+import json, os, stat, sys, tomllib
+config, keys_dir, state_dir, model, checkout = sys.argv[1:6]
 base = os.path.dirname(os.path.realpath(config))
 def fail(msg):
     sys.exit("error: " + msg)
@@ -75,13 +85,38 @@ if os.path.realpath(state_dir) != os.path.join(base, "state"):
     fail(f"KANATA_STATE_DIR ({state_dir}) must be {os.path.join(base, 'state')}")
 try:
     with open(config, "rb") as f:
-        keys = tomllib.load(f).get("keys")
+        settings = tomllib.load(f)
+        keys = settings.get("keys")
 except (OSError, tomllib.TOMLDecodeError) as e:
     fail(f"cannot read {config}: {e}")
 # Inline [[application_keys]] (no [keys]) is deprecated but still deployable.
 if keys is not None and (keys.get("file") != "keys/keys.toml" or keys.get("usage_dir") != "state"):
     fail(f'{config}: Compose requires [keys] file = "keys/keys.toml" and usage_dir = "state"')
+auth = settings.get("chatgpt_auth")
+if auth is not None:
+    path = auth.get("state_dir", "")
+    if not isinstance(path, str) or not os.path.isabs(path) or path == "/" or any(ord(c) < 32 or ord(c) == 127 for c in path):
+        fail("chatgpt_auth.state_dir must be a private absolute directory")
+    if os.path.realpath(path) != path or os.path.normpath(path) != path:
+        fail("chatgpt_auth.state_dir must be canonical, without symlinks")
+    if os.path.commonpath([path, os.path.realpath(checkout)]) == os.path.realpath(checkout):
+        fail("chatgpt_auth.state_dir must be outside the checkout")
+    services = json.loads(model)["services"]
+    mounts = services["kanata"].get("volumes", [])
+    if not any(v.get("type") == "bind" and v.get("source") == path and v.get("target") == path and not v.get("read_only", False) for v in mounts):
+        fail("ChatGPT requires compose.kanata.chatgpt.yml with KANATA_CHATGPT_STATE_DIR matching chatgpt_auth.state_dir")
+    for mount in services.get("kanata-public", {}).get("volumes", []):
+        for name in ("source", "target"):
+            value = mount.get(name, "")
+            if os.path.isabs(value) and os.path.commonpath([path, os.path.realpath(value)]) in (path, os.path.realpath(value)):
+                fail("ChatGPT credentials must not be mounted in kanata-public")
+    if os.path.lexists(path):
+        info = os.lstat(path)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            fail("ChatGPT state directory must be owned by the host command user with mode 0700")
+    print(path)
 PY
+  ) || exit 1
 }
 
 # Missing mount sources would fail `up` (create_host_path: false).
@@ -90,6 +125,9 @@ prepare_dirs() {
   for dir in "$keys_dir" "$state_dir" "$state_dir/private" "$state_dir/public"; do
     [[ -d $dir ]] || { mkdir -p -- "$dir" && chmod 700 "$dir"; } || die "cannot create $dir"
   done
+  if [[ -n $chatgpt_dir && ! -d $chatgpt_dir ]]; then
+    mkdir -m 700 -- "$chatgpt_dir" || die "cannot create ChatGPT state directory; create its parent first"
+  fi
 }
 
 check_config() {
@@ -123,6 +161,29 @@ key_passthrough() {
     [[ $arg == --config || $arg == --keys ]] && exec kanata key "$@"
   done
   exec kanata key "$@" --config "$config"
+}
+
+portal() {
+  [[ $# -eq 0 || ( $# -eq 2 && $1 == --port ) ]] || die "usage: portal [--port PORT]"
+  host_kanata
+  deploy_paths
+  prepare_dirs
+  exec kanata portal --config "$config" "$@"
+}
+
+chatgpt() {
+  local action=${1:-}
+  case $action in login | status | logout | models) ;; *) die "usage: chatgpt login|status|logout|models [--profile NAME]" ;; esac
+  shift
+  if [[ $# -ne 0 ]]; then
+    [[ ( $action == login || $action == logout ) && $# -eq 2 && $1 == --profile && -n $2 ]] ||
+      die "--profile NAME is supported only for ChatGPT login/logout"
+  fi
+  host_kanata
+  deploy_paths
+  [[ -n $chatgpt_dir ]] || die "configure [chatgpt_auth] and compose.kanata.chatgpt.yml first"
+  prepare_dirs
+  exec kanata auth chatgpt "$action" --config "$config" "$@"
 }
 
 running() { docker compose ps --status running --services | grep -qx kanata; }
@@ -352,6 +413,8 @@ case $command in
     fi
     ;;
   codex) codex "$@" ;;
+  chatgpt) chatgpt "$@" ;;
+  portal) portal "$@" ;;
   key)
     [[ $# -gt 0 ]] || die "usage: key <new|list|show|edit|rm|rotate|migrate> [args] (see: kanata key)"
     if [[ $1 == new && $# -ge 3 && $2 != -* && $3 != -* ]]; then

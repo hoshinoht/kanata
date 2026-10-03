@@ -5,10 +5,13 @@ use futures_core::Stream;
 
 use crate::core::{Capabilities, GatewayError, NormalizedEvent, Response, RoutedRequest};
 
+pub mod chatgpt;
 pub mod codex;
 pub(crate) mod diagnostics;
 pub mod ollama;
 pub mod openrouter;
+pub(crate) mod probe;
+pub mod speech;
 pub mod vllm;
 
 #[allow(dead_code)]

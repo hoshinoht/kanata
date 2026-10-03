@@ -133,6 +133,7 @@ impl OpenRouterAdapter {
         capabilities.streaming_chat = configured.streaming_chat;
         capabilities.function_tools = configured.function_tools;
         capabilities.input_audio = configured.input_audio;
+        capabilities.input_images = configured.input_images;
         capabilities.audio_streaming_chat = configured.audio_streaming_chat;
         capabilities.audio_function_tools = configured.audio_function_tools;
         capabilities.structured_output = configured.structured_output;
@@ -272,6 +273,13 @@ impl Adapter for OpenRouterAdapter {
         let bearer_token = format!("Bearer {}", self.bearer_token);
         let label = UpstreamLabel::new(&self.id, "openrouter");
         let chat = match request {
+            Request::Speech(_) | Request::Embeddings(_) => {
+                return Box::pin(async {
+                    Err(GatewayError {
+                        kind: ErrorKind::UnsupportedOperation,
+                    })
+                });
+            }
             Request::Chat(chat) => chat,
             Request::Transcription(transcription) => {
                 let payload =
