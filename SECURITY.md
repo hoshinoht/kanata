@@ -23,7 +23,7 @@ You should get an acknowledgement within a week. Fixes are released as soon as p
 - Request validation or bounds bypasses that cause unbounded resource use.
 - Container or Compose settings that expose ports or host resources contrary to the documentation.
 - Tampering with `keys.toml`, usage state or `audit.jsonl` through the container mounts (the keys directory is mounted read-only).
-- Key management exposed through a gateway listener, a non-loopback portal bind, or a portal session/origin bypass. `kanata key` has no network path; the optional `kanata portal` is a separate host process with a one-use terminal login code, an in-memory browser bearer session, and exact Host/Origin checks.
+- Key management exposed through a gateway listener, a non-loopback portal bind, or a portal session/origin bypass. `kanata key` has no network path; the optional `kanata portal` is a separate host process with a one-use terminal login code, an in-memory browser bearer session, and exact Host/Origin checks. Login-code renewal requires input in the host terminal or a valid browser session; the locked page cannot issue a code.
 
 ## Out of scope
 

@@ -15,7 +15,7 @@
 <a class="skip" href="#main">Skip to content</a>
 <header class="topbar">
   <a href="/" class="brand"><span class="mark" aria-hidden="true">{{LOGO}}</span> kanata <span class="divider">/</span><span class="brand-sub">private portal</span></a>
-  <div class="topbar-actions"><span class="connection"><span class="connection-dot" aria-hidden="true"></span>This device only</span><button id="lock" class="quiet" hidden>Lock portal</button></div>
+  <div class="topbar-actions"><span class="connection"><span class="connection-dot" aria-hidden="true"></span>This device only</span><button id="renew-code" class="quiet" hidden>New login code</button><button id="lock" class="quiet" hidden>Lock portal</button></div>
 </header>
 <div class="layout">
 <aside aria-label="Portal navigation">
@@ -27,7 +27,7 @@
 <main id="main">
 <section id="login" class="overview-grid">
   <div class="intro"><p class="eyebrow">HOST CONTROL</p><h1>Your keys.<br><em>Your gateway.</em></h1><p class="lede">A private space for managing client access. Create scoped keys, set limits, and keep each connection in your control.</p><div class="base"><span>PRIVATE PORTAL</span><code>127.0.0.1 · this device only</code></div></div>
-  <div class="auth panel"><h2>Unlock your portal</h2><p>Enter the one-use login code shown in the terminal running this portal.</p><form id="login-form"><label for="code">Portal login code</label><div class="input-row"><input id="code" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your login code" required><button class="primary" type="submit">Unlock portal <span aria-hidden="true">↗</span></button></div></form><p class="small">The code expires after 10 minutes. Your browser session lasts one hour. Reloading or locking this page requires a new code; restart the terminal command. No gateway key is needed.</p></div>
+  <div class="auth panel"><h2>Unlock your portal</h2><p>Enter the one-use login code shown in the terminal running this portal.</p><form id="login-form"><label for="code">Portal login code</label><div class="input-row"><input id="code" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your login code" required><button class="primary" type="submit">Unlock portal <span aria-hidden="true">↗</span></button></div></form><p class="small">The code expires after 10 minutes. Your browser session lasts one hour. For a fresh code, press Enter in the terminal running this portal. Before reloading or locking an unlocked page, you can also choose New login code. No gateway key is needed.</p></div>
 </section>
 <div id="notice" role="status" aria-live="polite" hidden></div>
 <section id="dashboard" hidden>
@@ -38,6 +38,7 @@
 <p class="footnote" id="reload-note"></p><p class="footnote" id="usage-note"></p>
 </section>
 <dialog id="secret-dialog"><p class="eyebrow">SAVE YOUR SECRET</p><h2 id="secret-title">Key created</h2><p>This is the only time this secret is available. Copy it to the client that needs access.</p><textarea id="secret-value" readonly rows="3" spellcheck="false" aria-label="New key secret"></textarea><div class="actions"><button id="copy-secret" class="primary">Copy secret</button><button id="close-secret" class="quiet">I saved it</button></div><p class="small">Closing this dialog clears the secret from the page.</p></dialog>
+<dialog id="login-code-dialog" aria-labelledby="login-code-title"><p class="eyebrow">PORTAL ACCESS</p><h2 id="login-code-title">New login code</h2><p>Your previous login code has been replaced. This code works once and expires in 10 minutes. Your current session stays open.</p><textarea id="login-code-value" readonly rows="3" spellcheck="false" aria-label="New portal login code"></textarea><div class="actions"><button id="copy-login-code" class="primary">Copy code</button><button id="close-login-code" class="quiet">Done</button></div><p class="small">Keep this code private. Press Enter in the host terminal whenever you need another.</p></dialog>
 <dialog id="confirm-dialog"><p class="eyebrow">CONFIRM CHANGE</p><h2 id="confirm-title"></h2><p id="confirm-text"></p><label for="confirm-id">Type the key ID to continue</label><input id="confirm-id" autocomplete="off"><label id="rotate-expiry-label" for="rotate-expiry">New expiry</label><select id="rotate-expiry"><option value="7">7 days</option><option value="1">1 day</option><option value="3">3 days</option><option value="13">13 days</option><option value="30">30 days</option><option value="60">60 days</option><option value="unlimited">Unlimited</option></select><div class="actions"><button id="confirm-action" class="danger" disabled>Confirm</button><button id="cancel-action" class="quiet">Cancel</button></div></dialog>
 <footer>kanata <span>Local key management · no provider credentials shown</span></footer>
 <details class="font-license"><summary>Maple Mono · font license</summary><pre>{{FONT_LICENSE}}</pre></details>

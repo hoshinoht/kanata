@@ -551,3 +551,77 @@ async fn duplicate_security_headers_and_expired_or_locked_bootstrap_are_denied()
     );
     assert!(fixture.portal.login.lock().unwrap().session.is_none());
 }
+
+#[tokio::test]
+async fn renewed_login_code_replaces_bootstrap_and_preserves_current_session() {
+    let fixture = Fixture::new();
+    assert_eq!(
+        fixture
+            .send("/api/login-code", json!({}), None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let session = fixture.unlock().await;
+    {
+        let mut login = fixture.portal.login.lock().unwrap();
+        login.deadline = Instant::now() - Duration::from_secs(1);
+        login.failures = 10;
+    }
+    let response = fixture
+        .send("/api/login-code", json!({}), Some(&session))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let renewal = body(response).await;
+    let previous = renewal["code"].as_str().unwrap();
+    assert_ne!(previous, fixture.code);
+    assert_eq!(renewal["expires_in"], 600);
+    {
+        let login = fixture.portal.login.lock().unwrap();
+        assert_eq!(login.failures, 0);
+        assert!(login.deadline > Instant::now());
+    }
+    fixture.snapshot(&session).await;
+    let response = fixture
+        .send("/api/login-code", json!({}), Some(&session))
+        .await;
+    let renewal = body(response).await;
+    let code = renewal["code"].as_str().unwrap();
+    assert_ne!(code, previous);
+    assert_eq!(
+        fixture
+            .send("/api/login", json!({"code":previous}), None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .send("/api/login", json!({"code":fixture.code}), None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .send("/api/login", json!({"code":code}), None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        fixture
+            .send("/api/login", json!({"code":code}), None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .send("/api/snapshot", json!({}), Some(&session))
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}

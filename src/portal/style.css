@@ -32,7 +32,8 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 .mark svg { width:100%; height:100%; }
 .divider { font-weight:300; color:#a8b5c7; padding:0 8px; }
 .brand-sub { font-size:13px; font-weight:500; color:var(--muted); letter-spacing:0; }
-.topbar-actions { display:flex; align-items:center; gap:12px; }
+.topbar-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:12px; }
+#renew-code,#login-code-dialog button { min-height:48px; }
 .connection { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); border:1px solid var(--line); border-radius:24px; padding:8px 14px; white-space:nowrap; background:var(--tint); }
 .connection-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); }
 .layout { display:grid; grid-template-columns:224px minmax(0,1fr); max-width:1600px; margin:auto; }
@@ -167,7 +168,7 @@ dialog { border:1px solid var(--line); border-radius:32px; background:var(--pape
 dialog::backdrop { background:#19264d66; backdrop-filter:blur(3px); }
 dialog p { font-size:13px; }
 dialog .actions { margin-top:24px; }
-#secret-value { font-family:var(--mono); font-size:12px; overflow-wrap:anywhere; }
+#secret-value,#login-code-value { font-family:var(--mono); font-size:12px; overflow-wrap:anywhere; }
 footer { border-top:1px solid var(--line); padding:24px 0 18px; margin-top:48px; font-size:16px; font-weight:650; display:flex; gap:20px; justify-content:space-between; }
 footer span { color:var(--muted); font-size:11px; font-weight:400; }
 .font-license { padding:0 0 30px; color:var(--muted); }

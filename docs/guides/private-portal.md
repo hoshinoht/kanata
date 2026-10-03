@@ -57,12 +57,12 @@ The command binds strictly to `127.0.0.1`; it has no `--bind`, public-listener o
 
 The portal uses:
 
-- A random login code that expires after ten minutes, is consumed after one successful login, and stops accepting attempts after ten failures.
+- A random, replaceable login code that expires after ten minutes, is consumed after one successful login, and stops accepting attempts after ten failures.
 - A separate random session that expires after one hour. It stays in the page's JavaScript memory, with no cookies, local storage or session storage.
 - Exact Host and Origin validation, a required custom request header, JSON POST requests and no CORS permission for the management API.
 - Bounded request bodies and connections, request deadlines, no-store responses, a restrictive content policy and frame blocking.
 
-Use the dashboard's **Refresh** button to update keys without leaving the session. Reloading the browser page, navigating away or choosing **Lock portal** clears the browser session. Restart the terminal command for another login code. Ctrl-C stops the portal and invalidates every session. If a one-time key secret is lost, rotate the key again.
+Use the dashboard's **Refresh** button to update keys without leaving the session. Reloading the browser page, navigating away or choosing **Lock portal** clears the browser session. Press **Enter** in the terminal running the portal to replace the previous login code with a fresh ten-minute code. The listener and current browser session stay running. This also recovers an expired code or a code locked after ten failed attempts. While unlocked, **New login code** shows a fresh code in a copy dialog so you can save it before locking or reloading the page. The dialog clears its value when closed; keep the copied code private. Using the new code replaces the previous browser session. Ctrl-C stops the portal and invalidates every session. If a one-time key secret is lost, rotate the key again.
 
 The static login page contains no configured inventory, keys or provider credentials. No management routes are mounted on the private gateway, public gateway or admin listener. The terminal code is delivered separately from the URL, and the portal does not write HTTP access logs containing credentials.
 

@@ -7,7 +7,7 @@
   const format = (value) => value == null ? 'Unavailable' : Number(value).toLocaleString();
   const date = (value) => value ? new Date(value).toLocaleString() : 'Never';
   function notice(message, error = false) { $('notice').textContent = message; $('notice').className = error ? 'error' : ''; $('notice').hidden = !message; }
-  function showLocked() { session = null; data = null; selected = null; $('dashboard').hidden = true; $('login').hidden = false; $('lock').hidden = true; $('keys').replaceChildren(); $('key-form').reset(); $('secret-value').value = ''; if ($('secret-dialog').open) $('secret-dialog').close(); }
+  function showLocked() { session = null; data = null; selected = null; $('dashboard').hidden = true; $('login').hidden = false; $('lock').hidden = true; $('renew-code').hidden = true; $('login-code-value').value = ''; if ($('login-code-dialog').open) $('login-code-dialog').close(); $('keys').replaceChildren(); $('key-form').reset(); $('secret-value').value = ''; if ($('secret-dialog').open) $('secret-dialog').close(); }
   async function api(path, body = {}) {
     const response = await fetch(`/api/${path}`, { method: 'POST', credentials: 'omit', cache: 'no-store', headers: { 'Content-Type': 'application/json', 'X-Kanata-Portal': '1', ...(session ? { Authorization: `Bearer ${session}` } : {}) }, body: JSON.stringify(body) });
     const result = await response.json();
@@ -16,7 +16,7 @@
   }
   async function refresh() {
     data = await api('snapshot');
-    $('dashboard').hidden = false; $('login').hidden = true; $('lock').hidden = false;
+    $('dashboard').hidden = false; $('login').hidden = true; $('lock').hidden = false; $('renew-code').hidden = false;
     const active = data.keys.filter((key) => !key.expired && !key.revoked_at).length;
     const expired = data.keys.filter((key) => key.expired && !key.revoked_at).length;
     const revoked = data.keys.filter((key) => key.revoked_at).length;
@@ -188,7 +188,22 @@
   $('refresh').addEventListener('click', () => refresh().catch((error) => notice(error.message, true)));
   $('new').addEventListener('click', () => { notice(''); select(); $('key-id').focus(); });
   $('lock').addEventListener('click', async () => {
-    try { await api('logout'); showLocked(); notice('Portal locked. Restart the terminal command to get a new login code.'); } catch (error) { notice(error.message, true); }
+    try { await api('logout'); showLocked(); notice('Portal locked. Use your new login code, or press Enter in the portal terminal for another.'); } catch (error) { notice(error.message, true); }
+  });
+  $('renew-code').addEventListener('click', async () => {
+    $('renew-code').disabled = true;
+    try {
+      const result = await api('login-code');
+      $('login-code-value').value = result.code; result.code = null;
+      $('login-code-dialog').showModal();
+    } catch (error) { notice(error.message, true); }
+    finally { $('renew-code').disabled = false; }
+  });
+  $('close-login-code').addEventListener('click', () => $('login-code-dialog').close());
+  $('login-code-dialog').addEventListener('close', () => { $('login-code-value').value = ''; $('copy-login-code').textContent = 'Copy code'; });
+  $('copy-login-code').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('login-code-value').value); $('copy-login-code').textContent = 'Copied'; }
+    catch { $('login-code-value').focus(); $('login-code-value').select(); $('copy-login-code').textContent = 'Select and copy'; }
   });
   function confirm(action) {
     pending = action; $('confirm-id').value = ''; $('confirm-action').disabled = true;

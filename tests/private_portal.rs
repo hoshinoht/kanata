@@ -30,6 +30,7 @@ fn host_portal_binds_loopback_and_requires_its_browser_session() {
         .args(["portal", "--config"])
         .arg(dir.join("config.toml"))
         .args(["--port", "0"])
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -38,14 +39,16 @@ fn host_portal_binds_loopback_and_requires_its_browser_session() {
     let stdout = fixture.child.stdout.take().unwrap();
     let (send, receive) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut lines = BufReader::new(stdout).lines();
-        let first = lines.next().unwrap().unwrap();
-        let second = lines.next().unwrap().unwrap();
-        send.send((first, second)).unwrap();
+        for line in BufReader::new(stdout).lines() {
+            if send.send(line.unwrap()).is_err() {
+                break;
+            }
+        }
     });
-    let (address, code) = receive
+    let address = receive
         .recv_timeout(Duration::from_secs(10))
         .expect("portal startup");
+    let code = receive.recv_timeout(Duration::from_secs(10)).unwrap();
     let origin = address.strip_prefix("Private key portal: ").unwrap();
     assert!(origin.starts_with("http://127.0.0.1:"));
     let authority = origin.strip_prefix("http://").unwrap();
@@ -76,6 +79,32 @@ fn host_portal_binds_loopback_and_requires_its_browser_session() {
     let snapshot = request(authority, "POST /api/snapshot HTTP/1.1", &headers, "{}");
     assert!(snapshot.starts_with("HTTP/1.1 200"), "{snapshot}");
     assert!(snapshot.contains("local-embed"));
+    fixture
+        .child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"\n")
+        .unwrap();
+    let renewed = loop {
+        let line = receive
+            .recv_timeout(Duration::from_secs(10))
+            .expect("renewed code");
+        if line.starts_with("One-use login code") {
+            break line;
+        }
+    };
+    let renewed = renewed.split(": ").nth(1).unwrap();
+    assert_ne!(renewed, code);
+    let snapshot = request(authority, "POST /api/snapshot HTTP/1.1", &headers, "{}");
+    assert!(snapshot.starts_with("HTTP/1.1 200"));
+    let login = request(
+        authority,
+        "POST /api/login HTTP/1.1",
+        &headers,
+        &serde_json::json!({"code":renewed}).to_string(),
+    );
+    assert!(login.starts_with("HTTP/1.1 200"));
     headers[0] = ("Origin", "http://attacker.test");
     let denied = request(authority, "POST /api/snapshot HTTP/1.1", &headers, "{}");
     assert!(denied.starts_with("HTTP/1.1 403"), "{denied}");

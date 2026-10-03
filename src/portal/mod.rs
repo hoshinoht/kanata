@@ -82,14 +82,35 @@ pub(crate) async fn run(
         .map_err(|_| "portal address unavailable")?;
     let (portal, code) = Portal::new(path, catalog, address.port())?;
     output(format!(
-        "Private key portal: {}\nOne-use login code (expires in 10 minutes): {code}\nOpen this address on this device and enter the code. Keep this terminal private.\nPress Ctrl-C to stop the portal. Sessions expire after one hour.",
+        "Private key portal: {}\nOne-use login code (expires in 10 minutes): {code}\nOpen this address on this device and enter the code. Keep this terminal private.\nPress Enter for a new login code, or Ctrl-C to stop. Sessions expire after one hour.",
         portal.origin
     ));
-    serve(listener, portal.router()).await?;
+    let (send, renewals) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead as _;
+        for line in std::io::stdin().lock().lines() {
+            match line {
+                Ok(line) if line.trim().is_empty() => {
+                    if send.send(()).is_err() {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    });
+    serve(listener, portal, renewals, output).await?;
     Ok(String::new())
 }
 
-async fn serve(listener: tokio::net::TcpListener, router: Router) -> Result<(), String> {
+async fn serve(
+    listener: tokio::net::TcpListener,
+    portal: Portal,
+    mut renewals: tokio::sync::mpsc::UnboundedReceiver<()>,
+    output: &mut impl FnMut(String),
+) -> Result<(), String> {
+    let router = portal.clone().router();
     let capacity = Arc::new(tokio::sync::Semaphore::new(32));
     let mut connections = tokio::task::JoinSet::new();
     let shutdown = tokio::signal::ctrl_c();
@@ -97,6 +118,12 @@ async fn serve(listener: tokio::net::TcpListener, router: Router) -> Result<(), 
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
+            Some(()) = renewals.recv() => {
+                match portal.renew_code() {
+                    Ok(code) => output(format!("One-use login code (expires in 10 minutes): {code}")),
+                    Err(error) => output(error),
+                }
+            },
             Some(_) = connections.join_next(), if !connections.is_empty() => {},
             accepted = listener.accept() => {
                 let (socket, peer) = accepted.map_err(|_| "portal accept failed")?;
@@ -158,6 +185,7 @@ impl Portal {
             .route("/api/snapshot", post(snapshot))
             .route("/api/change", post(change))
             .route("/api/logout", post(logout))
+            .route("/api/login-code", post(login_code))
             .fallback(|| async { failure(StatusCode::NOT_FOUND, "Not found") })
             .layer(middleware::from_fn_with_state(self.clone(), guard))
             .with_state(self)
@@ -181,6 +209,15 @@ impl Portal {
         login
             .session
             .is_some_and(|(expected, expires)| Instant::now() < expires && equal(&expected, token))
+    }
+
+    fn renew_code(&self) -> Result<String, String> {
+        let code = random_secret()?;
+        let mut login = self.login.lock().map_err(|_| "Cannot renew login code")?;
+        login.bootstrap = Some(digest(&code));
+        login.deadline = Instant::now() + LOGIN_DURATION;
+        login.failures = 0;
+        Ok(code)
     }
 }
 
@@ -293,7 +330,7 @@ async fn login(State(portal): State<Portal>, body: Body) -> Response {
     if Instant::now() >= login.deadline || login.failures >= 10 || login.bootstrap.is_none() {
         return failure(
             StatusCode::UNAUTHORIZED,
-            "This code is unavailable or expired; restart the portal for a new code",
+            "This code is unavailable or expired; press Enter in the portal terminal for a new code",
         );
     }
     if !login
@@ -351,6 +388,15 @@ async fn logout(State(portal): State<Portal>) -> Response {
         login.session = None;
     }
     Json(json!({"ok": true})).into_response()
+}
+
+async fn login_code(State(portal): State<Portal>) -> Response {
+    match portal.renew_code() {
+        Ok(code) => {
+            Json(json!({"code":code,"expires_in":LOGIN_DURATION.as_secs()})).into_response()
+        }
+        Err(error) => failure(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    }
 }
 
 fn random_secret() -> Result<String, String> {
