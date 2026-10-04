@@ -1,4 +1,6 @@
 pub(crate) use raw::{RawPermission, RawRateLimit};
+mod catalog;
+pub(crate) mod commands;
 mod plane;
 mod raw;
 mod reload;
@@ -6,7 +8,6 @@ mod validation;
 use raw::*;
 use std::collections::BTreeSet;
 use std::fmt;
-use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use validation::*;
@@ -32,7 +33,7 @@ pub const MAX_TIMEOUT_MS: u64 = 604_800_000;
 pub const MAX_CONCURRENCY_LIMIT: u64 = 1_000_000;
 pub const MAX_CONFIG_AUDIO_BYTES: u64 = MAX_INPUT_AUDIO_BYTES as u64;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedConfig {
     listeners: ValidatedListeners,
     publication: ValidatedPublication,
@@ -45,6 +46,7 @@ pub struct ValidatedConfig {
     limits: ValidatedLimits,
     timeouts: ValidatedTimeouts,
     logging: ValidatedLogging,
+    route_sources: std::collections::BTreeMap<String, String>,
 }
 
 /// Where application keys come from.
@@ -191,7 +193,7 @@ impl Plane {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Trace,
@@ -202,7 +204,7 @@ pub enum LogLevel {
     Error,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
     #[default]
@@ -257,7 +259,7 @@ impl ValidatedListener {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedPublication {
     tailnet_addresses: Vec<IpAddr>,
     public_routes: Vec<RouteSelector>,
@@ -271,14 +273,14 @@ impl ValidatedPublication {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexAuthStore {
     Keyring,
     File,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CodexReasoningEffort {
     Low,
@@ -310,7 +312,7 @@ impl CodexReasoningEffort {
 }
 
 /// Requested reasoning summary detail.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningSummary {
     Auto,
@@ -354,7 +356,7 @@ impl ValidatedChatgptAuth {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedAdapter {
     id: String,
     kind: ProviderKind,
@@ -457,7 +459,7 @@ impl SecretReference {
 const MIN_CONTEXT_TOKENS: u32 = 256;
 const MAX_CONTEXT_TOKENS: u32 = 16_777_216;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedRoute {
     identity: RouteIdentity,
     adapter_id: String,
@@ -554,7 +556,7 @@ impl ValidatedRoute {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedApplicationKey {
     id: String,
     owner: bool,
@@ -668,7 +670,7 @@ impl ValidatedTimeouts {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     Ollama,
@@ -743,7 +745,7 @@ impl ProviderKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VllmTranscriptionMode {
     NativeAsr,
@@ -823,18 +825,12 @@ fn sanitized_deserialize_error(
 
 pub fn load(path: impl AsRef<Path>) -> Result<ValidatedConfig, ConfigError> {
     let path = path.as_ref();
-    let contents =
-        fs::read_to_string(path).map_err(|_| ConfigError::new("config", "read_error"))?;
-    let raw = parse_toml(&contents, "config")?;
-    validate(raw, path.parent().unwrap_or(Path::new("")), true)
+    catalog::Document::load(path)?.validate(path, true)
 }
 
 /// Like [`load`] but leaves a `[keys] file` unread (no application keys, `sha256: None`),
 /// so the host key CLI can validate it itself and repair route drift.
 pub fn load_deferring_keys(path: impl AsRef<Path>) -> Result<ValidatedConfig, ConfigError> {
     let path = path.as_ref();
-    let contents =
-        fs::read_to_string(path).map_err(|_| ConfigError::new("config", "read_error"))?;
-    let raw = parse_toml(&contents, "config")?;
-    validate(raw, path.parent().unwrap_or(Path::new("")), false)
+    catalog::Document::load(path)?.validate(path, false)
 }

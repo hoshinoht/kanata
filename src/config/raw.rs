@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawConfig {
     pub(super) listeners: RawListeners,
@@ -9,8 +9,16 @@ pub(super) struct RawConfig {
     pub(super) codex_auth: Option<RawCodexAuth>,
     #[serde(default)]
     pub(super) chatgpt_auth: Option<RawChatgptAuth>,
+    #[serde(default)]
     pub(super) adapters: Vec<RawAdapter>,
+    #[serde(default)]
     pub(super) routes: Vec<RawRoute>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) include: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(super) route_profiles: std::collections::BTreeMap<String, RawModel>,
+    #[serde(default, skip_serializing_if = "RawModels::is_empty")]
+    pub(super) models: RawModels,
     #[serde(default)]
     pub(super) application_keys: Vec<RawApplicationKey>,
     #[serde(default)]
@@ -21,7 +29,7 @@ pub(super) struct RawConfig {
     pub(super) logging: RawLogging,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawLogging {
     #[serde(default)]
@@ -30,7 +38,7 @@ pub(super) struct RawLogging {
     pub(super) format: LogFormat,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawListeners {
     pub(super) client: RawListener,
@@ -39,14 +47,14 @@ pub(super) struct RawListeners {
     pub(super) public: Option<RawListener>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawListener {
     pub(super) bind: String,
     pub(super) port: u16,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawPublication {
     pub(super) tailnet_addresses: Vec<String>,
@@ -54,7 +62,7 @@ pub(super) struct RawPublication {
     pub(super) public_routes: Vec<RawPermission>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawCodexAuth {
     #[serde(default)]
@@ -63,13 +71,13 @@ pub(super) struct RawCodexAuth {
     pub(super) state_dir: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawChatgptAuth {
     pub(super) state_dir: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawAdapter {
     pub(super) id: String,
@@ -88,7 +96,7 @@ pub(super) struct RawAdapter {
     pub(super) circuit_breaker: Option<RawCircuitBreaker>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawCircuitBreaker {
     #[serde(default)]
@@ -99,7 +107,7 @@ pub(super) struct RawCircuitBreaker {
     pub(super) cooldown_ms: Option<u64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawCapabilities {
     pub(super) operations: Vec<Operation>,
@@ -121,7 +129,7 @@ pub(super) struct RawCapabilities {
     pub(super) reasoning_control: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawRoute {
     pub(super) id: String,
@@ -161,7 +169,7 @@ pub(super) struct RawRoute {
     pub(super) enable_thinking: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawApplicationKey {
     pub(super) id: String,
@@ -175,7 +183,7 @@ pub(super) struct RawApplicationKey {
     pub(super) rate_limit: Option<RawRateLimit>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawKeys {
     pub(super) file: String,
@@ -190,14 +198,14 @@ pub(crate) struct RawRateLimit {
     pub(crate) per_ms: u64,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawPermission {
     pub(crate) model_alias: String,
     pub(crate) operation: Operation,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawLimits {
     #[serde(default)]
@@ -211,7 +219,7 @@ pub(super) struct RawLimits {
     pub(super) max_extension_bytes: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawTimeouts {
     #[serde(default)]
@@ -222,4 +230,115 @@ pub(super) struct RawTimeouts {
     pub(super) first_byte_ms: u64,
     pub(super) idle_ms: u64,
     pub(super) overall_ms: u64,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawModels {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(super) chat: std::collections::BTreeMap<String, RawModel>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(super) transcription: std::collections::BTreeMap<String, RawModel>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(super) embeddings: std::collections::BTreeMap<String, RawModel>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(super) speech: std::collections::BTreeMap<String, RawModel>,
+}
+
+impl RawModels {
+    pub(super) fn is_empty(&self) -> bool {
+        self.chat.is_empty()
+            && self.transcription.is_empty()
+            && self.embeddings.is_empty()
+            && self.speech.is_empty()
+    }
+
+    pub(super) fn entries(
+        &self,
+    ) -> [(Operation, &std::collections::BTreeMap<String, RawModel>); 4] {
+        [
+            (Operation::Chat, &self.chat),
+            (Operation::Transcription, &self.transcription),
+            (Operation::Embeddings, &self.embeddings),
+            (Operation::Speech, &self.speech),
+        ]
+    }
+
+    pub(super) fn operation_mut(
+        &mut self,
+        operation: Operation,
+    ) -> &mut std::collections::BTreeMap<String, RawModel> {
+        match operation {
+            Operation::Chat => &mut self.chat,
+            Operation::Transcription => &mut self.transcription,
+            Operation::Embeddings => &mut self.embeddings,
+            Operation::Speech => &mut self.speech,
+        }
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawFragment {
+    #[serde(default)]
+    pub(super) adapters: Vec<RawAdapter>,
+    #[serde(default)]
+    pub(super) routes: Vec<RawRoute>,
+    #[serde(default)]
+    pub(super) route_profiles: std::collections::BTreeMap<String, RawModel>,
+    #[serde(default)]
+    pub(super) models: RawModels,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawModel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(super) route_ids: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) upstream_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) default_effort: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) efforts: Option<Vec<ReasoningEffort>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) unset: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) adapter_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) reasoning_summary: Option<ReasoningSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) codex_reasoning_effort: Option<CodexReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) codex_reasoning_summary: Option<CodexReasoningSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) extension_allowlist: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) requires_streaming_chat: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) requires_function_tools: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) allows_input_audio: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) allows_input_images: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) speech_voices: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) speech_formats: Option<Vec<crate::core::SpeechFormat>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) allows_audio_streaming_chat: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) allows_audio_function_tools: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) context_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) max_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) enable_thinking: Option<bool>,
 }

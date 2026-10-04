@@ -19,7 +19,7 @@ use crate::{
     keys::cli::{Exposure, RouteChoice},
 };
 
-const USAGE: &str = "usage: kanata portal --config <path> [--port <port>] | kanata doctor --config <path> [--plane all|private|public] [--probe-backends] [--probe-models] [--probe-inference <alias> --operation <operation>] | kanata health --config <path> | kanata check --config <path> [--plane all|private|public] | kanata serve --config <path> [--plane all|private|public] | kanata auth chatgpt {login,status,logout,models} --config <path> [--profile <name>] | kanata auth codex {login,status,logout} --config <path> | kanata key {new,list,show,edit,rm,rotate,migrate} ... (see `kanata key`) | kanata routes --config <path> [--json] | kanata routes explain --config <path> --model <alias> --operation <operation> --key-id <id> [--plane all|private|public] [--json]";
+const USAGE: &str = "usage: kanata config {compact,expand,plan} ... | kanata portal --config <path> [--port <port>] | kanata doctor --config <path> [--plane all|private|public] [--probe-backends] [--probe-models] [--probe-inference <alias> --operation <operation>] | kanata health --config <path> | kanata check --config <path> [--plane all|private|public] | kanata serve --config <path> [--plane all|private|public] | kanata auth chatgpt {login,status,logout,models} --config <path> [--profile <name>] | kanata auth codex {login,status,logout} --config <path> | kanata key {new,list,show,edit,rm,rotate,migrate} ... (see `kanata key`) | kanata routes --config <path> [--json] | kanata routes explain --config <path> --model <alias> --operation <operation> --key-id <id> [--plane all|private|public] [--json]";
 
 pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>, String> {
     let arguments: Vec<_> = arguments.into_iter().collect();
@@ -40,6 +40,7 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>
         return Ok(Some("configuration valid".into()));
     }
     match arguments[0].as_str() {
+        "config" => config::commands::run(&arguments[1..]).map(Some),
         "key" => crate::keys::cli::run(&arguments[1..], route_choices).map(Some),
         "routes" => run_routes(&arguments[1..]).map(Some),
         _ => Err(USAGE.into()),

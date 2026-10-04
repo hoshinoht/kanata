@@ -19,6 +19,10 @@ docker compose kill -s HUP kanata-public
 
 The process re-reads the config at its original path, validates it with the current keys file, applies its original `--plane` narrowing, builds the configured adapters and prepares a complete replacement. Only then does it publish the new generation. Invalid config, invalid keys or adapter initialization failure leaves the previous generation active.
 
+Named profiles and model catalogs expand before validation. When `include` lists fragments, every reload reads the complete set; missing, invalid or changing fragments reject the replacement. Save the root, fragments and any matching key edits before signaling. Fragment edits do not reload automatically. Keep generated route IDs stable or preserve them with `id`/`route_ids`; `kanata config compact` verifies their preservation.
+
+Preview a candidate with `kanata config plan --config <candidate> --against <current>`, then run `check`. The preview compares files rather than the running generation and reports statically detectable restart requirements. See [compact catalogs and fragment rules](../../config/README.md#compact-model-catalogs).
+
 A config bind-mounted as a single file must expose the updated bytes inside the container. Editors that replace the file's inode can leave an existing bind mount showing the old file; recreate that container when needed. Config reload does not discover a replacement mount.
 
 ## What can change

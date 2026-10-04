@@ -7,6 +7,7 @@
 | `container.public.example.toml` | The same plus the public listener for `kanata-api` (Cloudflare tunnel) and an empty public allowlist |
 | `personal.example.toml` | Template for running `kanata serve` natively on a host, outside Docker. Shows vLLM text, audio-chat and native-ASR endpoints |
 | `chatgpt.example.toml` | Private Sign in with ChatGPT, protected host credentials and explicit account model selection |
+| `compact.example.toml` | Private account catalog with named route profiles and explicit reasoning-family expansion |
 | `speech.example.toml` | Speech output through a Kokoro-FastAPI compatible server, with voice and format allowlists |
 | `vision.example.toml` | Native Ollama image-input gateway with explicit capabilities and bounded payloads |
 | `embeddings.example.toml` | Minimal native Ollama embedding gateway with separate embedding key scopes |
@@ -57,6 +58,72 @@ On Linux/macOS, `kanata serve` accepts SIGHUP to validate and adopt route, adapt
 - **Public exposure** is opt-in: `[listeners.public]` plus exact entries in `publication.public_routes`. ChatGPT and Codex account providers are never allowed there. Clients only ever see the alias, so use an opaque alias for public routes if the upstream model should stay private.
 
 After any edit, validate offline: `cargo run -q -- check --config config/config.toml`.
+
+## Compact model catalogs
+
+Named route profiles reuse policies across a keyed catalog. Existing `[[routes]]` remain supported and can coexist with catalog entries. Both forms expand into the same validated exact routes; duplicate selectors or IDs fail instead of overriding earlier definitions.
+
+```toml
+[route_profiles.account]
+adapter_id = "chatgpt-private"
+requires_streaming_chat = true
+requires_function_tools = true
+default_effort = "medium"
+efforts = ["low", "medium", "high"]
+
+[models.chat]
+assistant = { profile = "account", upstream_id = "your-account-model" }
+
+[models.chat.writer]
+profile = "account"
+upstream_id = "another-account-model"
+efforts = ["low", "high"]
+reasoning_summary = "auto"
+```
+
+`assistant` creates the base alias pinned to medium plus exactly `assistant:low`, `assistant:medium` and `assistant:high`. `writer` creates the base alias pinned to medium plus its two listed variants. Account access is not queried during loading: choose model slugs, defaults and supported efforts from your account's catalog. A base effort does not have to appear in the suffix list. Omit `efforts` to create just the pinned base; an explicitly empty effort list is invalid.
+
+Catalog tables are `[models.chat]`, `[models.transcription]`, `[models.embeddings]` and `[models.speech]`. One alias can occur under several operations, each with its own adapter and upstream. Profiles are optional; a standalone model can declare `adapter_id` directly. Always specify `upstream_id` on the model. Compact routes default `requires_streaming_chat` and `requires_function_tools` to false; existing explicit routes still require both fields.
+
+Settings resolve as **built-in defaults → one selected profile → model overrides**. Profiles can contain adapter selection and all existing route policy fields, plus `default_effort` and `efforts`. Profiles cannot refer to another profile or define IDs, upstreams or `unset`.
+
+- Explicit `false` overrides an inherited `true`.
+- Lists replace inherited lists; `[]` clears an inherited extension, voice or format allowlist, subject to operation validation.
+- `unset = ["context_tokens", "reasoning_summary"]` removes inherited optional values. Clearable fields are `reasoning_effort`, `reasoning_summary`, `codex_reasoning_effort`, `codex_reasoning_summary`, `context_tokens`, `max_output_tokens`, `enable_thinking`, `default_effort`, `efforts` and `adapter_id`. Clearing and overriding the same field is invalid.
+- `default_effort`/`efforts` generate private account chat families. They cannot be combined with the explicit pin fields `reasoning_effort`/`codex_reasoning_effort`. The legacy Codex base remains medium; its supported suffix levels remain low, medium and high. Other routes use the existing policy fields directly.
+- Every variant shares the resolved policy, including summaries and caps. Adapter capability validation still applies independently.
+
+Chat IDs default to the alias with `:` replaced by `-`; other operations append `-<operation>`. Effort IDs append `-<effort>` to the base ID. Set `id` to preserve a base ID, and `route_ids = { base = "old-base", low = "old-low" }` for individual generated IDs. ID collisions fail validation; reordering entries never changes IDs. IDs must remain stable when migrating a running server because admission state is retained by ID.
+
+Profiles and families do not grant key scopes or publish routes. Keys continue to grant exact `(alias, operation)` pairs. Publication remains a separate exact `publication.public_routes` allowlist. Private account routes and their scoped keys remain excluded from public processes.
+
+### Configuration fragments
+
+Place `include` at the root of the config, before any table:
+
+```toml
+include = ["adapters.toml", "profiles.toml", "models/account.toml"]
+```
+
+Fragments may contain only `[[adapters]]`, `[[routes]]`, `[route_profiles]` and `[models]`. Listeners, authentication, keys, publication, limits, timeouts and logging stay in the root. Definitions combine independently of file order; duplicate profiles, models, adapters or route IDs fail. Profiles may reference adapters from any listed file.
+
+Paths are relative to the root config directory, including `[keys]` paths. Fragment paths must stay inside that directory, including symlink targets; absolute paths, parent traversal, duplicate files and nested includes are rejected. At most 64 fragments and 8 MiB of combined configuration are accepted. Missing, malformed or changing fragments reject the complete load. For Compose, mount the directory or each required fragment so the same relative layout is available inside the container.
+
+SIGHUP reads and validates the root and all fragments before publishing a complete generation. Save all related edits before signaling; a failed load preserves the previous generation. Merely editing a fragment does not trigger automatic reload. See [configuration reload](../docs/guides/config-reload.md).
+
+### Compact, expand and preview
+
+```sh
+kanata config compact --config config/config.toml --output config/compact.toml
+kanata config expand --config config/compact.toml --output config/expanded.toml
+kanata config plan --config config/compact.toml --against config/config.toml
+```
+
+`compact` collects common policies into profiles and compatible reasoning routes into families. `expand` writes a standalone config with explicit routes. Both preserve existing IDs and secret references, validate the result and compare effective routes, adapter policies, listeners, publication, keys and global settings before publishing a new file. Outputs are created with mode 0600 on Unix; an existing path is never overwritten. When the output directory changes, relative key and usage paths become absolute references to their original locations. Comments and original formatting are not preserved.
+
+`plan` compares two on-disk configurations and their current key files. It shows route additions/removals, changed route fields and their source declarations, adapter changes, public exposure, key changes, dangling grants and all statically detectable restart requirements. It prints field names rather than credential references or backend URLs. A plan can report a removed route with dangling file-backed grants so those grants can be repaired; `check` and `serve` continue to reject that configuration. Run `check` before adopting a candidate. A missing keys file means no keys, as with ordinary loading.
+
+These commands do not resolve provider credentials, contact providers, inspect a running server or apply changes. Plans cannot account for historical admission IDs retained by a running process. The normal signal/restart workflow still applies after review. Compact examples and fixture checks are not claims of live model availability.
 
 ## Request buffers and diagnostics
 

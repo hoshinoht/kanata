@@ -33,6 +33,12 @@ impl ValidatedConfig {
                 config
                     .routes
                     .retain(|route| public.contains(&route.identity.selector));
+                let route_ids: BTreeSet<_> = config
+                    .routes
+                    .iter()
+                    .map(|route| route.identity.route_id.clone())
+                    .collect();
+                config.route_sources.retain(|id, _| route_ids.contains(id));
                 let adapter_ids: BTreeSet<String> = config
                     .routes
                     .iter()

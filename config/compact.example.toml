@@ -1,0 +1,58 @@
+# Private account catalog. Select slugs and efforts from your own account.
+[listeners.client]
+bind = "127.0.0.1"
+port = 8080
+
+[listeners.admin]
+bind = "127.0.0.1"
+port = 9090
+
+[publication]
+tailnet_addresses = ["100.64.0.10"]
+
+[chatgpt_auth]
+state_dir = "/replace/with/private/absolute/path/kanata-chatgpt"
+
+[[adapters]]
+id = "chatgpt-private"
+kind = "chatgpt"
+base_url = "https://api.openai.com/v1"
+trust_zone = "external"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = true
+function_tools = true
+reasoning_control = true
+
+[route_profiles.account]
+adapter_id = "chatgpt-private"
+requires_streaming_chat = true
+requires_function_tools = true
+default_effort = "medium"
+efforts = ["low", "medium", "high"]
+
+[models.chat]
+assistant = { profile = "account", upstream_id = "replace-with-account-model-slug" }
+writer = { profile = "account", upstream_id = "replace-with-another-account-model-slug", efforts = ["low", "high"], reasoning_summary = "auto" }
+
+[keys]
+file = "keys/keys.toml"
+usage_dir = "state"
+
+[limits]
+max_uploads = 8
+max_buffered_bytes = 268435456
+max_queue = 32
+max_in_flight = 8
+max_body_bytes = 1048576
+max_audio_bytes = 26214400
+max_extension_bytes = 8192
+
+[timeouts]
+upload_ms = 30000
+queue_ms = 1000
+connect_ms = 5000
+headers_ms = 10000
+first_byte_ms = 15000
+idle_ms = 30000
+overall_ms = 60000

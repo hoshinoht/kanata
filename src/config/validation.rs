@@ -702,6 +702,7 @@ pub(super) fn validate(
         key_source,
         limits,
         timeouts,
+        route_sources: Default::default(),
         logging: ValidatedLogging {
             level: raw.logging.level,
             format: raw.logging.format,
