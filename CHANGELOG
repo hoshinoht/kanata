@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [1.0.0-beta.7] - 2026-10-12
+
+Agent harness compatibility, Anthropic Messages, CLIProxyAPI as a private upstream and reasoning effort families.
+
 ### Added
 
 - Compact TOML catalogs with named route profiles, keyed per-operation models, explicit account reasoning-family expansion and model overrides. Optional root-listed fragments compose catalog definitions without file-order overrides; full validation preserves exact routing, publication and key scopes, including public-plane exclusions.
