@@ -49,9 +49,9 @@ struct ChoicePayload {
 struct MessagePayload {
     role: String,
     content: Option<String>,
-    // A refusal without content still fails as an empty reply.
-    #[serde(default, rename = "refusal")]
-    _refusal: Option<String>,
+    // A refusal without content is not an empty answer; it still fails.
+    #[serde(default)]
+    refusal: Option<String>,
     #[serde(default)]
     reasoning: Option<String>,
     // Structured reasoning is accepted and not forwarded.
@@ -89,8 +89,8 @@ pub(super) struct UsagePayload {
     _cost: Option<IgnoredAny>,
     #[serde(default, rename = "cost_details")]
     _cost_details: Option<IgnoredAny>,
-    #[serde(default, rename = "prompt_tokens_details")]
-    _prompt_tokens_details: Option<IgnoredAny>,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
     #[serde(default)]
     completion_tokens_details: Option<CompletionTokensDetails>,
     #[serde(default, rename = "is_byok")]
@@ -151,8 +151,15 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
             },
         });
     }
-    // A length stop may carry no visible output.
-    if (content.is_empty() && finish_reason != FinishReason::Length)
+    // A stop or length stop may carry no visible output, but a stop holding only a refusal
+    // is not an empty answer.
+    let refused = choice.message.refusal.is_some_and(|text| !text.is_empty());
+    if (content.is_empty()
+        && match finish_reason {
+            FinishReason::Stop => refused,
+            FinishReason::Length => false,
+            _ => true,
+        })
         || (finish_reason == FinishReason::ToolCalls) != !ids.is_empty()
     {
         return Err(upstream_failure());
@@ -168,6 +175,7 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         finish_reason,
         usage,
         reasoning,
+        reasoning_items: Vec::new(),
     })
 }
 
@@ -195,14 +203,29 @@ pub(super) fn normalize_usage(usage: UsagePayload) -> Result<Usage, GatewayError
     if usage.prompt_tokens.checked_add(usage.completion_tokens) != Some(usage.total_tokens) {
         return Err(upstream_failure());
     }
-    Ok(Usage {
+    let cached = usage
+        .prompt_tokens_details
+        .and_then(|details| details.cached_tokens);
+    let normalized = Usage {
         input_tokens: usage.prompt_tokens,
         output_tokens: usage.completion_tokens,
         total_tokens: usage.total_tokens,
         reasoning_tokens: usage
             .completion_tokens_details
             .and_then(|details| details.reasoning_tokens),
+        cached_input_tokens: None,
+    };
+    Ok(match cached {
+        Some(cached) => normalized.with_cached_input_tokens(cached),
+        None => normalized,
     })
+}
+
+/// Other members (audio, cache writes) carry nothing Kanata reports.
+#[derive(Deserialize)]
+pub(super) struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]

@@ -149,6 +149,7 @@ impl Adapter for Recording {
                         output_tokens: 0,
                         total_tokens: 3,
                         reasoning_tokens: None,
+                        cached_input_tokens: None,
                     }),
                 },
             )))

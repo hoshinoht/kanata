@@ -31,9 +31,7 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>
         .is_some_and(|argument| argument == "check")
     {
         let (path, plane) = parse_config_plane(&arguments[1..]).ok_or_else(|| USAGE.to_owned())?;
-        let config = config::load(path)
-            .and_then(|config| config.for_plane(plane))
-            .map_err(|error| error.to_string())?;
+        let (_, config) = config::load_plane(path, plane).map_err(|error| error.to_string())?;
         for warning in config.key_warnings(crate::keys::time::now()) {
             eprintln!("warning: {warning}");
         }
@@ -58,7 +56,8 @@ fn parse_config_plane(arguments: &[String]) -> Option<(PathBuf, config::Plane)> 
     }
 }
 
-/// Codex routes are never public; others are public when listed in `publication.public_routes`.
+/// Private-only kinds (Codex, ChatGPT, CLIProxyAPI) are never public; others are public when
+/// listed in `publication.public_routes`.
 fn route_exposure(config: &ValidatedConfig, route: &config::ValidatedRoute) -> Exposure {
     let selector = &route.identity().selector;
     if route_kind(config, route).is_some_and(ProviderKind::is_private_only) {
@@ -259,7 +258,8 @@ fn build_adapter(
         ProviderKind::Ollama | ProviderKind::AppleFm => std::sync::Arc::new(
             OllamaAdapter::new(configured, config.timeouts(), config.limits()).map_err(|_| ())?,
         ),
-        ProviderKind::Vllm => std::sync::Arc::new(
+        // CLIProxyAPI speaks the same OpenAI chat wire as vLLM.
+        ProviderKind::Vllm | ProviderKind::Cliproxy => std::sync::Arc::new(
             VllmAdapter::from_config_with_secrets(
                 config,
                 configured.id(),

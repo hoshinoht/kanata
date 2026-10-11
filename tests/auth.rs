@@ -10,7 +10,7 @@ use axum::{
 };
 use kanata::adapter::{Adapter, AdapterFuture};
 use kanata::auth::{
-    ApplicationAuth, AuthBuildError, EnvironmentSecretResolver, SecretResolutionError,
+    ApplicationAuth, AuthBuildError, AuthError, EnvironmentSecretResolver, SecretResolutionError,
     SecretResolver,
 };
 use kanata::config::{self, SecretReference};
@@ -273,6 +273,68 @@ fn bearer_authentication_is_strict_and_non_enumerating() {
             .key_identity(),
         "personal-client"
     );
+}
+
+#[test]
+fn api_key_header_alone_or_matching_bearer_authenticates() {
+    let auth = ApplicationAuth::from_validated(&config(), &MemoryResolver(b"test-key".to_vec()))
+        .expect("auth builds");
+    let with = |pairs: &[(&'static str, &'static str)]| {
+        let mut headers = HeaderMap::new();
+        for (name, value) in pairs {
+            headers.append(*name, HeaderValue::from_static(value));
+        }
+        headers
+    };
+    let accepted = [
+        with(&[("x-api-key", "test-key")]),
+        with(&[
+            ("authorization", "Bearer test-key"),
+            ("x-api-key", "test-key"),
+        ]),
+    ];
+    for headers in &accepted {
+        assert_eq!(
+            auth.authenticate_headers(headers)
+                .expect("valid key")
+                .key_identity(),
+            "personal-client"
+        );
+    }
+    let rejected = [
+        with(&[("x-api-key", "wrong-key")]),
+        with(&[("x-api-key", "")]),
+        with(&[("x-api-key", "Bearer test-key")]),
+        with(&[("x-api-key", "test-key"), ("x-api-key", "test-key")]),
+        with(&[
+            ("authorization", "Bearer test-key"),
+            ("x-api-key", "wrong-key"),
+        ]),
+        with(&[
+            ("authorization", "Bearer wrong-key"),
+            ("x-api-key", "test-key"),
+        ]),
+        with(&[
+            ("authorization", "Basic test-key"),
+            ("x-api-key", "test-key"),
+        ]),
+        with(&[
+            ("authorization", "Bearer test-key"),
+            ("authorization", "Bearer test-key"),
+            ("x-api-key", "test-key"),
+        ]),
+        with(&[
+            ("authorization", "Bearer test-key"),
+            ("x-api-key", "test-key"),
+            ("x-api-key", "test-key"),
+        ]),
+    ];
+    for headers in &rejected {
+        assert_eq!(
+            auth.authenticate_headers(headers).err(),
+            Some(AuthError::Invalid)
+        );
+    }
 }
 
 #[test]

@@ -141,7 +141,7 @@ impl StreamState {
             {
                 return Err(upstream_failure());
             }
-            // A length stop may carry no visible output.
+            // A stop or length stop may carry no visible output.
             self.start(&mut events);
             self.finish = Some(FinishState {
                 value,
@@ -194,9 +194,10 @@ impl StreamState {
         Ok(Vec::new())
     }
 
-    /// A length stop may end with no output; other stops need text or tool calls.
+    /// A stop or length stop may end with no output; a content-filter stop needs text or
+    /// tool calls.
     fn has_output(&self, reason: FinishReason) -> bool {
-        reason == FinishReason::Length || self.has_text || !self.tools.is_empty()
+        reason != FinishReason::ContentFilter || self.has_text || !self.tools.is_empty()
     }
 
     fn tool(&mut self, call: ToolDelta) -> Result<NormalizedEvent, GatewayError> {
@@ -336,6 +337,7 @@ mod tests {
                     output_tokens: 23,
                     total_tokens: 94,
                     reasoning_tokens: Some(0),
+                    cached_input_tokens: Some(0),
                 }),
             })
         );

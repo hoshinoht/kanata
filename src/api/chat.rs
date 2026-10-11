@@ -24,7 +24,7 @@ use super::{
     serialization,
     sse::{StreamLifetime, StreamOutput, stream_response},
     validate_extensions,
-    wire::ChatWire,
+    wire::{ChatWireError, parse_chat},
 };
 use crate::telemetry::Observer;
 
@@ -40,6 +40,7 @@ pub(super) async fn chat_completions(
 pub(super) enum OutputFormat {
     Chat,
     Responses,
+    Messages,
 }
 
 pub(super) async fn handle_chat(
@@ -85,18 +86,16 @@ pub(super) async fn handle_chat(
     };
     let raw_body_len = bytes.len();
     let parsed = match output_format {
-        OutputFormat::Chat => match serde_json::from_slice::<ChatWire>(&bytes) {
-            Ok(wire) => wire.into_core(state.max_audio_bytes()),
-            Err(_) => return invalid(),
-        },
+        OutputFormat::Chat => parse_chat(&bytes, state.max_audio_bytes()),
         OutputFormat::Responses => super::responses::parse(&bytes, state.max_audio_bytes()),
+        OutputFormat::Messages => super::messages::parse(&bytes).map(|request| (request, false)),
     };
     drop(bytes);
     let (request, include_usage) = match parsed {
         Ok(request) => request,
-        Err(super::wire::ChatWireError::Invalid) => return invalid(),
-        Err(super::wire::ChatWireError::InvalidParam(param)) => return invalid_param(param),
-        Err(super::wire::ChatWireError::TooLarge) => return body_too_large(),
+        Err(ChatWireError::Malformed) => return invalid(),
+        Err(ChatWireError::InvalidParam(param)) => return invalid_param(&param),
+        Err(ChatWireError::TooLarge) => return body_too_large(),
     };
     let has_audio = request.messages.iter().any(|message| {
         message
@@ -131,16 +130,27 @@ async fn dispatch_chat(
     observer: Option<Observer>,
     output_format: OutputFormat,
 ) -> Response {
-    let reasoning_param = if matches!(output_format, OutputFormat::Responses) {
-        "reasoning.effort"
-    } else {
-        "reasoning_effort"
+    let reasoning_param = match output_format {
+        OutputFormat::Chat => "reasoning_effort",
+        OutputFormat::Responses => "reasoning.effort",
+        OutputFormat::Messages => "output_config.effort",
     };
     let stream = chat.stream;
     let selector = crate::core::RouteSelector {
         model_alias: chat.model.clone(),
         operation: Operation::Chat,
     };
+    // `output_config.effort` is advisory: it applies only where the alias has reasoning control.
+    if matches!(output_format, OutputFormat::Messages)
+        && chat.options.reasoning_effort.is_some()
+        && !state.registry().routes().any(|route| {
+            route.identity.selector.operation == Operation::Chat
+                && route.capabilities.reasoning_control
+                && route.model_family_alias() == chat.model.0
+        })
+    {
+        chat.options.reasoning_effort = None;
+    }
     if let (Some(observer), Some(route)) = (observer.as_ref(), state.registry().resolve(&selector))
     {
         observer.annotate_route(
@@ -168,6 +178,14 @@ async fn dispatch_chat(
         route.identity.selector.model_alias.clone()
     };
     let routed_model = route.identity.selector.model_alias.clone();
+    // Adapters that apply their own pin keep it; others (including private-only proxies)
+    // forward the request's effort, so a pinned route supplies it. Resolution already
+    // rejected a client effort that differs from the pin.
+    if !route.provider_kind.applies_route_effort_pin() && chat.options.reasoning_effort.is_none() {
+        chat.options.reasoning_effort = route
+            .pinned_reasoning_effort
+            .and_then(crate::core::ReasoningEffort::parse);
+    }
     if let Some(observer) = observer.as_ref() {
         observer.annotate_route(&routed_model.0, Operation::Chat, stream);
     }
@@ -182,23 +200,49 @@ async fn dispatch_chat(
     ) {
         return invalid();
     }
+    // A route without sampling controls cannot enforce an output limit; the requested
+    // limit is dropped rather than refused, on every endpoint.
+    if !route.capabilities.sampling_controls || !adapter.capabilities().sampling_controls {
+        chat.options.max_output_tokens = None;
+    }
+    // Messages requires `max_tokens`; above the route cap it is clamped there, so
+    // `stop_reason: max_tokens` still reports the limit that applied.
+    if let Some(cap) = route.max_output_tokens
+        && chat.options.max_output_tokens.is_none_or(|requested| {
+            requested > cap && matches!(output_format, OutputFormat::Messages)
+        })
+    {
+        chat.options.max_output_tokens = Some(cap);
+    }
     let extensions = chat.extensions.clone();
     let reasoning_effort = chat.options.reasoning_effort;
     let max_output_tokens = chat.options.max_output_tokens;
     let max_output_tokens_param = chat.options.max_output_tokens_param;
-    if chat.options.enable_thinking.is_some() && !route.provider_kind.accepts_enable_thinking() {
+    if chat.options.enable_thinking.is_some()
+        && (!route.provider_kind.accepts_enable_thinking() || reasoning_effort.is_some())
+    {
         return invalid_param("chat_template_kwargs");
     }
-    if let Some(cap) = route.max_output_tokens
-        && chat.options.max_output_tokens.is_none()
-    {
-        chat.options.max_output_tokens = Some(cap);
+    if !route.provider_kind.accepts_stop_and_penalties() {
+        let sampling = &chat.options.sampling;
+        if !sampling.stop.is_empty() {
+            return invalid_param(chat.options.stop_param.as_str());
+        }
+        if sampling.presence_penalty.is_some() {
+            return invalid_param("presence_penalty");
+        }
+        if sampling.frequency_penalty.is_some() {
+            return invalid_param("frequency_penalty");
+        }
     }
     chat.model = response_model.clone();
     // Reasoning stays on the private listener.
     let expose_reasoning = state.listener() == crate::telemetry::Listener::Private;
+    chat.include_encrypted_reasoning &= expose_reasoning;
     let response_options = matches!(output_format, OutputFormat::Responses)
         .then(|| super::responses::Options::new(&chat, expose_reasoning, route.reasoning_summary));
+    let message_id =
+        matches!(output_format, OutputFormat::Messages).then(|| format!("msg_{request_id}"));
     chat.model = routed_model.clone();
     let request = CoreRequest::Chat(chat);
     match check_supported(&route.capabilities, adapter.capabilities(), &request) {
@@ -286,8 +330,16 @@ async fn dispatch_chat(
                 return upstream_failure_observed(observer.as_ref());
             }
             response.model = response_model.clone();
+            if !expose_reasoning {
+                response.usage = response
+                    .usage
+                    .map(crate::core::Usage::without_cached_input_tokens);
+            }
             if let Some(options) = response_options {
                 return super::responses::complete(response, options, observer.as_ref());
+            }
+            if let Some(id) = message_id {
+                return super::messages::complete(response, &response_model, id, observer.as_ref());
             }
             serialization::chat_response(
                 response,
@@ -310,6 +362,13 @@ async fn dispatch_chat(
                         })
                     }
                 }
+                Ok(crate::core::NormalizedEvent::ChatCompleted {
+                    finish_reason,
+                    usage,
+                }) if !expose_reasoning => Ok(crate::core::NormalizedEvent::ChatCompleted {
+                    finish_reason,
+                    usage: usage.map(crate::core::Usage::without_cached_input_tokens),
+                }),
                 other => other,
             }));
             if let Some(options) = response_options {
@@ -320,7 +379,19 @@ async fn dispatch_chat(
                     deadline,
                     state.first_byte_ms(),
                     state.idle_ms(),
-                    StreamLifetime { permit, observer },
+                    StreamLifetime::new(permit, observer, state.sse_keepalive_ms()),
+                )
+                .await;
+            }
+            if let Some(id) = message_id {
+                return super::messages::stream_response(
+                    events,
+                    response_model,
+                    id,
+                    deadline,
+                    state.first_byte_ms(),
+                    state.idle_ms(),
+                    StreamLifetime::new(permit, observer, state.sse_keepalive_ms()),
                 )
                 .await;
             }
@@ -334,7 +405,7 @@ async fn dispatch_chat(
                 deadline,
                 state.first_byte_ms(),
                 state.idle_ms(),
-                StreamLifetime { permit, observer },
+                StreamLifetime::new(permit, observer, state.sse_keepalive_ms()),
             )
             .await
         }

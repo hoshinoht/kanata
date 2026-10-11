@@ -143,7 +143,7 @@ fn validate_chat(
     }
 
     let mut total_audio_bytes = 0usize;
-    for message in &chat.messages {
+    for message in chat.messages_without_reasoning() {
         if message.content.is_empty() {
             return Err(invalid_request());
         }
@@ -154,6 +154,8 @@ fn validate_chat(
                 ChatContent::Text { .. } if message.role == ChatRole::Assistant => {}
                 ChatContent::Text { .. } => return Err(invalid_request()),
                 ChatContent::ToolCall { .. } if message.role == ChatRole::Assistant => {}
+                ChatContent::Reasoning { .. } | ChatContent::ReasoningText { .. }
+                    if message.role == ChatRole::Assistant => {}
                 ChatContent::ToolResult { .. } if message.role == ChatRole::Tool => {}
                 ChatContent::InputAudio { audio }
                     if binding.allows_input_audio && message.role == ChatRole::User =>
@@ -168,7 +170,10 @@ fn validate_chat(
                 ChatContent::InputAudio { .. } | ChatContent::InputImage { .. } => {
                     return Err(unsupported_operation());
                 }
-                ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. } => {
+                ChatContent::ToolCall { .. }
+                | ChatContent::ToolResult { .. }
+                | ChatContent::Reasoning { .. }
+                | ChatContent::ReasoningText { .. } => {
                     return Err(invalid_request());
                 }
             }

@@ -101,6 +101,7 @@ impl Adapter for RecordingAdapter {
                 finish_reason,
                 usage,
                 reasoning: None,
+                reasoning_items: Vec::new(),
             }))),
             Outcome::WrongModel(model) => {
                 Ok(AdapterOutput::Complete(CoreResponse::Chat(ChatResponse {
@@ -109,6 +110,7 @@ impl Adapter for RecordingAdapter {
                     finish_reason: FinishReason::Stop,
                     usage: None,
                     reasoning: None,
+                    reasoning_items: Vec::new(),
                 })))
             }
             Outcome::WrongResponse => Ok(AdapterOutput::Complete(CoreResponse::Transcription(
@@ -128,6 +130,7 @@ impl Adapter for RecordingAdapter {
                     finish_reason: FinishReason::Stop,
                     usage: None,
                     reasoning: None,
+                    reasoning_items: Vec::new(),
                 })))
             }
             Outcome::Transcription => Ok(AdapterOutput::Complete(CoreResponse::Transcription(
@@ -344,6 +347,7 @@ pub fn chat_outcome(text: &str) -> Outcome {
             output_tokens: 7,
             total_tokens: 18,
             reasoning_tokens: None,
+            cached_input_tokens: None,
         }),
     }
 }

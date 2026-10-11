@@ -369,6 +369,7 @@ async fn tokens_are_recorded_for_complete_and_streamed_replies_with_missing_usag
                 output_tokens: 3,
                 total_tokens: 13,
                 reasoning_tokens: Some(2),
+                cached_input_tokens: None,
             });
             Box::pin(async move {
                 if stream {
@@ -391,6 +392,7 @@ async fn tokens_are_recorded_for_complete_and_streamed_replies_with_missing_usag
                         finish_reason: FinishReason::Stop,
                         usage,
                         reasoning: None,
+                        reasoning_items: Vec::new(),
                     })))
                 }
             })

@@ -71,6 +71,7 @@ impl Adapter for RecordingAdapter {
                 finish_reason: FinishReason::Stop,
                 usage: None,
                 reasoning: None,
+                reasoning_items: Vec::new(),
             }),
             CoreRequest::Transcription(_) => CoreResponse::Transcription(TranscriptionResponse {
                 text: "transcribed".into(),

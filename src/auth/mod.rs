@@ -153,13 +153,27 @@ impl ApplicationAuth {
         Ok(Self { keys })
     }
 
+    /// The secret comes from `Authorization: Bearer`, `x-api-key`, or both when each
+    /// appears once and both carry the same secret; anything else is `Invalid`.
     pub fn authenticate_headers(&self, headers: &HeaderMap) -> Result<AuthContext, AuthError> {
-        let values: Vec<_> = headers.get_all(header::AUTHORIZATION).iter().collect();
-        if values.len() != 1 {
-            return Err(AuthError::Invalid);
-        }
-        let value = values[0].to_str().map_err(|_| AuthError::Invalid)?;
-        let token = value.strip_prefix("Bearer ").ok_or(AuthError::Invalid)?;
+        let bearer = single_header(headers, header::AUTHORIZATION.as_str())?
+            .map(|value| value.strip_prefix("Bearer ").ok_or(AuthError::Invalid))
+            .transpose()?;
+        let api_key = single_header(headers, API_KEY_HEADER)?;
+        let token = match (bearer, api_key) {
+            (Some(token), None) | (None, Some(token)) => token,
+            (Some(bearer), Some(api_key)) => {
+                if hash(bearer.as_bytes())
+                    .ct_eq(&hash(api_key.as_bytes()))
+                    .unwrap_u8()
+                    != 1
+                {
+                    return Err(AuthError::Invalid);
+                }
+                bearer
+            }
+            (None, None) => return Err(AuthError::Invalid),
+        };
         if !valid_b64token(token.as_bytes()) {
             return Err(AuthError::Invalid);
         }
@@ -188,6 +202,21 @@ impl ApplicationAuth {
             daily_quota: key.daily_quota,
         })
     }
+}
+
+/// Alternative carrier of the same secret as `Authorization: Bearer`.
+const API_KEY_HEADER: &str = "x-api-key";
+
+/// `None` when absent; a repeated or non-visible-ASCII header is `Invalid`.
+fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, AuthError> {
+    let mut values = headers.get_all(name).iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(AuthError::Invalid);
+    }
+    value.to_str().map(Some).map_err(|_| AuthError::Invalid)
 }
 
 /// Shared, atomically replaceable key set. The lock only guards an `Arc` swap

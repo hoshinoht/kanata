@@ -25,6 +25,12 @@ pub(super) struct ChatPayload {
     top_p: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     seed: Option<i64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stop: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frequency_penalty: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,6 +52,9 @@ struct MessagePayload {
     tool_calls: Option<Vec<ToolCallPayload>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    // Replayed assistant reasoning (OpenRouter "Preserving Reasoning": `message.reasoning`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -142,8 +151,7 @@ pub(super) fn encode(
         return Err(invalid_request());
     }
     let messages = chat
-        .messages
-        .iter()
+        .messages_without_reasoning()
         .map(encode_message)
         .collect::<Result<Vec<_>, _>>()?;
     let tools = (!chat.tools.is_empty()).then(|| chat.tools.iter().map(encode_tool).collect());
@@ -167,6 +175,17 @@ pub(super) fn encode(
         temperature: chat.options.sampling.temperature.map(|value| value.get()),
         top_p: chat.options.sampling.top_p.map(|value| value.get()),
         seed: chat.options.sampling.seed,
+        stop: chat.options.sampling.stop.clone(),
+        presence_penalty: chat
+            .options
+            .sampling
+            .presence_penalty
+            .map(|value| value.get()),
+        frequency_penalty: chat
+            .options
+            .sampling
+            .frequency_penalty
+            .map(|value| value.get()),
         max_tokens: chat.options.max_output_tokens,
         reasoning: chat
             .options
@@ -218,9 +237,11 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
                         format: chat_audio_format(audio.format()),
                     },
                 }),
-                ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. } => {
-                    Err(unsupported_operation())
-                }
+                // Media messages are user turns, which never carry reasoning.
+                ChatContent::ToolCall { .. }
+                | ChatContent::ToolResult { .. }
+                | ChatContent::Reasoning { .. }
+                | ChatContent::ReasoningText { .. } => Err(unsupported_operation()),
             })
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(MessagePayload {
@@ -228,6 +249,7 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
             content: Some(MessageContent::Parts(parts)),
             tool_calls: None,
             tool_call_id: None,
+            reasoning: None,
         });
     }
 
@@ -250,13 +272,16 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
         content: Some(MessageContent::Text(content)),
         tool_calls: None,
         tool_call_id: None,
+        reasoning: None,
     })
 }
 
-/// Assistant history: text (empty segments skipped) plus any tool calls.
+/// Assistant history: text (empty segments skipped), any tool calls, and replayed
+/// reasoning text.
 fn encode_assistant(message: &ChatMessage) -> Result<MessagePayload, GatewayError> {
     let mut text = String::new();
     let mut calls = Vec::new();
+    let mut reasoning = String::new();
     for segment in &message.content {
         match segment {
             ChatContent::Text { text: value } => text.push_str(value),
@@ -273,6 +298,9 @@ fn encode_assistant(message: &ChatMessage) -> Result<MessagePayload, GatewayErro
             | ChatContent::ToolResult { .. } => {
                 return Err(unsupported_operation());
             }
+            ChatContent::ReasoningText { text: value } => reasoning.push_str(value),
+            // OpenRouter cannot replay encrypted reasoning; drop it.
+            ChatContent::Reasoning { .. } => {}
         }
     }
     if text.is_empty() && calls.is_empty() {
@@ -283,6 +311,7 @@ fn encode_assistant(message: &ChatMessage) -> Result<MessagePayload, GatewayErro
         content: (!text.is_empty()).then_some(MessageContent::Text(text)),
         tool_calls: (!calls.is_empty()).then_some(calls),
         tool_call_id: None,
+        reasoning: (!reasoning.is_empty()).then_some(reasoning),
     })
 }
 
@@ -295,6 +324,7 @@ fn encode_tool_result(message: &ChatMessage) -> Result<MessagePayload, GatewayEr
         content: Some(MessageContent::Text(content.clone())),
         tool_calls: None,
         tool_call_id: Some(call_id.clone()),
+        reasoning: None,
     })
 }
 

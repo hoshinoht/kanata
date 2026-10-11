@@ -20,7 +20,7 @@ use kanata::{
     },
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::oneshot,
     task::JoinHandle,
@@ -237,24 +237,52 @@ pub fn config_with(
     tools: bool,
     secret_ref: bool,
 ) -> ValidatedConfig {
+    // Credentials need HTTPS unless the host is a loopback IP literal; keep fixtures on HTTPS.
+    let scheme = if secret_ref { "https" } else { "http" };
+    config_at(
+        &format!("{scheme}://{address}/v1"),
+        "local",
+        operation,
+        streaming,
+        tools,
+        secret_ref,
+    )
+}
+
+pub fn config_at(
+    base_url: &str,
+    trust_zone: &str,
+    operation: Operation,
+    streaming: bool,
+    tools: bool,
+    secret_ref: bool,
+) -> ValidatedConfig {
+    load_config(&config_text_at(
+        base_url, trust_zone, operation, streaming, tools, secret_ref,
+    ))
+}
+
+/// Config text behind `config_at`, for tests that add adapter fields.
+pub fn config_text_at(
+    base_url: &str,
+    trust_zone: &str,
+    operation: Operation,
+    streaming: bool,
+    tools: bool,
+    secret_ref: bool,
+) -> String {
     let operation = operation.as_str();
     let secret_ref = if secret_ref {
         "secret_ref = \"env:VLLM_KEY\"\n"
     } else {
         ""
     };
-    // Credentials are only sent over HTTPS.
-    let scheme = if secret_ref.is_empty() {
-        "http"
-    } else {
-        "https"
-    };
     let transcription_mode = if operation == "transcription" {
         "transcription_mode = \"native_asr\"\n"
     } else {
         ""
     };
-    let contents = format!(
+    format!(
         r#"
 [listeners.client]
 bind = "127.0.0.1"
@@ -270,8 +298,8 @@ tailnet_addresses = ["100.64.0.1"]
 [[adapters]]
 id = "vllm-fixture"
 kind = "vllm"
-base_url = "{scheme}://{address}/v1"
-trust_zone = "local"
+base_url = "{base_url}"
+trust_zone = "{trust_zone}"
 {transcription_mode}{secret_ref}[adapters.capabilities]
 operations = ["{operation}"]
 streaming_chat = {streaming}
@@ -306,7 +334,10 @@ first_byte_ms = 1000
 idle_ms = 1000
 overall_ms = 5000
 "#
-    );
+    )
+}
+
+pub fn load_config(contents: &str) -> ValidatedConfig {
     let id = NEXT_CONFIG.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!("kanata-vllm-fixture-{id}.toml"));
     fs::write(&path, contents).unwrap_or_else(|_| panic!("write test config"));
@@ -373,6 +404,8 @@ pub fn text_request() -> CoreRequest {
         stream: false,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     })
 }
 
@@ -394,6 +427,8 @@ pub fn tool_request() -> CoreRequest {
         stream: false,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     })
 }
 
@@ -415,6 +450,8 @@ pub fn tool_history_request() -> CoreRequest {
         stream: false,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     })
 }
 
@@ -461,7 +498,7 @@ pub fn fixture_finish_reason() -> FinishReason {
     FinishReason::Stop
 }
 
-async fn read_request(socket: &mut TcpStream) -> std::io::Result<RequestRecord> {
+pub async fn read_request<S: AsyncRead + Unpin>(socket: &mut S) -> std::io::Result<RequestRecord> {
     let mut bytes = Vec::new();
     let head_end = loop {
         let mut chunk = [0_u8; 1024];
@@ -530,8 +567,8 @@ async fn read_request(socket: &mut TcpStream) -> std::io::Result<RequestRecord> 
     })
 }
 
-async fn write_response(
-    socket: &mut TcpStream,
+pub async fn write_response<S: AsyncWrite + Unpin>(
+    socket: &mut S,
     status: u16,
     content_type: &str,
     body: &[u8],

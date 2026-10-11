@@ -368,6 +368,7 @@ pub struct ValidatedAdapter {
     capabilities: Capabilities,
     max_in_flight: Option<u64>,
     circuit_breaker: CircuitBreakerPolicy,
+    ca_bundle: Option<CaBundle>,
 }
 impl ValidatedAdapter {
     pub fn id(&self) -> &str {
@@ -400,6 +401,50 @@ impl ValidatedAdapter {
     }
     pub fn circuit_breaker(&self) -> CircuitBreakerPolicy {
         self.circuit_breaker
+    }
+    /// Private CA that replaces the platform roots for this adapter's TLS (`ca_file`).
+    pub fn ca_bundle(&self) -> Option<&CaBundle> {
+        self.ca_bundle.as_ref()
+    }
+}
+
+/// Certificates from `adapters[].ca_file`, parsed for the adapters a loaded plane keeps.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CaBundle {
+    path: PathBuf,
+    /// Position in the configured `adapters`, kept for errors after plane narrowing.
+    index: usize,
+    /// Empty when unread: in the full config from [`load_plane`] and in
+    /// [`load_deferring_keys`]; such a bundle cannot build a TLS client.
+    certificates: std::sync::Arc<[rustls::pki_types::CertificateDer<'static>]>,
+}
+impl CaBundle {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    pub(crate) fn certificates(&self) -> &[rustls::pki_types::CertificateDer<'static>] {
+        &self.certificates
+    }
+}
+impl fmt::Debug for CaBundle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CaBundle")
+            .field("path", &self.path)
+            .field("certificates", &self.certificates.len())
+            .finish()
+    }
+}
+
+/// Whether credentials may be sent to an adapter `base_url`: HTTPS, or plain HTTP to a literal
+/// loopback IP. A loopback literal never leaves the host and is connected to without DNS, so a
+/// hostname such as `localhost` does not qualify.
+pub(crate) fn url_permits_credentials(url: &Url) -> bool {
+    match (url.scheme(), url.host()) {
+        ("https", _) => true,
+        ("http", Some(url::Host::Ipv4(ip))) => ip.is_loopback(),
+        ("http", Some(url::Host::Ipv6(ip))) => ip.is_loopback(),
+        _ => false,
     }
 }
 
@@ -645,6 +690,7 @@ pub struct ValidatedTimeouts {
     first_byte_ms: u64,
     idle_ms: u64,
     overall_ms: u64,
+    sse_keepalive_ms: u64,
 }
 impl ValidatedTimeouts {
     pub fn upload_ms(&self) -> u64 {
@@ -668,6 +714,9 @@ impl ValidatedTimeouts {
     pub fn overall_ms(&self) -> u64 {
         self.overall_ms
     }
+    pub fn sse_keepalive_ms(&self) -> u64 {
+        self.sse_keepalive_ms
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -681,17 +730,29 @@ pub enum ProviderKind {
     /// Apple Foundation Models through macOS `fm serve`.
     AppleFm,
     Speech,
+    /// CLIProxyAPI's OpenAI-compatible chat endpoint (account sign-ins behind a local proxy);
+    /// reuses the vLLM chat path and, like Codex and ChatGPT, is never public.
+    Cliproxy,
 }
 
 impl ProviderKind {
+    /// Never published, never on the public plane, and keys reaching it stay private.
     pub fn is_private_only(self) -> bool {
+        matches!(self, Self::Codex | Self::Chatgpt | Self::Cliproxy)
+    }
+
+    /// Whether the adapter applies a route's pinned effort itself (Codex
+    /// `codex_reasoning_effort`, ChatGPT pinned inference). Other reasoning-control adapters
+    /// receive the pin as the request's `reasoning_effort`, so families on them need
+    /// `reasoning_control`.
+    pub fn applies_route_effort_pin(self) -> bool {
         matches!(self, Self::Codex | Self::Chatgpt)
     }
 
     pub fn accepts_reasoning_effort(self, effort: ReasoningEffort) -> bool {
         match self {
             Self::Codex => CodexReasoningEffort::from_request(effort).is_some(),
-            Self::Ollama | Self::Vllm | Self::Openrouter | Self::Chatgpt => true,
+            Self::Ollama | Self::Vllm | Self::Openrouter | Self::Chatgpt | Self::Cliproxy => true,
             Self::AppleFm | Self::Speech => false,
         }
     }
@@ -699,6 +760,32 @@ impl ProviderKind {
     /// Whether a request may set `chat_template_kwargs.enable_thinking`.
     pub fn accepts_enable_thinking(self) -> bool {
         matches!(self, Self::Vllm)
+    }
+
+    /// Whether stop sequences and presence/frequency penalties reach a backend that honours
+    /// them on routes with sampling controls; `fm serve` support is unproven.
+    pub fn accepts_stop_and_penalties(self) -> bool {
+        !matches!(self, Self::AppleFm)
+    }
+
+    /// Whether the upstream receives the request's `prompt_cache_key`.
+    pub fn forwards_prompt_cache_key(self) -> bool {
+        matches!(self, Self::Chatgpt | Self::Codex)
+    }
+
+    /// Whether assistant `ChatContent::Reasoning` items are replayed upstream; others skip them.
+    pub fn replays_encrypted_reasoning(self) -> bool {
+        matches!(self, Self::Chatgpt | Self::Codex)
+    }
+
+    /// Whether assistant `ChatContent::ReasoningText` is replayed upstream as the assistant
+    /// message's `reasoning` string; others skip it. vLLM (canonical input field since it
+    /// renamed `reasoning_content`), Ollama's OpenAI layer (maps it to `thinking`) and
+    /// OpenRouter all read `reasoning`. CLIProxyAPI turns replayed reasoning into unsigned
+    /// Claude thinking only on opt-in compat endpoints, so it is dropped there; `fm serve`
+    /// support is unproven.
+    pub fn replays_reasoning_text(self) -> bool {
+        matches!(self, Self::Vllm | Self::Ollama | Self::Openrouter)
     }
 
     /// Config name, used as the provider label in logs and metrics.
@@ -711,6 +798,7 @@ impl ProviderKind {
             Self::Chatgpt => "chatgpt",
             Self::AppleFm => "apple_fm",
             Self::Speech => "speech",
+            Self::Cliproxy => "cliproxy",
         }
     }
 
@@ -736,8 +824,7 @@ impl ProviderKind {
     // structured_output / sampling_controls / reasoning_control.
     fn supports_chat_options(self) -> (bool, bool, bool) {
         match self {
-            Self::Ollama | Self::Openrouter => (true, true, true),
-            Self::Vllm => (true, true, false),
+            Self::Ollama | Self::Vllm | Self::Openrouter | Self::Cliproxy => (true, true, true),
             Self::Codex | Self::Chatgpt => (false, false, true),
             Self::AppleFm => (true, true, false),
             Self::Speech => (false, false, false),
@@ -828,8 +915,23 @@ pub fn load(path: impl AsRef<Path>) -> Result<ValidatedConfig, ConfigError> {
     catalog::Document::load(path)?.validate(path, true)
 }
 
+/// [`load`] for one `--plane`: returns the full config and its [`ValidatedConfig::for_plane`]
+/// narrowing. Adapter `ca_file`s are read only for adapters the plane keeps, so a plane
+/// container need not mount the CA of an adapter it never dials; the full config's bundles
+/// stay unread.
+pub fn load_plane(
+    path: impl AsRef<Path>,
+    plane: Plane,
+) -> Result<(ValidatedConfig, ValidatedConfig), ConfigError> {
+    let path = path.as_ref();
+    let full = catalog::Document::load(path)?.validate_deferring_ca(path, true)?;
+    let narrowed = full.for_plane(plane)?.load_ca_bundles()?;
+    Ok((full, narrowed))
+}
+
 /// Like [`load`] but leaves a `[keys] file` unread (no application keys, `sha256: None`),
-/// so the host key CLI can validate it itself and repair route drift.
+/// so the host key CLI can validate it itself and repair route drift. Adapter `ca_file`s are
+/// left unread too: they name paths inside the serving container, not on the host.
 pub fn load_deferring_keys(path: impl AsRef<Path>) -> Result<ValidatedConfig, ConfigError> {
     let path = path.as_ref();
     catalog::Document::load(path)?.validate(path, false)

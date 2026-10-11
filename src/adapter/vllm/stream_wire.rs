@@ -69,7 +69,15 @@ pub(super) struct UsagePayload {
     pub(super) completion_tokens: u64,
     pub(super) total_tokens: u64,
     #[serde(default)]
+    pub(super) prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
     pub(super) completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct PromptTokensDetails {
+    #[serde(default)]
+    pub(super) cached_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -80,13 +88,21 @@ pub(super) struct CompletionTokensDetails {
 
 impl UsagePayload {
     pub(super) fn into_usage(self) -> Usage {
-        Usage {
+        let usage = Usage {
             input_tokens: self.prompt_tokens,
             output_tokens: self.completion_tokens,
             total_tokens: self.total_tokens,
             reasoning_tokens: self
                 .completion_tokens_details
                 .and_then(|details| details.reasoning_tokens),
+            cached_input_tokens: None,
+        };
+        match self
+            .prompt_tokens_details
+            .and_then(|details| details.cached_tokens)
+        {
+            Some(cached) => usage.with_cached_input_tokens(cached),
+            None => usage,
         }
     }
 }

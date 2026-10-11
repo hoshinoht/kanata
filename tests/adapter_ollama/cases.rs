@@ -254,6 +254,7 @@ async fn stream_text_is_demand_driven_and_normalizes_fragmented_utf8_sse() {
                     output_tokens: 7,
                     total_tokens: 18,
                     reasoning_tokens: None,
+                    cached_input_tokens: None,
                 })
             }
         ]
@@ -709,8 +710,12 @@ async fn reasoning_content_is_not_exposed_as_assistant_text() {
 }
 
 #[tokio::test]
-async fn length_stop_without_output_is_an_empty_reply_and_stop_is_not() {
-    for (finish_reason, ok) in [("length", true), ("stop", false)] {
+async fn stop_or_length_without_output_is_an_empty_reply_and_content_filter_is_not() {
+    for (finish_reason, expected) in [
+        ("length", Some(FinishReason::Length)),
+        ("stop", Some(FinishReason::Stop)),
+        ("content_filter", None),
+    ] {
         let body = json!({
             "choices": [{
                 "index": 0,
@@ -723,9 +728,9 @@ async fn length_stop_without_output_is_an_empty_reply_and_stop_is_not() {
         let config = config_for(&mock.address, false, true);
         let adapter = adapter(&config);
         let output = adapter.execute(routed(&config, text_request())).await;
-        if ok {
+        if let Some(expected) = expected {
             let response = crate::support::take_chat(output);
-            assert_eq!(response.finish_reason, FinishReason::Length);
+            assert_eq!(response.finish_reason, expected);
             assert!(response.message.content.is_empty());
         } else {
             assert_eq!(error_kind(output), ErrorKind::UpstreamFailure);

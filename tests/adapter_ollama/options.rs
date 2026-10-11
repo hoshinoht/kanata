@@ -51,13 +51,10 @@ fn options_request() -> CoreRequest {
             )
             .expect("schema"),
         }),
-        sampling: SamplingOptions {
-            temperature: Some(Temperature::new(0.25).expect("temperature")),
-            top_p: Some(TopP::new(0.5).expect("top_p")),
-            seed: Some(42),
-        },
+        sampling: SamplingOptions { temperature: Some(Temperature::new(0.25).expect("temperature")), top_p: Some(TopP::new(0.5).expect("top_p")), seed: Some(42), stop: Vec::new(), presence_penalty: None, frequency_penalty: None },
         max_output_tokens: Some(128),
         max_output_tokens_param: Default::default(),
+        stop_param: Default::default(),
         reasoning_effort: Some(ReasoningEffort::None),
         enable_thinking: None,
     };

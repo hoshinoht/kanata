@@ -249,10 +249,12 @@
     const {panel, details, body: content} = endpoint("/responses", "Stateless Responses", "Text and function calls using this alias's chat permission. Send the full conversation on each request; Kanata does not store responses.");
     fields(details, [
       ["model / input", `Use ${model.id} with text or message and function-call history.`],
-      ["store", "Omit or set false. previous_response_id and stored conversations are unsupported."],
+      ["store", "Omit it, or set it to false or null. previous_response_id and stored conversations are unsupported."],
       ["stream", "Use true on streaming routes for typed response events. Check response.completed, response.incomplete or response.failed; partial text alone is not success."],
-      ["tools", "Function declarations and results only. Hosted tools, strict schemas, image/audio input and reasoning output are unsupported on this endpoint."],
-      ...(model.kanata.reasoning_control === true ? [["reasoning.effort", `Choose an advertised effort: ${(model.kanata.reasoning_efforts || []).join(", ")}. reasoning.summary is unsupported.`]] : []),
+      ["tools", "Function declarations and results only. `strict` true/false is accepted and ignored; hosted and other non-function tool types are rejected with `400 param=tools[i]`. Kanata does not execute functions or enforce their schemas."],
+      ["include", "Omit or use [] to skip; [\"reasoning.encrypted_content\"] requests encrypted reasoning on private ChatGPT/Codex routes."],
+      ["prompt_cache_key", "Use a stable 1–64 printable ASCII key; it is forwarded to ChatGPT/Codex routes and dropped elsewhere."],
+      ...(model.kanata.reasoning_control === true ? [["reasoning.effort / reasoning.summary", `Choose an advertised effort: ${(model.kanata.reasoning_efforts || []).join(", ")}. reasoning.summary accepts auto, concise, detailed or null but is ignored; the operator setting governs summaries.`]] : []),
     ]);
     const body = {model: model.id, input: "Hello", store: false};
     const effort = exampleEffort(model);

@@ -1,5 +1,6 @@
 use crate::core::{
-    ChatContent, ChatRole, FinishReason, ModelAlias, NormalizedEvent, ToolCall, Usage,
+    ChatContent, ChatRole, FinishReason, ModelAlias, NormalizedEvent, ReasoningItem, ToolCall,
+    Usage,
 };
 
 use super::{ResponsesStreamError, ResponsesStreamParser};
@@ -20,6 +21,10 @@ const IN_PROGRESS_UNNAMED: &str =
     include_str!("../../../../tests/fixtures/codex/responses-events-in-progress-unnamed.sse");
 const LIVE_SHAPE_EVENTS: &str =
     include_str!("../../../../tests/fixtures/codex/responses-events-live-shape.sse");
+const EMPTY_ANSWER_EVENTS: &str =
+    include_str!("../../../../tests/fixtures/codex/responses-events-empty-answer.sse");
+const ENCRYPTED_REASONING_EVENTS: &str =
+    include_str!("../../../../tests/fixtures/codex/responses-events-encrypted-reasoning.sse");
 
 fn new_parser() -> ResponsesStreamParser {
     ResponsesStreamParser::new(ModelAlias("codex-chat".into()))
@@ -92,6 +97,7 @@ fn fixture_translates_fragmented_multiline_text_tools_and_collection() {
                     output_tokens: 3,
                     total_tokens: 7,
                     reasoning_tokens: None,
+                    cached_input_tokens: None,
                 }),
             },
         ]
@@ -123,6 +129,7 @@ fn fixture_translates_fragmented_multiline_text_tools_and_collection() {
             output_tokens: 3,
             total_tokens: 7,
             reasoning_tokens: None,
+            cached_input_tokens: None,
         })
     );
     assert!(parser.take_chat_response().is_none());
@@ -389,6 +396,7 @@ fn full_text_item_lifecycle_translates_and_collects_fragmented_multiline_sse() {
                 output_tokens: 2,
                 total_tokens: 7,
                 reasoning_tokens: None,
+                cached_input_tokens: None,
             }),
         })
     );
@@ -412,6 +420,7 @@ fn full_text_item_lifecycle_translates_and_collects_fragmented_multiline_sse() {
             output_tokens: 2,
             total_tokens: 7,
             reasoning_tokens: None,
+            cached_input_tokens: None,
         })
     );
 }
@@ -568,6 +577,7 @@ fn live_shape_stream_skips_extra_fields_and_events_and_tolerates_snapshot_model(
         output_tokens: 48,
         total_tokens: 168,
         reasoning_tokens: Some(32),
+        cached_input_tokens: Some(64),
     });
     assert_eq!(
         events,
@@ -671,6 +681,7 @@ fn output_items_without_deltas_are_emitted_from_done_items() {
                     output_tokens: 48,
                     total_tokens: 168,
                     reasoning_tokens: Some(32),
+                    cached_input_tokens: Some(64),
                 }),
             },
         ]
@@ -718,4 +729,105 @@ fn completed_requires_created_and_finished_items() {
         );
         assert!(parser.take_chat_response().is_none());
     }
+}
+
+fn parse_all(capture: bool, fixture: &str) -> (Vec<NormalizedEvent>, crate::core::ChatResponse) {
+    let mut parser = new_parser().with_encrypted_reasoning(capture);
+    let events = parser.feed(fixture.as_bytes()).expect("fixture parses");
+    parser.finish_input().expect("complete SSE body");
+    (
+        events,
+        parser.take_chat_response().expect("completed response"),
+    )
+}
+
+#[test]
+fn encrypted_reasoning_is_captured_only_when_requested() {
+    let item = ReasoningItem::new(
+        Some("rs_TEST_ONLY_REASONING_ID_NOT_SECRET_0001".into()),
+        "TEST_ONLY_ENCRYPTED_REASONING_NOT_SECRET_0001".into(),
+    )
+    .expect("valid item");
+    let usage = Some(Usage {
+        input_tokens: 2048,
+        output_tokens: 40,
+        total_tokens: 2088,
+        reasoning_tokens: Some(32),
+        cached_input_tokens: Some(1024),
+    });
+
+    let (events, response) = parse_all(true, ENCRYPTED_REASONING_EVENTS);
+    assert_eq!(
+        events[..3],
+        [
+            NormalizedEvent::ChatStarted {
+                model: ModelAlias("codex-chat".into()),
+            },
+            NormalizedEvent::ChatReasoningDelta {
+                text: "TEST_ONLY_SUMMARY_NOT_SECRET_0002".into(),
+            },
+            NormalizedEvent::ChatReasoningItem { item: item.clone() },
+        ]
+    );
+    assert_eq!(
+        events.last(),
+        Some(&NormalizedEvent::ChatCompleted {
+            finish_reason: FinishReason::ToolCalls,
+            usage: usage.clone(),
+        })
+    );
+    assert_eq!(response.reasoning_items, vec![item]);
+    assert_eq!(response.usage, usage);
+
+    let (events, response) = parse_all(false, ENCRYPTED_REASONING_EVENTS);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, NormalizedEvent::ChatReasoningItem { .. }))
+    );
+    assert!(response.reasoning_items.is_empty());
+    assert_eq!(
+        response.reasoning.as_deref(),
+        Some("TEST_ONLY_SUMMARY_NOT_SECRET_0002")
+    );
+}
+
+#[test]
+fn cached_count_above_input_is_dropped_without_failing_the_reply() {
+    let fixture =
+        ENCRYPTED_REASONING_EVENTS.replace("\"cached_tokens\":1024", "\"cached_tokens\":4096");
+    assert_ne!(fixture, ENCRYPTED_REASONING_EVENTS);
+    let (_, response) = parse_all(false, &fixture);
+    let usage = response.usage.expect("usage survives");
+    assert_eq!(usage.input_tokens, 2048);
+    assert_eq!(usage.cached_input_tokens, None);
+}
+
+/// Live shape: a completed message whose only `output_text` part is "" and no deltas.
+#[test]
+fn completed_message_with_empty_text_is_an_empty_answer() {
+    let usage = Some(Usage {
+        input_tokens: 5,
+        output_tokens: 0,
+        total_tokens: 5,
+        reasoning_tokens: None,
+        cached_input_tokens: None,
+    });
+    let (events, response) = parse_all(false, EMPTY_ANSWER_EVENTS);
+    assert_eq!(
+        events,
+        [
+            NormalizedEvent::ChatStarted {
+                model: ModelAlias("codex-chat".into()),
+            },
+            NormalizedEvent::ChatCompleted {
+                finish_reason: FinishReason::Stop,
+                usage: usage.clone(),
+            },
+        ]
+    );
+    assert_eq!(response.finish_reason, FinishReason::Stop);
+    assert_eq!(response.message.role, ChatRole::Assistant);
+    assert!(response.message.content.is_empty());
+    assert_eq!(response.usage, usage);
 }

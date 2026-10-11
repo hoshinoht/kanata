@@ -43,13 +43,8 @@ pub(super) fn chat_response(
             observer,
         );
     };
-    let allow_empty = matches!(
-        response.finish_reason,
-        FinishReason::Length | FinishReason::ContentFilter
-    );
-    let mut message = match response_message(&response.message, allow_empty) {
-        Some(value) => value,
-        None => return upstream_failure_observed(observer),
+    let Some(mut message) = response_message(&response.message) else {
+        return upstream_failure_observed(observer);
     };
     if expose_reasoning
         && let Some(mut reasoning) = response.reasoning.filter(|text| !text.is_empty())
@@ -79,9 +74,9 @@ pub(super) fn next_chat_id() -> String {
     )
 }
 
-/// `allow_empty` accepts a message with no output, e.g. a length stop spent on reasoning
-/// or a content-filter stop.
-fn response_message(message: &ChatMessage, allow_empty: bool) -> Option<Value> {
+/// A message with no output (an empty answer, a length stop spent on reasoning, or a
+/// content-filter stop) has `content: ""`; callers reject a tool-call finish without calls.
+fn response_message(message: &ChatMessage) -> Option<Value> {
     let mut text = String::new();
     let mut calls = Vec::new();
     for content in &message.content {
@@ -100,12 +95,11 @@ fn response_message(message: &ChatMessage, allow_empty: bool) -> Option<Value> {
             ChatContent::ToolResult { .. }
             | ChatContent::InputAudio { .. }
             | ChatContent::InputImage { .. } => return None,
+            // Reasoning travels in `ChatResponse::reasoning`/`reasoning_items`, not here.
+            ChatContent::Reasoning { .. } | ChatContent::ReasoningText { .. } => {}
         }
     }
     if text.is_empty() && calls.is_empty() {
-        if !allow_empty {
-            return None;
-        }
         return Some(json!({"role":"assistant","content":"","tool_calls":null}));
     }
     Some(json!({
@@ -123,6 +117,10 @@ pub(super) fn usage(value: Usage) -> Value {
     });
     if let Some(tokens) = value.reasoning_tokens {
         usage["completion_tokens_details"] = json!({"reasoning_tokens":tokens});
+    }
+    // Reported, never estimated; listener exposure is decided before serialization.
+    if let Some(tokens) = value.cached_input_tokens {
+        usage["prompt_tokens_details"] = json!({"cached_tokens":tokens});
     }
     usage
 }
@@ -152,5 +150,47 @@ pub(super) fn finish_matches_tool_calls(value: FinishReason, has_tool_calls: boo
         FinishReason::Stop => !has_tool_calls,
         FinishReason::ToolCalls => has_tool_calls,
         FinishReason::Length | FinishReason::ContentFilter | FinishReason::Cancelled => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn chat_usage_reports_cached_tokens_only_when_known() {
+        for (cached, expected) in [
+            (Some(1024), Some(json!({"cached_tokens":1024}))),
+            (None, None),
+        ] {
+            let response = ChatResponse {
+                model: ModelAlias("fixture-model".into()),
+                message: ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: vec![ChatContent::Text {
+                        text: "answer".into(),
+                    }],
+                },
+                finish_reason: FinishReason::Stop,
+                usage: Some(Usage {
+                    input_tokens: 2048,
+                    output_tokens: 3,
+                    total_tokens: 2051,
+                    reasoning_tokens: None,
+                    cached_input_tokens: cached,
+                }),
+                reasoning: None,
+                reasoning_items: Vec::new(),
+            };
+            let model = ModelAlias("fixture-model".into());
+            let body = chat_response(response, &model, true, None).into_body();
+            let value: Value =
+                serde_json::from_slice(&axum::body::to_bytes(body, usize::MAX).await.unwrap())
+                    .unwrap();
+            assert_eq!(
+                value["usage"].get("prompt_tokens_details"),
+                expected.as_ref()
+            );
+        }
     }
 }

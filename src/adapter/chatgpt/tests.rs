@@ -113,6 +113,8 @@ pub(super) fn chat() -> ChatRequest {
         stream: false,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     }
 }
 pub(super) fn routed(config: &ValidatedConfig, chat: ChatRequest) -> RoutedRequest {

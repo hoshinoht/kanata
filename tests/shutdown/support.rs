@@ -344,6 +344,7 @@ impl Adapter for PendingAdapter {
                 finish_reason: FinishReason::Stop,
                 usage: None,
                 reasoning: None,
+                reasoning_items: Vec::new(),
             })))
         })
     }

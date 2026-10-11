@@ -136,6 +136,8 @@ async fn unsupported_requests_extensions_and_unbound_routes_reject_before_dispat
         stream: false,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     });
 
     let audio = CoreRequest::Chat(kanata::core::ChatRequest {
@@ -152,6 +154,8 @@ async fn unsupported_requests_extensions_and_unbound_routes_reject_before_dispat
         stream: false,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     });
 
     let mut with_extension = text_request();

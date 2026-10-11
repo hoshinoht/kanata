@@ -1,0 +1,14 @@
+{
+  "id": "chatcmpl_fixture_cliproxy",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "claude-sonnet-fixture",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "fixture cliproxy response"},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
+}

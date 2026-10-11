@@ -3,7 +3,9 @@ mod deadline;
 mod embeddings;
 mod errors;
 mod extensions;
+mod keepalive;
 mod lifecycle;
+mod messages;
 mod multipart;
 mod responses;
 mod serialization;
@@ -14,7 +16,7 @@ mod transcription;
 mod upload;
 mod wire;
 
-use axum::{Router, routing::post};
+use axum::{Router, middleware::map_response, routing::post};
 
 use crate::core::{Capabilities, ChatContent, Request as CoreRequest};
 use crate::server::ClientState;
@@ -25,6 +27,10 @@ pub(crate) fn routes() -> Router<ClientState> {
     Router::new()
         .route("/chat/completions", post(chat::chat_completions))
         .route("/responses", post(responses::create))
+        .route(
+            "/messages",
+            post(messages::create).route_layer(map_response(messages::error_envelope)),
+        )
         .route("/embeddings", post(embeddings::embeddings))
         .route("/audio/speech", post(speech::speech))
         .route("/audio/transcriptions", post(transcription::transcriptions))

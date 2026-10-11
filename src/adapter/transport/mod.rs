@@ -56,12 +56,34 @@ impl Transport {
             resolver::production(),
         );
         http.enforce_http(false);
-        let connector = HttpsConnectorBuilder::new()
-            .try_with_platform_verifier()
-            .map_err(|_| types::internal_error())?
-            .https_or_http()
-            .enable_http1()
-            .wrap_connector(http);
+        let connector = match adapter.ca_bundle() {
+            // The private CA replaces the platform roots; rustls still checks the name.
+            Some(bundle) => {
+                let mut roots = rustls::RootCertStore::empty();
+                for certificate in bundle.certificates() {
+                    roots
+                        .add(certificate.clone())
+                        .map_err(|_| types::internal_error())?;
+                }
+                if roots.is_empty() {
+                    return Err(types::internal_error());
+                }
+                let tls = rustls::ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth();
+                HttpsConnectorBuilder::new()
+                    .with_tls_config(tls)
+                    .https_only()
+                    .enable_http1()
+                    .wrap_connector(http)
+            }
+            None => HttpsConnectorBuilder::new()
+                .try_with_platform_verifier()
+                .map_err(|_| types::internal_error())?
+                .https_or_http()
+                .enable_http1()
+                .wrap_connector(http),
+        };
         Ok(Self {
             origin,
             connector,

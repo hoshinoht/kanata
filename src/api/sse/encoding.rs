@@ -136,3 +136,36 @@ fn chunk(metadata: &Metadata, choices: Value, usage: Option<Value>) -> Bytes {
 fn frame(value: Value) -> Bytes {
     Bytes::from(format!("data: {value}\n\n"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_chunk_carries_cached_tokens_only_when_known() {
+        let metadata = Metadata::new(ModelAlias("fixture-model".into()));
+        for (cached, expected) in [
+            (Some(1024), json!({"cached_tokens":1024})),
+            (None, Value::Null),
+        ] {
+            let frame = usage(
+                &metadata,
+                Usage {
+                    input_tokens: 2048,
+                    output_tokens: 3,
+                    total_tokens: 2051,
+                    reasoning_tokens: None,
+                    cached_input_tokens: cached,
+                },
+            );
+            let text = std::str::from_utf8(&frame).unwrap();
+            let value: Value = serde_json::from_str(
+                text.strip_prefix("data: ")
+                    .and_then(|rest| rest.strip_suffix("\n\n"))
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(value["usage"]["prompt_tokens_details"], expected);
+        }
+    }
+}

@@ -35,6 +35,10 @@ const NATIVE_ASR_MULTIPART_OVERHEAD_BYTES: usize = 8 * 1024;
 
 pub struct VllmAdapter {
     id: String,
+    /// Provider label for diagnostics: `vllm`, or `cliproxy` for CLIProxyAPI on this path.
+    provider: &'static str,
+    /// Whether assistant reasoning text reaches the upstream (vLLM yes, CLIProxyAPI no).
+    replays_reasoning_text: bool,
     capabilities: Capabilities,
     trust_zone: TrustZone,
     max_body_bytes: usize,
@@ -110,12 +114,17 @@ impl VllmAdapter {
                 || (configured.input_audio && configured.streaming_chat))
             && (!configured.audio_function_tools
                 || (configured.input_audio && configured.function_tools));
-        if adapter.kind() != ProviderKind::Vllm
+        // CLIProxyAPI reuses this chat path only: chat, always with its client key.
+        let kind_allowed = match adapter.kind() {
+            ProviderKind::Vllm => true,
+            ProviderKind::Cliproxy => bearer_token.is_some() && !supports_transcription,
+            _ => false,
+        };
+        if !kind_allowed
             || !zone_allowed
             || adapter.secret_ref().is_some() != bearer_token.is_some()
             || !supported_operations
             || !chat_features_valid
-            || configured.reasoning_control
         {
             return Err(internal_error());
         }
@@ -132,6 +141,8 @@ impl VllmAdapter {
 
         Ok(Self {
             id: adapter.id().to_owned(),
+            provider: adapter.kind().label(),
+            replays_reasoning_text: adapter.kind().replays_reasoning_text(),
             capabilities: configured.clone(),
             trust_zone: adapter.trust_zone(),
             max_body_bytes,
@@ -382,7 +393,7 @@ impl Adapter for VllmAdapter {
 
         let (context, request) = routed.into_parts();
         let transport = self.transport.clone();
-        let label = UpstreamLabel::new(&self.id, "vllm");
+        let label = UpstreamLabel::new(&self.id, self.provider);
         let credential = self.credential();
         let enable_thinking = self.enable_thinking(&context.route.route_id);
         match request {
@@ -403,11 +414,15 @@ impl Adapter for VllmAdapter {
                 } else {
                     self.max_body_bytes
                 };
-                let payload =
-                    match request::encode(&chat, &context.route.upstream_id, enable_thinking) {
-                        Ok(payload) => payload,
-                        Err(error) => return Box::pin(async move { Err(error) }),
-                    };
+                let payload = match request::encode(
+                    &chat,
+                    &context.route.upstream_id,
+                    enable_thinking,
+                    self.replays_reasoning_text,
+                ) {
+                    Ok(payload) => payload,
+                    Err(error) => return Box::pin(async move { Err(error) }),
+                };
                 let streaming = chat.stream;
                 Box::pin(async move {
                     if streaming {

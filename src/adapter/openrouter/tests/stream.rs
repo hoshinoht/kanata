@@ -38,6 +38,17 @@ async fn run_stream(
     Option<crate::core::GatewayError>,
     RequestRecord,
 ) {
+    run_stream_with(chunks, text_request_with_stream(true)).await
+}
+
+async fn run_stream_with(
+    chunks: Vec<Vec<u8>>,
+    request: CoreRequest,
+) -> (
+    Vec<NormalizedEvent>,
+    Option<crate::core::GatewayError>,
+    RequestRecord,
+) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .unwrap_or_else(|_| panic!("fixture listener"));
@@ -50,7 +61,7 @@ async fn run_stream(
     let server = tokio::spawn(serve_chunked_response(listener, acceptor, chunks));
     let output = tokio::time::timeout(
         Duration::from_secs(3),
-        adapter.execute(routed(&config, text_request_with_stream(true))),
+        adapter.execute(routed(&config, request)),
     )
     .await
     .unwrap_or_else(|_| panic!("OpenRouter stream setup timeout"))
@@ -140,6 +151,7 @@ async fn verified_https_stream_normalizes_fragmented_sse_usage_and_utf8() {
                     output_tokens: 7,
                     total_tokens: 18,
                     reasoning_tokens: Some(0),
+                    cached_input_tokens: Some(2),
                 })
             }
         ]
@@ -159,6 +171,41 @@ async fn verified_https_stream_normalizes_fragmented_sse_usage_and_utf8() {
             .as_object()
             .is_some_and(|object| object.contains_key("stream_options"))
     );
+}
+
+#[tokio::test]
+async fn reasoning_items_and_cache_fields_are_never_forwarded() {
+    let CoreRequest::Chat(mut chat) = text_request_with_stream(true) else {
+        panic!("chat request")
+    };
+    let reasoning = || crate::core::ChatContent::Reasoning {
+        item: crate::core::ReasoningItem::new(Some("rs_fixture".into()), "ENCRYPTED_MARKER".into())
+            .unwrap_or_else(|_| panic!("reasoning item")),
+    };
+    chat.messages[2].content.insert(0, reasoning());
+    chat.messages.insert(
+        2,
+        crate::core::ChatMessage {
+            role: crate::core::ChatRole::Assistant,
+            content: vec![reasoning()],
+        },
+    );
+    chat.prompt_cache_key = Some(
+        crate::core::PromptCacheKey::new("cache-key-fixture".into())
+            .unwrap_or_else(|_| panic!("cache key")),
+    );
+    chat.include_encrypted_reasoning = true;
+    let (_, error, record) =
+        run_stream_with(fixture_chunks(TEXT_STREAM), CoreRequest::Chat(chat)).await;
+    assert!(error.is_none());
+    let body: Value =
+        serde_json::from_slice(&record.body).unwrap_or_else(|_| panic!("JSON request"));
+    assert_eq!(body["messages"].as_array().map(Vec::len), Some(4));
+    assert_eq!(body["messages"][2]["content"], "2");
+    for absent in ["prompt_cache_key", "include", "reasoning"] {
+        assert!(body.get(absent).is_none(), "{absent} forwarded");
+    }
+    assert!(!String::from_utf8_lossy(&record.body).contains("ENCRYPTED_MARKER"));
 }
 
 #[tokio::test]
@@ -308,7 +355,7 @@ async fn dropping_stream_closes_verified_https_upstream_without_replay() {
 }
 
 #[test]
-fn length_stop_without_text_completes_empty_and_stop_does_not() {
+fn stop_or_length_without_text_completes_empty_and_content_filter_does_not() {
     let chunk = |delta: Value, finish: Value, usage: Value| {
         json!({
             "id":"gen-fixture","object":"chat.completion.chunk","created":1,"model":"m",
@@ -318,7 +365,11 @@ fn length_stop_without_text_completes_empty_and_stop_does_not() {
         .to_string()
     };
     let usage = json!({"prompt_tokens":1,"completion_tokens":2,"total_tokens":3});
-    for (finish, ok) in [("length", true), ("stop", false)] {
+    for (finish, expected) in [
+        ("length", Some(FinishReason::Length)),
+        ("stop", Some(FinishReason::Stop)),
+        ("content_filter", None),
+    ] {
         let mut state =
             super::super::stream_state::StreamState::new(ModelAlias(PUBLIC_MODEL.into()));
         let mut events = state
@@ -338,11 +389,11 @@ fn length_stop_without_text_completes_empty_and_stop_does_not() {
                 .unwrap_or_else(|_| panic!("reasoning chunk")),
         );
         let finished = state.data(&chunk(json!({}), json!(finish), Value::Null));
-        if !ok {
+        let Some(expected) = expected else {
             assert!(finished.is_err());
             continue;
-        }
-        events.extend(finished.unwrap_or_else(|_| panic!("length finish")));
+        };
+        events.extend(finished.unwrap_or_else(|_| panic!("{finish} finish")));
         state
             .data(&chunk(json!({}), json!(finish), usage.clone()))
             .unwrap_or_else(|_| panic!("usage chunk"));
@@ -352,11 +403,8 @@ fn length_stop_without_text_completes_empty_and_stop_does_not() {
             [
                 NormalizedEvent::ChatStarted { .. },
                 NormalizedEvent::ChatReasoningDelta { .. },
-                NormalizedEvent::ChatCompleted {
-                    finish_reason: FinishReason::Length,
-                    ..
-                }
-            ]
+                NormalizedEvent::ChatCompleted { finish_reason, .. }
+            ] if *finish_reason == expected
         ));
     }
 }

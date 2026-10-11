@@ -237,8 +237,9 @@ fn invalid_keys_files_are_rejected_once_and_keep_the_current_keys() {
     let (server, _) = support::server_with(&config, Vec::new());
     let handle = server.key_handle();
     let mut reloader = KeyReloader::new(config, Plane::All, handle.clone()).expect("reloader");
-    // Tracing caches callsite interest process-wide, so assert only on the
-    // rejection WARN, which no other test in this binary reaches.
+    // Tracing caches callsite interest process-wide; other tests' reloaders may
+    // register the rejection WARN first, so the cache is rebuilt once this
+    // subscriber is the thread default.
     let capture = Capture::default();
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
@@ -276,6 +277,7 @@ fn invalid_keys_files_are_rejected_once_and_keep_the_current_keys() {
         (valid.clone(), 0o620, "keys.file: insecure_permissions"),
     ];
     tracing::subscriber::with_default(subscriber, || {
+        tracing::callsite::rebuild_interest_cache();
         for (index, (contents, mode, error)) in cases.iter().enumerate() {
             scratch.write_keys(contents, *mode);
             assert_eq!(reloader.poll_once(), ReloadOutcome::Rejected, "{error}");

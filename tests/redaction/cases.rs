@@ -263,6 +263,43 @@ async fn success_error_sse_and_multipart_telemetry_are_metadata_only() {
 }
 
 #[tokio::test]
+async fn api_key_header_is_absent_from_telemetry() {
+    let config = support::config();
+    let (server, _) = support::server_with(
+        &config,
+        vec![support::adapter_spec(
+            "vllm-private",
+            support::capabilities(&config, "vllm-private"),
+            support::chat_outcome("SYNTHETIC_OUTPUT"),
+        )],
+    );
+    let body = r#"{"model":"private-chat","max_tokens":8,"messages":[{"role":"user","content":"SYNTHETIC_PROMPT"}]}"#;
+    for (api_key, status) in [
+        ("SYNTHETIC_SECRET", StatusCode::UNAUTHORIZED),
+        ("test-key", StatusCode::OK),
+    ] {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/messages?beta=SYNTHETIC_QUERY")
+            .header("x-api-key", api_key)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .expect("messages request");
+        let capture = Capture::default();
+        captured(&capture, async {
+            let response = server.client_oneshot(request).await.expect("response");
+            assert_eq!(response.status(), status);
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("messages body");
+        })
+        .await;
+        assert_redacted(&capture);
+        assert!(!capture.text().contains("test-key"));
+    }
+}
+
+#[tokio::test]
 async fn inline_audio_payload_is_absent_from_success_response_and_telemetry() {
     let config = crate::audio_support::config_with_audio(1_048_576, 1024);
     let (server, requests) = support::server_with(&config, crate::audio_support::adapters(&config));

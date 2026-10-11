@@ -125,7 +125,7 @@ impl StreamState {
         }
         if let Some(reason) = choice.finish_reason {
             self.finish(reason)?;
-            // A length stop may carry no visible output.
+            // A stop or length stop may carry no visible output.
             self.start(&mut events);
         }
         if let Some(usage) = chunk.usage {
@@ -241,7 +241,7 @@ impl StreamState {
         {
             return Err(upstream_failure());
         }
-        if reason != FinishReason::Length
+        if reason == FinishReason::ContentFilter
             && (!self.started || (!has_tools && !self.has_visible_text))
         {
             return Err(upstream_failure());
@@ -250,12 +250,15 @@ impl StreamState {
         Ok(())
     }
 
+    /// Some gateways repeat the final usage in a trailing chunk; only an identical repeat is accepted.
     fn set_usage(&mut self, usage: Usage) -> Result<(), GatewayError> {
-        if self.usage.is_some() {
-            return Err(upstream_failure());
+        match &self.usage {
+            Some(existing) if *existing != usage => Err(upstream_failure()),
+            _ => {
+                self.usage = Some(usage);
+                Ok(())
+            }
         }
-        self.usage = Some(usage);
-        Ok(())
     }
 }
 
@@ -281,6 +284,8 @@ mod tests {
 
     const LITELLM_TOOL_STREAM: &str =
         include_str!("../../../tests/fixtures/vllm/stream-litellm-tool-call.sse");
+    const REPEATED_USAGE_STREAM: &str =
+        include_str!("../../../tests/fixtures/vllm/stream-repeated-usage-tool-call.sse");
 
     fn run(sse: &str) -> Result<Vec<NormalizedEvent>, crate::core::GatewayError> {
         let mut state = StreamState::new(ModelAlias("omni".into()));
@@ -325,6 +330,7 @@ mod tests {
                     output_tokens: 26,
                     total_tokens: 302,
                     reasoning_tokens: Some(0),
+                    cached_input_tokens: None,
                 }),
             })
         );
@@ -337,5 +343,27 @@ mod tests {
             r#""choices":[{"index":0,"delta":{"content":"late"}}],"usage""#,
         );
         assert!(run(&late).is_err());
+    }
+
+    #[test]
+    fn identical_repeated_usage_is_accepted_and_a_conflicting_one_is_not() {
+        let events = run(REPEATED_USAGE_STREAM).expect("stream");
+        assert!(matches!(
+            events.last(),
+            Some(NormalizedEvent::ChatCompleted {
+                finish_reason: FinishReason::ToolCalls,
+                usage: Some(Usage {
+                    input_tokens: 507,
+                    output_tokens: 61,
+                    ..
+                }),
+            })
+        ));
+        let conflicting = REPEATED_USAGE_STREAM.replacen(
+            r#""choices":[],"usage":{"prompt_tokens":507"#,
+            r#""choices":[],"usage":{"prompt_tokens":508"#,
+            1,
+        );
+        assert!(run(&conflicting).is_err());
     }
 }

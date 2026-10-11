@@ -93,6 +93,8 @@ impl Adapter for ChatgptAdapter {
             };
             let model = chat.model.clone();
             let streaming = chat.stream;
+            let encrypted_reasoning =
+                super::codex::protocol::requests_encrypted_reasoning(chat, ProviderKind::Chatgpt);
             let deadline = tokio::time::Instant::now() + timeout;
             tokio::time::timeout(timeout, async {
                 let token = auth.access_token().await.map_err(|_| unavailable())?;
@@ -103,6 +105,7 @@ impl Adapter for ChatgptAdapter {
                         payload,
                         model,
                         streaming,
+                        encrypted_reasoning,
                         deadline,
                         label,
                         request_budget: budget,
@@ -124,6 +127,7 @@ struct Inference {
     payload: serde_json::Value,
     model: ModelAlias,
     streaming: bool,
+    encrypted_reasoning: bool,
     deadline: tokio::time::Instant,
     label: UpstreamLabel,
     request_budget: usize,
@@ -138,6 +142,7 @@ async fn execute_with_token(
         payload,
         model,
         streaming,
+        encrypted_reasoning,
         deadline,
         label,
         request_budget,
@@ -169,6 +174,7 @@ async fn execute_with_token(
             deadline,
             label,
             Some(NAMESPACE),
+            encrypted_reasoning,
         )))
     } else {
         let response = stream::collect_response_with_parser(
@@ -177,6 +183,7 @@ async fn execute_with_token(
             deadline,
             &label,
             Some(NAMESPACE),
+            encrypted_reasoning,
         )
         .await?;
         Ok(AdapterOutput::Complete(Response::Chat(response)))

@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::{
     auth::{SecretResolver, canonical_bearer_token},
-    config::{ValidatedAdapter, ValidatedTimeouts},
+    config::{ProviderKind, ValidatedAdapter, ValidatedTimeouts},
 };
 
 use super::transport::{
@@ -18,7 +18,8 @@ pub(crate) async fn models(
     timeouts: &ValidatedTimeouts,
     resolver: &impl SecretResolver,
 ) -> Result<BTreeSet<String>, &'static str> {
-    if adapter.kind().is_private_only() {
+    // Account adapters have no model list; CLIProxyAPI serves the OpenAI `/models`.
+    if matches!(adapter.kind(), ProviderKind::Codex | ProviderKind::Chatgpt) {
         return Err("not_supported");
     }
     tokio::time::timeout(Duration::from_secs(10), async {

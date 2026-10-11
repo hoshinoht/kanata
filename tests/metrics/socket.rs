@@ -73,8 +73,10 @@ impl Adapter for FixedAdapter {
                     output_tokens: 1,
                     total_tokens: 2,
                     reasoning_tokens: None,
+                    cached_input_tokens: None,
                 }),
                 reasoning: None,
+                reasoning_items: Vec::new(),
             })))
         })
     }

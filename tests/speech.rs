@@ -459,7 +459,8 @@ async fn speech_cancellation_closes_upstream_and_releases_input_and_admission() 
 
 #[test]
 fn speech_configuration_requires_allowlists_and_secure_credentials() {
-    let text = config_text("127.0.0.1:9");
+    // A hostname keeps the HTTPS rule; plain HTTP to a loopback IP literal may carry credentials.
+    let text = config_text("speech.invalid:9");
     for changed in [
         text.replace(
             "speech_voices = [\"af_heart\", \"af_sky\"]",

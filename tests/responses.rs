@@ -36,6 +36,7 @@ fn text_server() -> gateway::ServerWithRequests {
                     output_tokens: 1,
                     total_tokens: 3,
                     reasoning_tokens: None,
+                    cached_input_tokens: None,
                 }),
             },
         )],
@@ -85,20 +86,60 @@ async fn stateless_text_uses_existing_chat_authorization_and_usage() {
 }
 
 #[tokio::test]
-async fn unsupported_state_and_fields_fail_before_dispatch() {
+async fn unsupported_state_and_fields_fail_before_dispatch_with_a_param() {
     let (server, requests) = text_server();
-    for (name, value) in [
-        ("store", json!(true)),
-        ("background", json!(true)),
-        ("previous_response_id", json!("resp_old")),
-        ("conversation", json!("conv_old")),
-        ("include", json!(["reasoning.encrypted_content"])),
-        ("reasoning", json!({"summary":"auto"})),
-        ("parallel_tool_calls", json!(false)),
-        ("tools", json!([{"type":"web_search"}])),
+    for (name, value, param) in [
+        ("store", json!(true), "store"),
+        ("background", json!(true), "background"),
+        (
+            "previous_response_id",
+            json!("resp_old"),
+            "previous_response_id",
+        ),
+        ("conversation", json!("conv_old"), "conversation"),
+        ("include", json!(["file_search_call.results"]), "include"),
+        (
+            "reasoning",
+            json!({"summary":"verbose"}),
+            "reasoning.summary",
+        ),
+        (
+            "reasoning",
+            json!({"generate_summary":"auto"}),
+            "reasoning.generate_summary",
+        ),
+        (
+            "text",
+            json!({"format":{"type":"json_object"}}),
+            "text.format",
+        ),
+        ("text", json!({"verbosity":"loud"}), "text.verbosity"),
+        ("client_metadata", json!({"turn":1}), "client_metadata"),
+        ("metadata", json!({"k":"v".repeat(513)}), "metadata"),
+        ("user", json!(""), "user"),
+        ("prompt_cache_key", json!(""), "prompt_cache_key"),
+        ("parallel_tool_calls", json!(false), "parallel_tool_calls"),
+        ("frobnicate", json!(1), "frobnicate"),
+        ("tools", json!([{"type":"web_search"}]), "tools[0]"),
+        (
+            "tools",
+            json!([{"type":"function","name":"f","parameters":{},"strict":"yes"}]),
+            "tools[0].strict",
+        ),
+        (
+            "tools",
+            json!([{"type":"function","name":"f","parameters":{},"extra":1}]),
+            "tools[0].extra",
+        ),
         (
             "input",
             json!([{"role":"user","content":[{"type":"input_image","image_url":"https://example.invalid/image.png"}]}]),
+            "input[0].content",
+        ),
+        (
+            "input",
+            json!([{"role":"user","content":"x","name":"n"}]),
+            "input[0].name",
         ),
     ] {
         let mut body = json!({"model":"private-chat","input":"Hello"});
@@ -109,9 +150,56 @@ async fn unsupported_state_and_fields_fail_before_dispatch() {
             .expect("response");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{name}");
         let body = gateway::response_json(response).await;
-        assert_eq!(body["error"]["param"], name);
+        assert_eq!(body["error"]["param"], param, "{name}");
     }
     assert_eq!(gateway::recorded_len(&requests), 0);
+}
+
+#[tokio::test]
+async fn hint_fields_are_accepted_and_only_the_cache_key_and_include_reach_core() {
+    let (server, requests) = text_server();
+    let response = server
+        .client_oneshot(request(json!({
+            "model": "private-chat",
+            "input": "Hello",
+            "store": false,
+            "include": ["reasoning.encrypted_content"],
+            "parallel_tool_calls": true,
+            "prompt_cache_key": "00000000-0000-4000-8000-000000000003",
+            "client_metadata": {"session": "TEST_ONLY"},
+            "metadata": {"k": "v"},
+            "user": "TEST_ONLY_USER",
+            "reasoning": {"summary": "auto"},
+            "text": {"verbosity": "low", "format": {"type": "text"}},
+            "tools": [{"type":"function","name":"f","parameters":{"type":"object"},"strict":true}]
+        })))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let routed = gateway::take_request(&requests);
+    let CoreRequest::Chat(chat) = routed.request() else {
+        panic!("chat request");
+    };
+    assert_eq!(
+        chat.prompt_cache_key.as_ref().map(|key| key.as_str()),
+        Some("00000000-0000-4000-8000-000000000003")
+    );
+    assert!(chat.include_encrypted_reasoning);
+    let serialized = serde_json::to_string(chat).expect("serializes");
+    assert!(!serialized.contains("TEST_ONLY"), "{serialized}");
+    let response = server
+        .client_oneshot(request(
+            json!({"model":"private-chat","input":"Hello","include":[],"reasoning":null}),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let routed = gateway::take_request(&requests);
+    let CoreRequest::Chat(chat) = routed.request() else {
+        panic!("chat request");
+    };
+    assert!(!chat.include_encrypted_reasoning);
+    assert!(chat.prompt_cache_key.is_none());
 }
 
 #[tokio::test]
@@ -160,7 +248,121 @@ async fn function_outputs_can_be_replayed_with_complete_history() {
     assert!(
         matches!(&chat.messages[2].content[0], ChatContent::ToolResult { call_id, content } if call_id == "call_weather" && content == "Sunny")
     );
-    assert_eq!(server.client_oneshot(request(json!({"model":"private-chat","input":[{"type":"function_call_output","call_id":"orphan","output":"Sunny"}]}))).await.expect("response").status(), StatusCode::BAD_REQUEST);
+    let orphan = server.client_oneshot(request(json!({"model":"private-chat","input":[{"type":"function_call_output","call_id":"orphan","output":"Sunny"}]}))).await.expect("response");
+    assert_eq!(orphan.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        gateway::response_json(orphan).await["error"]["param"],
+        "input[0].call_id"
+    );
+
+    let call = json!({"type":"function_call","id":"fc_1","status":"completed","call_id":"call_1","name":"weather","arguments":"{}"});
+    for (output, expected) in [
+        (json!(""), ""),
+        (
+            json!([{"type":"input_text","text":"Sun"},{"type":"input_text","text":"ny"}]),
+            "Sunny",
+        ),
+    ] {
+        let replay = json!({"model":"private-chat","input":[{"role":"user","content":"Weather?"},call,{"type":"function_call_output","id":"fco_1","status":"completed","call_id":"call_1","output":output}]});
+        let response = server
+            .client_oneshot(request(replay))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK, "{output}");
+        let routed = gateway::take_request(&requests);
+        let CoreRequest::Chat(chat) = routed.request() else {
+            panic!("chat");
+        };
+        assert_eq!(
+            chat.messages[2].content,
+            vec![ChatContent::ToolResult {
+                call_id: "call_1".into(),
+                content: expected.into(),
+            }]
+        );
+    }
+    let image = json!([{"type":"input_image","image_url":"data:image/png;base64,AA=="}]);
+    let replay = json!({"model":"private-chat","input":[{"role":"user","content":"Weather?"},call,{"type":"function_call_output","call_id":"call_1","output":image}]});
+    let response = server
+        .client_oneshot(request(replay))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        gateway::response_json(response).await["error"]["param"],
+        "input[2].output"
+    );
+}
+
+#[tokio::test]
+async fn encrypted_reasoning_items_join_the_assistant_output_that_follows_them() {
+    let (server, requests) = text_server();
+    let reasoning = |id: &str, encrypted: &str| json!({"type":"reasoning","id":id,"summary":[],"encrypted_content":encrypted});
+    let input = json!([
+        {"role":"user","content":"Weather?"},
+        reasoning("rs_1", "opaque-1"),
+        {"type":"function_call","call_id":"call_1","name":"weather","arguments":"{}"},
+        {"type":"function_call_output","call_id":"call_1","output":"Sunny"},
+        reasoning("rs_2", "opaque-2"),
+        {"type":"message","role":"assistant","content":[{"type":"output_text","text":"It is sunny.","annotations":[]}]},
+        {"type":"reasoning","summary":[{"type":"summary_text","text":"Summary only."}],"encrypted_content":null},
+        reasoning("rs_3", "opaque-3"),
+        {"role":"user","content":"Thanks"},
+        reasoning("rs_4", "opaque-4")
+    ]);
+    let response = server
+        .client_oneshot(request(json!({"model":"private-chat","input":input})))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let routed = gateway::take_request(&requests);
+    let CoreRequest::Chat(chat) = routed.request() else {
+        panic!("chat");
+    };
+    let reasoning_ids = |message: &ChatMessage| -> Vec<Option<String>> {
+        message
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                ChatContent::Reasoning { item } => Some(item.id().map(str::to_owned)),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(chat.messages.len(), 6);
+    let first = &chat.messages[1];
+    assert_eq!(first.role, ChatRole::Assistant);
+    assert!(
+        matches!(&first.content[0], ChatContent::Reasoning { item } if item.encrypted_content() == "opaque-1")
+    );
+    assert!(matches!(&first.content[1], ChatContent::ToolCall { .. }));
+    // Reasoning before the answer leads it; reasoning after it in the same turn trails it.
+    let answer = &chat.messages[3];
+    assert_eq!(
+        reasoning_ids(answer),
+        vec![Some("rs_2".to_owned()), Some("rs_3".to_owned())]
+    );
+    assert!(matches!(&answer.content[0], ChatContent::Reasoning { .. }));
+    assert!(matches!(&answer.content[1], ChatContent::Text { .. }));
+    assert_eq!(chat.messages[4].role, ChatRole::User);
+    // Trailing reasoning with no assistant output becomes a reasoning-only turn.
+    assert_eq!(chat.messages[5].role, ChatRole::Assistant);
+    assert_eq!(
+        reasoning_ids(&chat.messages[5]),
+        vec![Some("rs_4".to_owned())]
+    );
+    assert_eq!(chat.messages[5].content.len(), 1);
+
+    let empty = json!({"model":"private-chat","input":[{"role":"user","content":"x"},{"type":"reasoning","summary":[],"encrypted_content":""}]});
+    let response = server
+        .client_oneshot(request(empty))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        gateway::response_json(response).await["error"]["param"],
+        "input[1].encrypted_content"
+    );
 }
 
 fn start() -> Result<NormalizedEvent, GatewayError> {
@@ -176,6 +378,7 @@ fn completed(reason: FinishReason) -> Result<NormalizedEvent, GatewayError> {
             output_tokens: 2,
             total_tokens: 3,
             reasoning_tokens: Some(1),
+            cached_input_tokens: None,
         }),
     })
 }
@@ -295,7 +498,7 @@ async fn failures_length_stops_and_client_cancellation_preserve_lifecycle() {
 }
 
 #[tokio::test]
-async fn complete_arguments_use_total_output_bound_and_reject_empty_success() {
+async fn complete_arguments_use_total_output_bound_and_accept_empty_success() {
     let config = gateway::config();
     let arguments = json!({"text":"x".repeat(20 * 1024)}).to_string();
     for (message, reason, status) in [
@@ -316,7 +519,7 @@ async fn complete_arguments_use_total_output_bound_and_reject_empty_success() {
         (
             gateway::assistant_text(""),
             FinishReason::Stop,
-            StatusCode::BAD_GATEWAY,
+            StatusCode::OK,
         ),
         (
             gateway::assistant_text(""),
@@ -456,6 +659,7 @@ fn summary_server(
         output_tokens: 2,
         total_tokens: 3,
         reasoning_tokens,
+        cached_input_tokens: None,
     });
     let mut events = vec![start(), Ok(NormalizedEvent::ChatTextDelta { text })];
     if with_tool {
@@ -498,6 +702,7 @@ fn summary_server(
             finish_reason,
             usage,
             reasoning: Some(reasoning),
+            reasoning_items: Vec::new(),
         },
         events,
     };
@@ -727,10 +932,19 @@ async fn returned_summary_items_can_be_replayed_in_stateless_history() {
             .unwrap()
             .contains("Summary.")
     );
-    for item in [
-        json!({"type":"reasoning","summary":[{"type":"summary_text","text":"Summary."}],"encrypted_content":"opaque"}),
-        json!({"type":"reasoning","summary":[{"type":"summary_text","text":7}]}),
-        json!({"type":"reasoning","summary":[{"type":"reasoning_text","text":"Summary."}]}),
+    for (item, param) in [
+        (
+            json!({"type":"reasoning","summary":[{"type":"summary_text","text":"Summary."}],"encrypted_content":7}),
+            "input[1].encrypted_content",
+        ),
+        (
+            json!({"type":"reasoning","summary":[{"type":"summary_text","text":7}]}),
+            "input[1].summary",
+        ),
+        (
+            json!({"type":"reasoning","summary":[{"type":"reasoning_text","text":"Summary."}]}),
+            "input[1].summary",
+        ),
     ] {
         let response = server
             .client_oneshot(request(
@@ -741,7 +955,7 @@ async fn returned_summary_items_can_be_replayed_in_stateless_history() {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             gateway::response_json(response).await["error"]["param"],
-            "input"
+            param
         );
         assert_eq!(gateway::recorded_len(&requests), 0);
     }
@@ -787,7 +1001,7 @@ async fn reasoning_only_length_stop_finishes_summary_as_incomplete() {
 }
 
 #[tokio::test]
-async fn summary_does_not_replace_a_required_answer_or_function_call() {
+async fn summary_is_followed_by_the_answer_or_function_call_even_when_empty() {
     for stream in [false, true] {
         for with_tool in [false, true] {
             let server = summary_server("Summary.".into(), String::new(), with_tool, None);
@@ -797,32 +1011,159 @@ async fn summary_does_not_replace_a_required_answer_or_function_call() {
                 ))
                 .await
                 .expect("response");
-            if stream {
-                assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.status(), StatusCode::OK);
+            let response = if stream {
                 let frames = events(response).await;
-                assert_eq!(
-                    frames.last().unwrap()["type"],
-                    if with_tool {
-                        "response.completed"
-                    } else {
-                        "response.failed"
-                    }
-                );
+                let terminal = frames.last().unwrap();
+                assert_eq!(terminal["type"], "response.completed");
+                terminal["response"].clone()
             } else {
-                assert_eq!(
-                    response.status(),
-                    if with_tool {
-                        StatusCode::OK
-                    } else {
-                        StatusCode::BAD_GATEWAY
-                    }
-                );
-                if with_tool {
-                    let response = gateway::response_json(response).await;
-                    assert_eq!(response["output"][0]["type"], "reasoning");
-                    assert_eq!(response["output"][1]["type"], "function_call");
-                }
+                gateway::response_json(response).await
+            };
+            let output = response["output"].as_array().expect("output items");
+            let kinds: Vec<_> = output.iter().map(|item| item["type"].clone()).collect();
+            assert!(kinds.contains(&json!("reasoning")));
+            if with_tool {
+                assert!(kinds.contains(&json!("function_call")));
+            } else {
+                let message = output
+                    .iter()
+                    .find(|item| item["type"] == "message")
+                    .expect("empty answer message");
+                assert_eq!(message["content"][0]["text"], "");
             }
         }
     }
+}
+
+/// Streams a fixed reply and records every routed request.
+struct HarnessAdapter {
+    capabilities: kanata::core::Capabilities,
+    requests: gateway::Requests,
+}
+
+impl kanata::adapter::Adapter for HarnessAdapter {
+    fn id(&self) -> &str {
+        "vllm-private"
+    }
+
+    fn capabilities(&self) -> &kanata::core::Capabilities {
+        &self.capabilities
+    }
+
+    fn execute(&self, routed: kanata::core::RoutedRequest) -> kanata::adapter::AdapterFuture {
+        self.requests.lock().expect("request lock").push(routed);
+        Box::pin(async move {
+            Ok(kanata::adapter::AdapterOutput::Events(Box::pin(
+                futures_util::stream::iter(vec![
+                    start(),
+                    Ok(NormalizedEvent::ChatTextDelta { text: "ok".into() }),
+                    completed(FinishReason::Stop),
+                ]),
+            )))
+        })
+    }
+}
+
+/// The example config with sampling controls on the private chat route, as harnesses send
+/// output-token limits.
+fn harness_server() -> gateway::ServerWithRequests {
+    let contents = std::fs::read_to_string("tests/fixtures/config/example.toml")
+        .expect("example config")
+        .replacen(
+            "operations = [\"chat\", \"transcription\"]\nstreaming_chat = true\nfunction_tools = true\n",
+            "operations = [\"chat\", \"transcription\"]\nstreaming_chat = true\nfunction_tools = true\nsampling_controls = true\n",
+            1,
+        );
+    let path = std::env::temp_dir().join(format!(
+        "kanata-harness-fixtures-{}.toml",
+        std::process::id()
+    ));
+    std::fs::write(&path, contents).expect("config writes");
+    let config = kanata::config::load(&path);
+    std::fs::remove_file(&path).expect("config removes");
+    let config = config.expect("harness config validates");
+    let requests = gateway::Requests::default();
+    let adapter = HarnessAdapter {
+        capabilities: gateway::capabilities(&config, "vllm-private"),
+        requests: requests.clone(),
+    };
+    assert!(adapter.capabilities.sampling_controls);
+    let server = kanata::server::TwoPlaneServer::from_validated_with_adapters(
+        &config,
+        &gateway::Resolver,
+        kanata::server::Readiness::new(true),
+        vec![std::sync::Arc::new(adapter)],
+    )
+    .expect("harness server");
+    (server, requests)
+}
+
+fn harness_fixture(name: &str) -> Value {
+    let path = format!("tests/fixtures/harness/{name}.json");
+    serde_json::from_str(&std::fs::read_to_string(&path).expect("fixture reads")).expect(&path)
+}
+
+fn harness_request(path: &str, body: &Value) -> Request<Body> {
+    let mut request = gateway::chat_request(&body.to_string());
+    *request.uri_mut() = path.parse().expect("uri");
+    request
+}
+
+#[tokio::test]
+async fn recorded_harness_request_shapes_are_accepted() {
+    let (server, requests) = harness_server();
+    for (name, path) in [
+        ("omp_chat", "/v1/chat/completions"),
+        ("opencode", "/v1/chat/completions"),
+        ("omp_responses", "/v1/responses"),
+        ("codex_t1", "/v1/responses"),
+        ("codex_t2", "/v1/responses"),
+    ] {
+        let mut body = harness_fixture(name);
+        // Hosted and grouped tools are rejected by design; Codex can turn them off.
+        if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+            tools.retain(|tool| tool["type"] == "function");
+        }
+        let response = server
+            .client_oneshot(harness_request(path, &body))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK, "{name}");
+        gateway::response_body(response).await;
+        let routed = gateway::take_request(&requests);
+        let CoreRequest::Chat(chat) = routed.request() else {
+            panic!("chat");
+        };
+        assert_eq!(
+            chat.prompt_cache_key.is_some(),
+            body.get("prompt_cache_key").is_some(),
+            "{name}"
+        );
+        assert_eq!(
+            chat.include_encrypted_reasoning,
+            name.starts_with("codex"),
+            "{name}"
+        );
+        if name == "codex_t2" {
+            assert!(matches!(
+                &chat.messages.last().expect("tool result").content[..],
+                [ChatContent::ToolResult { content, .. }] if content == "TEST_ONLY tool output"
+            ));
+        }
+    }
+
+    let response = server
+        .client_oneshot(harness_request(
+            "/v1/responses",
+            &harness_fixture("codex_t1"),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        gateway::response_json(response).await["error"]["param"],
+        "tools[4]"
+    );
+    assert_eq!(gateway::recorded_len(&requests), 0);
 }

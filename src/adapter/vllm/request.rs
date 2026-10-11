@@ -34,8 +34,17 @@ pub(super) struct ChatPayload {
     top_p: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     seed: Option<i64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stop: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frequency_penalty: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<ResponseFormat>,
+    // OpenAI chat wire; vLLM honours it for gpt-oss-class models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     chat_template_kwargs: Option<ChatTemplateKwargs>,
 }
@@ -60,6 +69,10 @@ struct MessagePayload {
     tool_calls: Option<Vec<ToolCallPayload>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    // Replayed assistant reasoning; vLLM's canonical input field (`reasoning_content` is
+    // only a late-added alias).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -154,19 +167,20 @@ struct InputAudioPayload {
     format: &'static str,
 }
 
-/// `route_thinking` is the route default; a request value overrides it.
+/// `route_thinking` is the route default; a request value overrides it. `replay_reasoning`
+/// forwards assistant reasoning text; otherwise it is dropped.
 pub(super) fn encode(
     chat: &ChatRequest,
     upstream_model: &str,
     route_thinking: Option<bool>,
+    replay_reasoning: bool,
 ) -> Result<ChatPayload, GatewayError> {
     if upstream_model.trim().is_empty() {
         return Err(invalid_request());
     }
     let messages = chat
-        .messages
-        .iter()
-        .map(encode_message)
+        .messages_without_reasoning()
+        .map(|message| encode_message(message, replay_reasoning))
         .collect::<Result<Vec<_>, _>>()?;
     let tools = (!chat.tools.is_empty()).then(|| chat.tools.iter().map(encode_tool).collect());
     // Omitted for the default so tool-free payloads stay unchanged.
@@ -189,11 +203,23 @@ pub(super) fn encode(
             .and_then(|value| Number::from_f64(value.get())),
         top_p: chat.options.sampling.top_p.map(|value| value.get()),
         seed: chat.options.sampling.seed,
+        stop: chat.options.sampling.stop.clone(),
+        presence_penalty: chat
+            .options
+            .sampling
+            .presence_penalty
+            .map(|value| value.get()),
+        frequency_penalty: chat
+            .options
+            .sampling
+            .frequency_penalty
+            .map(|value| value.get()),
         response_format: chat
             .options
             .response_format
             .clone()
             .filter(|format| !matches!(format, ResponseFormat::Text)),
+        reasoning_effort: chat.options.reasoning_effort.map(|effort| effort.as_str()),
         chat_template_kwargs: template_kwargs(chat.options.enable_thinking.or(route_thinking)),
     })
 }
@@ -256,6 +282,7 @@ pub(super) fn encode_transcription(
             ])),
             tool_calls: None,
             tool_call_id: None,
+            reasoning: None,
         }],
         tools: None,
         tool_choice: None,
@@ -265,7 +292,11 @@ pub(super) fn encode_transcription(
         temperature: Some(Number::from(0)),
         top_p: None,
         seed: None,
+        stop: Vec::new(),
+        presence_penalty: None,
+        frequency_penalty: None,
         response_format: None,
+        reasoning_effort: None,
         chat_template_kwargs: template_kwargs(enable_thinking),
     })
 }
@@ -291,7 +322,10 @@ pub(super) fn native_asr_accepts_media_type(media_type: &str) -> bool {
     )
 }
 
-fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError> {
+fn encode_message(
+    message: &ChatMessage,
+    replay_reasoning: bool,
+) -> Result<MessagePayload, GatewayError> {
     let role = match message.role {
         ChatRole::System => "system",
         ChatRole::Developer => "developer",
@@ -300,7 +334,7 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
         ChatRole::Tool => return encode_tool_result(message),
     };
     if message.role == ChatRole::Assistant {
-        return encode_assistant(message);
+        return encode_assistant(message, replay_reasoning);
     }
 
     if message.content.iter().any(|content| {
@@ -328,9 +362,11 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
                     },
                 })),
                 ChatContent::Text { .. } => Err(invalid_request()),
-                ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. } => {
-                    Err(unsupported_operation())
-                }
+                // Media messages are user turns, which never carry reasoning.
+                ChatContent::ToolCall { .. }
+                | ChatContent::ToolResult { .. }
+                | ChatContent::Reasoning { .. }
+                | ChatContent::ReasoningText { .. } => Err(unsupported_operation()),
             })
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(MessagePayload {
@@ -338,6 +374,7 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
             content: Some(MessageContent::Parts(parts)),
             tool_calls: None,
             tool_call_id: None,
+            reasoning: None,
         });
     }
 
@@ -357,13 +394,19 @@ fn encode_message(message: &ChatMessage) -> Result<MessagePayload, GatewayError>
         content: Some(MessageContent::Text(text)),
         tool_calls: None,
         tool_call_id: None,
+        reasoning: None,
     })
 }
 
-/// Assistant history: text (empty segments skipped) plus any tool calls.
-fn encode_assistant(message: &ChatMessage) -> Result<MessagePayload, GatewayError> {
+/// Assistant history: text (empty segments skipped), any tool calls, and replayed reasoning
+/// text when `replay_reasoning` is set.
+fn encode_assistant(
+    message: &ChatMessage,
+    replay_reasoning: bool,
+) -> Result<MessagePayload, GatewayError> {
     let mut text = String::new();
     let mut calls = Vec::new();
+    let mut reasoning = String::new();
     for content in &message.content {
         match content {
             ChatContent::Text { text: segment } => text.push_str(segment),
@@ -380,6 +423,11 @@ fn encode_assistant(message: &ChatMessage) -> Result<MessagePayload, GatewayErro
             | ChatContent::ToolResult { .. } => {
                 return Err(unsupported_operation());
             }
+            ChatContent::ReasoningText { text: segment } if replay_reasoning => {
+                reasoning.push_str(segment);
+            }
+            // Encrypted reasoning never replays here; reasoning text only where accepted.
+            ChatContent::Reasoning { .. } | ChatContent::ReasoningText { .. } => {}
         }
     }
     if text.is_empty() && calls.is_empty() {
@@ -390,6 +438,7 @@ fn encode_assistant(message: &ChatMessage) -> Result<MessagePayload, GatewayErro
         content: (!text.is_empty()).then_some(MessageContent::Text(text)),
         tool_calls: (!calls.is_empty()).then_some(calls),
         tool_call_id: None,
+        reasoning: (!reasoning.is_empty()).then_some(reasoning),
     })
 }
 
@@ -402,6 +451,7 @@ fn encode_tool_result(message: &ChatMessage) -> Result<MessagePayload, GatewayEr
         content: Some(MessageContent::Text(content.clone())),
         tool_calls: None,
         tool_call_id: Some(call_id.clone()),
+        reasoning: None,
     })
 }
 
@@ -479,8 +529,8 @@ mod tests {
     use serde_json::Value;
 
     use crate::core::{
-        ChatContent, ChatMessage, ChatOptions, ChatRequest, ChatRole, ModelAlias, ResponseFormat,
-        SamplingOptions, Temperature, ToolChoice, TopP,
+        ChatContent, ChatMessage, ChatOptions, ChatRequest, ChatRole, ModelAlias, Penalty,
+        ResponseFormat, SamplingOptions, Temperature, ToolChoice, TopP,
     };
 
     #[test]
@@ -502,21 +552,40 @@ mod tests {
                     temperature: Some(Temperature::new(0.7).expect("temperature")),
                     top_p: Some(TopP::new(0.9).expect("top_p")),
                     seed: Some(3),
+                    stop: Vec::new(),
+                    presence_penalty: None,
+                    frequency_penalty: None,
                 },
                 max_output_tokens: Some(64),
                 max_output_tokens_param: Default::default(),
+                stop_param: Default::default(),
                 reasoning_effort: None,
                 enable_thinking: None,
             },
             extensions: Default::default(),
+            prompt_cache_key: None,
+            include_encrypted_reasoning: false,
         };
-        let payload =
-            super::encode(&chat, "meta-llama/Meta-Llama-3.1-8B-Instruct", None).expect("encodes");
+        let payload = super::encode(&chat, "meta-llama/Meta-Llama-3.1-8B-Instruct", None, true)
+            .expect("encodes");
         let expected: Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/vllm/chat-options-request.json"
         ))
         .expect("fixture json");
         assert_eq!(serde_json::to_value(payload).expect("serializes"), expected);
+
+        let mut chat = chat;
+        chat.options.sampling.stop = vec!["END".into()];
+        chat.options.sampling.presence_penalty = Some(Penalty::new(0.5).expect("penalty"));
+        chat.options.sampling.frequency_penalty = Some(Penalty::new(-1.0).expect("penalty"));
+        let payload = serde_json::to_value(
+            super::encode(&chat, "meta-llama/Meta-Llama-3.1-8B-Instruct", None, true)
+                .expect("encodes"),
+        )
+        .expect("serializes");
+        assert_eq!(payload["stop"], serde_json::json!(["END"]));
+        assert_eq!(payload["presence_penalty"], 0.5);
+        assert_eq!(payload["frequency_penalty"], -1.0);
     }
 
     #[test]
@@ -532,17 +601,50 @@ mod tests {
             stream: false,
             options: ChatOptions::default(),
             extensions: Default::default(),
+            prompt_cache_key: None,
+            include_encrypted_reasoning: false,
         };
-        let off =
-            serde_json::to_value(super::encode(&chat, "OmniLion", Some(false)).expect("encodes"))
-                .expect("serializes");
+        let off = serde_json::to_value(
+            super::encode(&chat, "OmniLion", Some(false), true).expect("encodes"),
+        )
+        .expect("serializes");
         assert_eq!(
             off["chat_template_kwargs"],
             serde_json::json!({"enable_thinking": false})
         );
-        let unset = serde_json::to_value(super::encode(&chat, "OmniLion", None).expect("encodes"))
-            .expect("serializes");
+        let unset =
+            serde_json::to_value(super::encode(&chat, "OmniLion", None, true).expect("encodes"))
+                .expect("serializes");
         assert!(unset.get("chat_template_kwargs").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_is_sent_exactly_when_resolved() {
+        let mut chat = ChatRequest {
+            model: ModelAlias("claude".into()),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: vec![ChatContent::Text { text: "hi".into() }],
+            }],
+            tools: Vec::new(),
+            tool_choice: ToolChoice::Auto,
+            stream: false,
+            options: ChatOptions::default(),
+            extensions: Default::default(),
+            prompt_cache_key: None,
+            include_encrypted_reasoning: false,
+        };
+        let unset =
+            serde_json::to_value(super::encode(&chat, "claude", None, true).expect("encodes"))
+                .expect("serializes");
+        assert!(unset.get("reasoning_effort").is_none());
+
+        chat.options.reasoning_effort = Some(crate::core::ReasoningEffort::Low);
+        let low =
+            serde_json::to_value(super::encode(&chat, "claude", None, true).expect("encodes"))
+                .expect("serializes");
+        assert_eq!(low["reasoning_effort"], "low");
+        assert!(low.get("chat_template_kwargs").is_none());
     }
 
     #[test]
@@ -594,10 +696,13 @@ mod tests {
                 ..ChatOptions::default()
             },
             extensions: Default::default(),
+            prompt_cache_key: None,
+            include_encrypted_reasoning: false,
         };
-        let payload =
-            serde_json::to_value(super::encode(&chat, "omnilion", Some(true)).expect("encodes"))
-                .expect("serializes");
+        let payload = serde_json::to_value(
+            super::encode(&chat, "omnilion", Some(true), true).expect("encodes"),
+        )
+        .expect("serializes");
         assert_eq!(
             payload,
             serde_json::json!({

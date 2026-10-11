@@ -287,6 +287,8 @@ pub fn text_request_with_stream(stream: bool) -> CoreRequest {
         stream,
         extensions: Default::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     })
 }
 
@@ -327,6 +329,8 @@ pub fn tool_request(choice: ToolChoice) -> CoreRequest {
         stream: false,
         extensions: Default::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     })
 }
 

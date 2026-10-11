@@ -12,6 +12,7 @@ use super::{
     super::{
         deadline::RequestDeadline,
         errors::{gateway_error_observed, upstream_failure_observed},
+        keepalive::{COMMENT, keepalive},
         sse::StreamLifetime,
         stream_timeout::StreamTimeout,
     },
@@ -41,6 +42,7 @@ pub(in crate::api) async fn stream_response(
     }
     let output = Output::new(options);
     let pending = output.start().into();
+    let interval = lifetime.keepalive;
     let state = State {
         events: Some(events),
         output,
@@ -105,7 +107,7 @@ pub(in crate::api) async fn stream_response(
             (header::CONTENT_TYPE, "text/event-stream"),
             (header::CACHE_CONTROL, "no-cache"),
         ],
-        Body::from_stream(body),
+        Body::from_stream(keepalive(body, interval, COMMENT)),
     )
         .into_response()
 }

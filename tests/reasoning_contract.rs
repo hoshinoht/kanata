@@ -26,6 +26,7 @@ fn usage() -> Usage {
         output_tokens: 9,
         total_tokens: 14,
         reasoning_tokens: Some(6),
+        cached_input_tokens: None,
     }
 }
 
@@ -68,6 +69,7 @@ impl Adapter for ReasoningAdapter {
                 finish_reason: FinishReason::Stop,
                 usage: Some(usage()),
                 reasoning: Some(REASONING.into()),
+                reasoning_items: Vec::new(),
             })))
         })
     }

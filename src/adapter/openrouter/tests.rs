@@ -233,6 +233,8 @@ fn text_request_with_stream(stream: bool) -> CoreRequest {
         stream,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     })
 }
 
@@ -304,14 +306,20 @@ fn current_response_metadata_fields_are_accepted() {
 }
 
 #[test]
-fn empty_content_is_accepted_only_for_a_length_stop() {
+fn empty_content_is_an_empty_reply_unless_filtered_or_refused() {
     let mut payload: Value =
         serde_json::from_str(RESPONSE).unwrap_or_else(|_| panic!("response fixture"));
     payload["choices"][0]["message"]["content"] = json!("");
     payload["choices"][0]["message"]["reasoning"] = json!("thinking");
     payload["choices"][0]["message"]["reasoning_details"] = json!([{"type": "reasoning.text"}]);
-    for (upstream, ok) in [("length", true), ("stop", false)] {
+    for (upstream, refusal, ok) in [
+        ("length", Value::Null, true),
+        ("stop", Value::Null, true),
+        ("stop", json!("I can't help with that."), false),
+        ("content_filter", Value::Null, false),
+    ] {
         payload["choices"][0]["finish_reason"] = json!(upstream);
+        payload["choices"][0]["message"]["refusal"] = refusal;
         let bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| panic!("response json"));
         let result = super::response::decode(&bytes, ModelAlias(PUBLIC_MODEL.into()));
         match result {
@@ -384,6 +392,7 @@ async fn verified_https_chat_sends_explicit_model_no_fallback_and_normalizes_fix
             output_tokens: 7,
             total_tokens: 18,
             reasoning_tokens: Some(0),
+            cached_input_tokens: Some(2),
         })
     );
 
@@ -708,13 +717,19 @@ fn chat_options_encode_with_reasoning_as_an_effort_object() {
                 temperature: Some(Temperature::new(0.7).expect("temperature")),
                 top_p: Some(TopP::new(0.9).expect("top_p")),
                 seed: Some(-1),
+                stop: Vec::new(),
+                presence_penalty: None,
+                frequency_penalty: None,
             },
             max_output_tokens: Some(64),
             max_output_tokens_param: Default::default(),
+            stop_param: Default::default(),
             reasoning_effort: Some(ReasoningEffort::Max),
             enable_thinking: None,
         },
         extensions: Extensions::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     };
     let payload = super::request::encode(&chat, UPSTREAM_MODEL, false).expect("encodes");
     let expected: Value = serde_json::from_str(include_str!(
@@ -722,6 +737,19 @@ fn chat_options_encode_with_reasoning_as_an_effort_object() {
     ))
     .expect("fixture json");
     assert_eq!(serde_json::to_value(payload).expect("serializes"), expected);
+
+    let mut chat = chat;
+    chat.options.sampling.stop = vec!["END".into(), "STOP".into()];
+    chat.options.sampling.presence_penalty = Some(crate::core::Penalty::new(1.5).expect("penalty"));
+    chat.options.sampling.frequency_penalty =
+        Some(crate::core::Penalty::new(-2.0).expect("penalty"));
+    let payload = serde_json::to_value(
+        super::request::encode(&chat, UPSTREAM_MODEL, false).expect("encodes"),
+    )
+    .expect("serializes");
+    assert_eq!(payload["stop"], json!(["END", "STOP"]));
+    assert_eq!(payload["presence_penalty"], 1.5);
+    assert_eq!(payload["frequency_penalty"], -2.0);
 }
 
 #[test]
@@ -754,6 +782,8 @@ fn input_audio_encodes_as_content_parts_and_text_stays_a_string() {
         stream: false,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     };
     let payload = serde_json::to_value(
         super::request::encode(&chat, "mistralai/voxtral-small-24b-2507", false).expect("encodes"),
@@ -838,6 +868,9 @@ fn tools_and_tool_history_encode() {
             ChatMessage {
                 role: ChatRole::Assistant,
                 content: vec![
+                    ChatContent::ReasoningText {
+                        text: "check the forecast".into(),
+                    },
                     ChatContent::Text {
                         text: String::new(),
                     },
@@ -869,6 +902,8 @@ fn tools_and_tool_history_encode() {
         stream: true,
         options: Default::default(),
         extensions: Extensions::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     };
     let payload = super::request::encode(&chat, UPSTREAM_MODEL, true).expect("encodes");
     assert_eq!(
@@ -877,7 +912,7 @@ fn tools_and_tool_history_encode() {
             "model": UPSTREAM_MODEL,
             "messages": [
                 {"role": "user", "content": "weather?"},
-                {"role": "assistant", "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}]},
+                {"role": "assistant", "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}], "reasoning": "check the forecast"},
                 {"role": "tool", "content": "sunny", "tool_call_id": "call-1"}
             ],
             "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}],

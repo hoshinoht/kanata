@@ -162,6 +162,20 @@ impl Document {
     pub(super) fn validate(
         &self,
         path: &Path,
+        read_files: bool,
+    ) -> Result<ValidatedConfig, ConfigError> {
+        let config = self.validate_deferring_ca(path, read_files)?;
+        if read_files {
+            config.load_ca_bundles()
+        } else {
+            Ok(config)
+        }
+    }
+
+    /// Validates with adapter `ca_file`s path-checked only; `read_keys` reads a `[keys] file`.
+    pub(super) fn validate_deferring_ca(
+        &self,
+        path: &Path,
         read_keys: bool,
     ) -> Result<ValidatedConfig, ConfigError> {
         let mut config = validate(self.raw.clone(), directory(path), read_keys)
@@ -272,8 +286,11 @@ fn expand(
     let family = effective.efforts.is_some() || effective.default_effort.is_some();
     let mut variants = vec![("base".to_owned(), alias.to_owned(), None)];
     if family {
-        if operation != Operation::Chat || !adapter.kind.is_private_only() || alias.contains(':') {
-            return Err(ConfigError::new(source, "account_chat_family_required"));
+        if operation != Operation::Chat
+            || !(adapter.kind.applies_route_effort_pin() || adapter.capabilities.reasoning_control)
+            || alias.contains(':')
+        {
+            return Err(ConfigError::new(source, "reasoning_chat_family_required"));
         }
         if effective.reasoning_effort.is_some() || effective.codex_reasoning_effort.is_some() {
             return Err(ConfigError::new(source, "conflicting_effort_options"));
@@ -351,13 +368,14 @@ fn expand(
             route.insert("model_alias".into(), alias.into());
             if family && let Some(effort) = effort {
                 match adapter.kind {
-                    ProviderKind::Chatgpt => {
-                        route.insert("reasoning_effort".into(), effort.as_str().into());
-                    }
-                    ProviderKind::Codex if variant != "base" => {
+                    // Codex's unsuffixed route is implicitly medium.
+                    ProviderKind::Codex if variant == "base" => {}
+                    ProviderKind::Codex => {
                         route.insert("codex_reasoning_effort".into(), effort.as_str().into());
                     }
-                    _ => {}
+                    _ => {
+                        route.insert("reasoning_effort".into(), effort.as_str().into());
+                    }
                 }
             }
             parse_toml(

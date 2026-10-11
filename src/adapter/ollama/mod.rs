@@ -295,11 +295,16 @@ impl Adapter for OllamaAdapter {
         };
         let public_model = context.route.selector.model_alias.clone();
         let apple_fm = self.kind == ProviderKind::AppleFm;
-        let payload =
-            match request::encode(&chat, &context.route.upstream_id, chat.stream, apple_fm) {
-                Ok(payload) => payload,
-                Err(error) => return Box::pin(async move { Err(error) }),
-            };
+        let payload = match request::encode(
+            &chat,
+            &context.route.upstream_id,
+            chat.stream,
+            apple_fm,
+            self.kind.replays_reasoning_text(),
+        ) {
+            Ok(payload) => payload,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
         let transport = self.transport.clone();
         let max_body_bytes = self.max_body_bytes;
         let label = UpstreamLabel::new(&self.id, self.kind.label());

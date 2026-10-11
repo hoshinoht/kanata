@@ -45,6 +45,8 @@ fn chat_request(has_audio: bool, stream: bool, with_tools: bool) -> Request {
         stream,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     })
 }
 
@@ -131,6 +133,8 @@ fn audio_ir_is_user_only_and_enforces_an_aggregate_decoded_limit() {
         stream: false,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     });
     assert!(matches!(
         RoutedRequest::new(

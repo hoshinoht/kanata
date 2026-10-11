@@ -158,6 +158,13 @@ fn validate_chat(
     if uses_tools && !function_tools {
         return Err(unsupported_operation());
     }
+    // An effort and the chat-template thinking switch are alternatives; never send both.
+    if chat.options.reasoning_effort.is_some()
+        && (chat.options.enable_thinking.is_some()
+            || route_binding.is_some_and(|binding| binding.enable_thinking.is_some()))
+    {
+        return Err(invalid_request());
+    }
     if let Some(binding) = route_binding
         && has_audio
         && (!binding.allows_input_audio
@@ -168,7 +175,7 @@ fn validate_chat(
     }
 
     let mut total_audio_bytes = 0usize;
-    for message in &chat.messages {
+    for message in chat.messages_without_reasoning() {
         if message.content.is_empty() {
             return Err(invalid_request());
         }
@@ -179,6 +186,8 @@ fn validate_chat(
                 ChatContent::Text { .. } if message.role == ChatRole::Assistant => {}
                 ChatContent::Text { .. } => return Err(invalid_request()),
                 ChatContent::ToolCall { .. } if message.role == ChatRole::Assistant => {}
+                ChatContent::Reasoning { .. } | ChatContent::ReasoningText { .. }
+                    if message.role == ChatRole::Assistant => {}
                 ChatContent::ToolResult { .. } if message.role == ChatRole::Tool => {}
                 ChatContent::InputAudio { audio } if message.role == ChatRole::User => {
                     total_audio_bytes = total_audio_bytes
@@ -194,7 +203,10 @@ fn validate_chat(
                 ChatContent::InputAudio { .. } | ChatContent::InputImage { .. } => {
                     return Err(unsupported_operation());
                 }
-                ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. } => {
+                ChatContent::ToolCall { .. }
+                | ChatContent::ToolResult { .. }
+                | ChatContent::Reasoning { .. }
+                | ChatContent::ReasoningText { .. } => {
                     return Err(invalid_request());
                 }
             }

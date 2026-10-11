@@ -165,7 +165,7 @@ async fn personalized_discovery_stays_authorized_and_uncacheable() {
                 server.client_oneshot(request).await.unwrap()
             };
             assert_eq!(response.headers()["cache-control"], "no-store");
-            assert_eq!(response.headers()["vary"], "Authorization");
+            assert_eq!(response.headers()["vary"], "Authorization, X-Api-Key");
             if key != Some("test-key") {
                 assert_eq!(
                     response.status(),

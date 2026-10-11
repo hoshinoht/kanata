@@ -101,6 +101,7 @@ fn decode(bytes: &[u8], request: &EmbeddingRequest) -> Result<EmbeddingResponse,
             output_tokens: 0,
             total_tokens: usage.total_tokens,
             reasoning_tokens: None,
+            cached_input_tokens: None,
         }),
     };
     if !response.valid_for(request) {

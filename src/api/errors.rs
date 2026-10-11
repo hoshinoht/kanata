@@ -1,13 +1,13 @@
 use axum::{
-    Json,
+    body::Body,
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use serde_json::{Value, json};
 
 use crate::core::{ErrorKind, GatewayError};
 use crate::routing::admission::AdmissionError;
-use crate::server::{ClientState, error_response};
+use crate::server::{ClientState, ErrorDetails, error_response, error_response_with_param};
 use crate::telemetry::{Observer, observe_draining, observe_error};
 
 pub(super) fn request_id(headers: &HeaderMap, state: &ClientState) -> Option<String> {
@@ -97,21 +97,75 @@ pub(super) fn invalid() -> Response {
     )
 }
 
-pub(super) fn invalid_param(param: &'static str) -> Response {
-    let mut response = (
+pub(super) fn invalid_param(param: &str) -> Response {
+    error_response_with_param(
         StatusCode::BAD_REQUEST,
-        Json(json!({"error": {
-            "message": "Invalid request",
-            "type": "invalid_request_error",
-            "param": param,
-            "code": "invalid_request"
-        }})),
+        "Invalid request",
+        "invalid_request_error",
+        "invalid_request",
+        Some(param),
     )
-        .into_response();
-    response
-        .extensions_mut()
-        .insert(crate::telemetry::ErrorCode("invalid_request"));
-    response
+}
+
+/// Messages-protocol error type for a Kanata status; Kanata codes are kept beside it.
+fn messages_error_type(status: StatusCode) -> &'static str {
+    match status.as_u16() {
+        401 => "authentication_error",
+        403 => "permission_error",
+        404 => "not_found_error",
+        408 | 504 => "timeout_error",
+        413 => "request_too_large",
+        429 => "rate_limit_error",
+        503 | 529 => "overloaded_error",
+        500..=599 => "api_error",
+        _ => "invalid_request_error",
+    }
+}
+
+fn messages_error_body(
+    status: StatusCode,
+    message: &str,
+    code: Option<&str>,
+    param: Option<&str>,
+) -> Value {
+    json!({"type":"error","error":{
+        "type":messages_error_type(status),"message":message,"code":code,"param":param
+    }})
+}
+
+/// Re-shapes a JSON error from the shared builder into the Messages envelope. Status,
+/// headers (`Retry-After`, `WWW-Authenticate`) and extensions (the telemetry `ErrorCode`)
+/// are kept. Bodiless router answers, such as the 405 for `GET /v1/messages`, pass
+/// through unchanged.
+pub(super) fn messages_error(response: Response) -> Response {
+    let Some(details) = response.extensions().get::<ErrorDetails>().cloned() else {
+        return response;
+    };
+    let code = response
+        .extensions()
+        .get::<crate::telemetry::ErrorCode>()
+        .map(|code| code.0);
+    let (mut parts, _) = response.into_parts();
+    parts.headers.remove(header::CONTENT_LENGTH);
+    let body = messages_error_body(
+        parts.status,
+        details.message,
+        code,
+        details.param.as_deref(),
+    );
+    Response::from_parts(parts, Body::from(body.to_string()))
+}
+
+/// Mid-stream failure in the Messages envelope, for an `error` event.
+pub(super) fn messages_sse_error(error: GatewayError) -> Value {
+    let mapping = error.kind.mapping();
+    let status = StatusCode::from_u16(mapping.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    messages_error_body(
+        status,
+        gateway_message(error.kind),
+        Some(mapping.code),
+        None,
+    )
 }
 
 pub(super) fn forbidden() -> Response {

@@ -265,6 +265,7 @@ async fn models_report_kanata_capabilities_per_alias() {
             "input_audio": false, "input_images": false, "images": null, "trust_zone": "local", "reasoning_efforts": null,
             "context_tokens": 16384, "max_output_tokens": 4096,
             "responses": {"endpoint":"/v1/responses","operation":"chat","stateless":true,"input":["text"],"function_tools":true,"streaming":true,"max_output_bytes":8388608},
+            "messages": {"endpoint":"/v1/messages","operation":"chat","stateless":true,"function_tools":true,"streaming":true},
             "admission": {
                 "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000,
                 "adapter_max_in_flight": null
@@ -280,6 +281,7 @@ async fn models_report_kanata_capabilities_per_alias() {
             "reasoning_efforts": ["medium"], "context_tokens": null,
             "max_output_tokens": null,
             "responses": {"endpoint":"/v1/responses","operation":"chat","stateless":true,"input":["text"],"function_tools":true,"streaming":true,"max_output_bytes":8388608},
+            "messages": {"endpoint":"/v1/messages","operation":"chat","stateless":true,"function_tools":true,"streaming":true},
             "admission": {
                 "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000,
                 "adapter_max_in_flight": null

@@ -12,7 +12,7 @@
 - `server/mod.rs`: `TwoPlaneServer` assembly, client/public/admin routers, auth extractor, `/v1/models`, admin `/live` `/ready` `/metrics` `/status`, test entry points `client_oneshot`/`public_oneshot`/`admin_oneshot`. `server/runtime.rs`: listeners, connection caps, header read timeout, drain. `server/shutdown.rs`: connection sets.
 - `server/guide.rs` and `server/guide/`: embedded public reference at exact `GET`/`HEAD /v1` and `/v1/`; personalized data uses authenticated `/v1/models`. Keep this public exception narrow and keep secrets/deployment inventory out of the static assets.
 - `telemetry/`: request `Observer` and middleware, access log, metrics (`labels.rs` bounded enums, `metrics.rs`), `sanitize.rs`, `logging.rs`.
-- `api/`: HTTP handlers and OpenAI wire format; see `api/AGENTS.md`. `adapter/`: providers and transport; see `adapter/AGENTS.md`.
+- `api/`: HTTP handlers and OpenAI/Anthropic wire formats; see `api/AGENTS.md`. `api/messages/` implements stateless Messages; `api/keepalive.rs` wraps SSE bodies. `adapter/`: providers and transport.
 
 ## Request flow
 `server/runtime.rs` accept → auth (`server/mod.rs` `Authenticated`) → `api/chat.rs` (parse, resolve route, authorize, capability checks) → `Admission::acquire` → `adapter.execute` → `permit.record_outcome` (breaker) → JSON (`api/serialization.rs`) or SSE (`api/sse.rs`, `api/lifecycle.rs` holds the permit for the stream's life).

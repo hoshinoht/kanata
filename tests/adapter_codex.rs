@@ -81,6 +81,8 @@ fn chat(model: &str, streaming: bool) -> Request {
         stream: streaming,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     })
 }
 

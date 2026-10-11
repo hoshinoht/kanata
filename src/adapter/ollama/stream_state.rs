@@ -140,7 +140,7 @@ impl StreamState {
         }
         if let Some(reason) = choice.finish_reason {
             self.finish(reason)?;
-            // A length stop may carry no visible output.
+            // A stop or length stop may carry no visible output.
             self.start(&mut events);
         }
         if let Some(usage) = chunk.usage {
@@ -256,7 +256,7 @@ impl StreamState {
         {
             return Err(upstream_failure());
         }
-        if reason != FinishReason::Length
+        if reason == FinishReason::ContentFilter
             && (!self.started || (!has_tools && !self.has_visible_text))
         {
             return Err(upstream_failure());

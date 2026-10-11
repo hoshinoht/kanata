@@ -88,6 +88,7 @@ impl UsagePayload {
             reasoning_tokens: self
                 .completion_tokens_details
                 .and_then(|details| details.reasoning_tokens),
+            cached_input_tokens: None,
         }
     }
 }

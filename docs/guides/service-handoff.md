@@ -18,7 +18,7 @@ Keep your existing Kanata base URL and bearer key. Refresh authenticated `GET /v
 
 This is an illustrative partial entry. The array contains configured, bound reasoning levels accessible to **the requesting key**. Different keys can see different arrays. Discovery describes route access; it does not establish backend health or live model availability.
 
-Services with a model picker should display one model and a separate effort selector. A label such as `GPT-6-Luna` is for display; send the exact advertised ID `gpt-6-luna`. Populate the selector from `kanata.reasoning_efforts` when `reasoning_control` is true. Some ordinary providers advertise `null` for their effort list; that means there is no enumerated list, rather than a list to invent from model names.
+Services with a model picker should display one model and a separate effort selector. A label such as `GPT-6-Luna` is for display; send the exact advertised ID `gpt-6-luna`. Populate the selector from `kanata.reasoning_efforts` when `reasoning_control` is true. This applies equally to account providers and to operator-configured effort families on vLLM, Ollama, OpenRouter or CLIProxyAPI routes (for example Claude through CLIProxyAPI). Ordinary routes without a family advertise `null` (or the provider's fixed list); `null` means there is no enumerated list, rather than a list to invent from model names.
 
 ### Chat completions
 
@@ -76,7 +76,7 @@ Treat missing summary text as “No reasoning summary was returned for this requ
 
 Configure the account provider using [Sign in with ChatGPT](sign-in-with-chatgpt.md), then add explicit private routes and grant their exact aliases to service keys. The account catalog does not create routes or permissions. Confirm inference with the selected account and model before relying on a route.
 
-Services continue to use gateway bearer keys. Account OAuth credentials stay on the Kanata host. ChatGPT and Codex routes are private-only; adding one of their scopes makes the entire key unavailable on the public listener. Use a separate key for public access.
+Services continue to use gateway bearer keys. Account OAuth credentials stay on the Kanata host. ChatGPT, Codex and CLIProxyAPI routes are private-only; adding one of their scopes makes the entire key unavailable on the public listener. Use a separate key for public access.
 
 The portal displays the configured upstream name and its API alias. For example, a route may display **GPT-6-Luna** with `API alias: chatgpt-luna`. Send the alias returned by authenticated discovery. Model and effort availability depend on the configured routes, key grants and upstream account.
 

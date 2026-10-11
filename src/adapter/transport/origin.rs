@@ -1,5 +1,5 @@
 use crate::{
-    config::{ProviderKind, ValidatedAdapter},
+    config::{ProviderKind, ValidatedAdapter, url_permits_credentials},
     core::{GatewayError, TrustZone},
 };
 
@@ -66,7 +66,7 @@ impl Origin {
             || url.password().is_some()
             || url.query().is_some()
             || url.fragment().is_some()
-            || (adapter.trust_zone() == TrustZone::External && scheme != "https")
+            || (adapter.trust_zone() == TrustZone::External && !url_permits_credentials(url))
         {
             return Err(types::internal_error());
         }
@@ -89,7 +89,7 @@ impl Origin {
             authority,
             host_header,
             path_prefix: url.path().trim_end_matches('/').to_owned(),
-            permits_credentials: scheme == "https",
+            permits_credentials: url_permits_credentials(url),
         })
     }
 

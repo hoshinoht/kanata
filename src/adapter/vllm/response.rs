@@ -72,13 +72,13 @@ struct MessagePayload {
     reasoning: Option<String>,
     #[serde(default)]
     reasoning_content: Option<String>,
-    // A refusal or audio without text content still fails as an empty reply.
-    #[serde(default, rename = "refusal")]
-    _refusal: Option<IgnoredAny>,
+    // A refusal or audio without text content is not an empty answer; it still fails.
+    #[serde(default)]
+    refusal: Option<IgnoredAny>,
     #[serde(default, rename = "annotations")]
     _annotations: Option<IgnoredAny>,
-    #[serde(default, rename = "audio")]
-    _audio: Option<IgnoredAny>,
+    #[serde(default)]
+    audio: Option<IgnoredAny>,
     #[serde(default, rename = "function_call")]
     _function_call: Option<IgnoredAny>,
     #[serde(default, rename = "provider_specific_fields")]
@@ -91,8 +91,8 @@ struct UsagePayload {
     prompt_tokens: u64,
     completion_tokens: u64,
     total_tokens: u64,
-    #[serde(default, rename = "prompt_tokens_details")]
-    _prompt_tokens_details: Option<IgnoredAny>,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
     #[serde(default)]
     completion_tokens_details: Option<CompletionTokensDetails>,
 }
@@ -101,6 +101,12 @@ struct UsagePayload {
 struct CompletionTokensDetails {
     #[serde(default)]
     reasoning_tokens: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -254,8 +260,15 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         });
     }
     let has_tool_calls = !ids.is_empty();
-    // A length stop may carry no visible output.
-    if (content.is_empty() && finish_reason != FinishReason::Length)
+    // A stop or length stop may carry no visible output, but a stop holding only a refusal
+    // or audio is not an empty answer.
+    let unrepresented = choice.message.refusal.is_some() || choice.message.audio.is_some();
+    if (content.is_empty()
+        && match finish_reason {
+            FinishReason::Stop => unrepresented,
+            FinishReason::Length => false,
+            _ => true,
+        })
         || (finish_reason == FinishReason::ToolCalls) != has_tool_calls
     {
         return Err(upstream_failure());
@@ -271,6 +284,7 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         finish_reason,
         usage,
         reasoning,
+        reasoning_items: Vec::new(),
     })
 }
 
@@ -332,13 +346,21 @@ fn normalize_usage(usage: UsagePayload) -> Result<Usage, GatewayError> {
     if usage.prompt_tokens.checked_add(usage.completion_tokens) != Some(usage.total_tokens) {
         return Err(upstream_failure());
     }
-    Ok(Usage {
+    let cached = usage
+        .prompt_tokens_details
+        .and_then(|details| details.cached_tokens);
+    let normalized = Usage {
         input_tokens: usage.prompt_tokens,
         output_tokens: usage.completion_tokens,
         total_tokens: usage.total_tokens,
         reasoning_tokens: usage
             .completion_tokens_details
             .and_then(|details| details.reasoning_tokens),
+        cached_input_tokens: None,
+    };
+    Ok(match cached {
+        Some(cached) => normalized.with_cached_input_tokens(cached),
+        None => normalized,
     })
 }
 

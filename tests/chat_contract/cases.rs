@@ -128,10 +128,10 @@ async fn nonstream_finish_reason_matches_returned_tool_calls() {
 }
 
 #[tokio::test]
-async fn nonstream_empty_output_is_an_empty_reply_only_for_a_length_stop() {
-    for (finish_reason, status) in [
-        (FinishReason::Length, StatusCode::OK),
-        (FinishReason::Stop, StatusCode::BAD_GATEWAY),
+async fn nonstream_empty_output_is_an_empty_reply() {
+    for (finish_reason, finish) in [
+        (FinishReason::Length, "length"),
+        (FinishReason::Stop, "stop"),
     ] {
         let (server, _requests) = private_server(Outcome::Chat {
             model: None,
@@ -146,12 +146,10 @@ async fn nonstream_empty_output_is_an_empty_reply_only_for_a_length_stop() {
             .client_oneshot(chat_request(BASIC))
             .await
             .expect("response");
-        assert_eq!(response.status(), status, "{finish_reason:?}");
-        if status == StatusCode::OK {
-            let body = response_json(response).await;
-            assert_eq!(body["choices"][0]["message"]["content"], json!(""));
-            assert_eq!(body["choices"][0]["finish_reason"], json!("length"));
-        }
+        assert_eq!(response.status(), StatusCode::OK, "{finish_reason:?}");
+        let body = response_json(response).await;
+        assert_eq!(body["choices"][0]["message"]["content"], json!(""));
+        assert_eq!(body["choices"][0]["finish_reason"], json!(finish));
     }
 }
 
@@ -227,68 +225,189 @@ async fn tool_history_requires_function_tools_even_without_new_declarations() {
 }
 
 #[tokio::test]
-async fn strict_wire_rejections_are_zero_dispatch() {
+async fn strict_wire_rejections_are_zero_dispatch_and_name_a_param() {
+    let x = r#""messages":[{"role":"user","content":"x"}]"#;
+    let lookup = r#""tools":[{"type":"function","function":{"name":"lookup","parameters":{}}}]"#;
     let cases = [
         (
             "named-choice-nested-unknown",
-            r#"{"model":"private-chat","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{}}}],"tool_choice":{"type":"function","function":{"name":"lookup","future":true}}}"#,
+            format!(
+                r#"{{"model":"private-chat",{x},{lookup},"tool_choice":{{"type":"function","function":{{"name":"lookup","future":true}}}}}}"#
+            ),
+            "tool_choice",
         ),
         (
             "named-choice-unknown",
-            r#"{"model":"private-chat","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{}}}],"tool_choice":{"type":"function","function":{"name":"lookup"},"future":true}}"#,
+            format!(
+                r#"{{"model":"private-chat",{x},{lookup},"tool_choice":{{"type":"function","function":{{"name":"lookup"}},"future":true}}}}"#
+            ),
+            "tool_choice",
         ),
         (
             "image-content",
-            r#"{"model":"private-chat","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.invalid/IMAGE_MARKER"}}]}]}"#,
+            r#"{"model":"private-chat","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.invalid/IMAGE_MARKER"}}]}]}"#.into(),
+            "messages[0].content[0]",
         ),
         (
             "audio-content",
-            r#"{"model":"private-chat","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AUDIO_MARKER"}}]}]}"#,
+            r#"{"model":"private-chat","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AUDIO_MARKER"}}]}]}"#.into(),
+            "messages[0].content",
         ),
         (
             "unsupported-sampling",
-            r#"{"model":"private-chat","messages":[{"role":"user","content":"x"}],"temperature":0.2}"#,
+            format!(r#"{{"model":"private-chat",{x},"temperature":0.2}}"#),
+            "temperature",
+        ),
+        (
+            "unsupported-stop",
+            format!(r#"{{"model":"private-chat",{x},"stop":"END"}}"#),
+            "stop",
+        ),
+        (
+            "penalty-out-of-range",
+            format!(r#"{{"model":"private-chat",{x},"presence_penalty":2.5}}"#),
+            "presence_penalty",
         ),
         (
             "role-tool-field",
-            r#"{"model":"private-chat","messages":[{"role":"user","content":"x","tool_calls":[]}] }"#,
+            r#"{"model":"private-chat","messages":[{"role":"user","content":"x","tool_calls":[]}] }"#.into(),
+            "messages[0].tool_calls",
         ),
         (
             "empty-message",
-            r#"{"model":"private-chat","messages":[{"role":"user","content":""}]}"#,
+            r#"{"model":"private-chat","messages":[{"role":"user","content":""}]}"#.into(),
+            "messages[0].content",
         ),
         (
             "duplicate-tools",
-            r#"{"model":"private-chat","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{}}},{"type":"function","function":{"name":"lookup","parameters":{}}}]}"#,
+            r#"{"model":"private-chat","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{}}},{"type":"function","function":{"name":"lookup","parameters":{}}}]}"#.into(),
+            "tools[1]",
         ),
         (
             "invalid-tool-choice-reference",
-            r#"{"model":"private-chat","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{}}}],"tool_choice":{"type":"function","function":{"name":"other"}}}"#,
+            format!(
+                r#"{{"model":"private-chat",{x},{lookup},"tool_choice":{{"type":"function","function":{{"name":"other"}}}}}}"#
+            ),
+            "tool_choice",
         ),
         (
             "stream-options-on-nonstream",
-            r#"{"model":"private-chat","messages":[{"role":"user","content":"x"}],"stream_options":{"include_usage":false}}"#,
+            format!(r#"{{"model":"private-chat",{x},"stream_options":{{"include_usage":false}}}}"#),
+            "stream_options",
         ),
         (
             "stream-options-null",
-            r#"{"model":"private-chat","messages":[{"role":"user","content":"x"}],"stream_options":null}"#,
+            format!(r#"{{"model":"private-chat",{x},"stream_options":null}}"#),
+            "stream_options",
         ),
         (
             "tool-choice-null",
-            r#"{"model":"private-chat","messages":[{"role":"user","content":"x"}],"tool_choice":null}"#,
+            format!(r#"{{"model":"private-chat",{x},"tool_choice":null}}"#),
+            "tool_choice",
+        ),
+        (
+            "missing-model",
+            format!(r#"{{{x}}}"#),
+            "model",
+        ),
+        // Fields no evaluated harness sends stay rejected.
+        ("user", format!(r#"{{"model":"private-chat",{x},"user":"u"}}"#), "user"),
+        (
+            "metadata",
+            format!(r#"{{"model":"private-chat",{x},"metadata":{{}}}}"#),
+            "metadata",
+        ),
+        ("n", format!(r#"{{"model":"private-chat",{x},"n":1}}"#), "n"),
+        (
+            "message-name",
+            r#"{"model":"private-chat","messages":[{"role":"user","content":"x","name":"n"}]}"#.into(),
+            "messages[0].name",
+        ),
+        (
+            "assistant-refusal",
+            r#"{"model":"private-chat","messages":[{"role":"user","content":"x"},{"role":"assistant","content":"y","refusal":null},{"role":"user","content":"z"}]}"#.into(),
+            "messages[1].refusal",
+        ),
+        (
+            "unsafe-key-names-parent",
+            r#"{"model":"private-chat","messages":[{"role":"user","content":"x","<KEY_MARKER>":1}]}"#.into(),
+            "messages[0]",
+        ),
+        ("store-true", format!(r#"{{"model":"private-chat",{x},"store":true}}"#), "store"),
+        (
+            "parallel-tool-calls-false",
+            format!(r#"{{"model":"private-chat",{x},"parallel_tool_calls":false}}"#),
+            "parallel_tool_calls",
+        ),
+        (
+            "prompt-cache-key-empty",
+            format!(r#"{{"model":"private-chat",{x},"prompt_cache_key":""}}"#),
+            "prompt_cache_key",
+        ),
+        (
+            "strict-not-bool",
+            format!(
+                r#"{{"model":"private-chat",{x},"tools":[{{"type":"function","function":{{"name":"lookup","parameters":{{}},"strict":"yes"}}}}]}}"#
+            ),
+            "tools[0].function.strict",
         ),
     ];
-    for (name, body) in cases {
+    for (name, body, param) in cases {
         let (server, requests) = private_server(chat_outcome("unused"));
         let response = server
-            .client_oneshot(chat_request(body))
+            .client_oneshot(chat_request(&body))
             .await
             .expect("response");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{name}");
         let body = response_body(response).await;
-        let body = String::from_utf8_lossy(&body);
-        assert!(!body.contains("MARKER"), "{name} leaked request data");
+        let text = String::from_utf8_lossy(&body);
+        assert!(!text.contains("MARKER"), "{name} leaked request data");
+        let body: Value = serde_json::from_slice(&body).expect("json error");
+        assert_eq!(body["error"]["param"], param, "{name}");
         assert_eq!(recorded_len(&requests), 0, "{name} dispatched");
+    }
+}
+
+#[tokio::test]
+async fn harness_hint_fields_and_empty_tool_results_are_accepted() {
+    let (server, requests) = private_server(chat_outcome("ok"));
+    let body = json!({
+        "model": "private-chat",
+        "store": false,
+        "parallel_tool_calls": true,
+        "prompt_cache_key": "00000000-0000-4000-8000-000000000004",
+        "tools": [
+            {"type": "function", "function": {"name": "lookup", "parameters": {}, "strict": false}},
+            {"type": "function", "function": {"name": "other", "parameters": {}, "strict": true}}
+        ],
+        "messages": [
+            {"role": "user", "content": "look this up"},
+            {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}},
+                {"id": "call_2", "type": "function", "function": {"name": "other", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": ""},
+            {"role": "tool", "tool_call_id": "call_2", "content": []}
+        ]
+    });
+    let response = server
+        .client_oneshot(chat_request(&body.to_string()))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let chat = core_chat(take_request(&requests));
+    assert_eq!(
+        chat.prompt_cache_key.as_ref().map(|key| key.as_str()),
+        Some("00000000-0000-4000-8000-000000000004")
+    );
+    for (index, call_id) in [(2, "call_1"), (3, "call_2")] {
+        assert_eq!(
+            chat.messages[index].content,
+            vec![ChatContent::ToolResult {
+                call_id: call_id.into(),
+                content: String::new(),
+            }]
+        );
     }
 }
 

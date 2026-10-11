@@ -44,12 +44,10 @@ where
     }
 
     fn reload(&mut self) -> Result<(), String> {
-        let full = config::load(&self.path).map_err(|error| error.to_string())?;
+        let (full, narrowed) =
+            config::load_plane(&self.path, self.plane).map_err(|error| error.to_string())?;
         self.config
             .check_reload_compatible(&full)
-            .map_err(|error| error.to_string())?;
-        let narrowed = full
-            .for_plane(self.plane)
             .map_err(|error| error.to_string())?;
         let adapters = (self.build)(&narrowed, &EnvironmentSecretResolver)
             .map_err(|_| "configuration reload: adapter initialization failed")?;

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-const FORBIDDEN_TERMS: &[&str] = &["ollama", "openrouter", "codex", "openai"];
+const FORBIDDEN_TERMS: &[&str] = &["ollama", "openrouter", "codex", "openai", "cliproxy"];
 
 #[test]
 fn concrete_adapter_names_stay_outside_core_and_non_provider_layers() {

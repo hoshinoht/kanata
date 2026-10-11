@@ -47,6 +47,21 @@ function_tools = false
 # structured_output = true
 # sampling_controls = true
 
+# CLIProxyAPI through compose.kanata.cliproxy.yml (see deploy/docker/README.md).
+# Private-only like Codex/ChatGPT: never list its routes in public_routes.
+# [[adapters]]
+# id = "cliproxy"
+# kind = "cliproxy"
+# base_url = "https://cliproxy-tls:8443/v1"
+# ca_file = "/run/secrets/cliproxy-ca.pem"
+# secret_ref = "file:/run/secrets/cliproxy-api-key"
+# trust_zone = "external"
+# [adapters.capabilities]
+# operations = ["chat"]
+# streaming_chat = true
+# function_tools = true
+# reasoning_control = true
+
 [[adapters]]
 id = "codex"
 kind = "codex"
@@ -140,6 +155,8 @@ max_extension_bytes = 8192
 
 # Long enough for high-effort Codex turns.
 [timeouts]
+# Optional SSE keepalive interval in milliseconds (default 15000, capped by overall_ms).
+# sse_keepalive_ms = 15000
 upload_ms = 30000
 queue_ms = 1000
 connect_ms = 5000

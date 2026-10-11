@@ -154,8 +154,11 @@ impl Adapter for CodexAdapter {
             Err(error) => return Box::pin(async move { Err(error) }),
         };
         let public_model = routed.context().route.selector.model_alias.clone();
-        let streaming = match routed.request() {
-            Request::Chat(chat) => chat.stream,
+        let (streaming, encrypted_reasoning) = match routed.request() {
+            Request::Chat(chat) => (
+                chat.stream,
+                protocol::requests_encrypted_reasoning(chat, ProviderKind::Codex),
+            ),
             Request::Transcription(_) | Request::Embeddings(_) | Request::Speech(_) => {
                 return Box::pin(async { Err(unsupported_operation()) });
             }
@@ -193,9 +196,14 @@ impl Adapter for CodexAdapter {
                 if streaming {
                     Ok(DispatchResult::Stream(body))
                 } else {
-                    let response =
-                        stream::collect_response(body, public_model.clone(), deadline, &label)
-                            .await?;
+                    let response = stream::collect_response(
+                        body,
+                        public_model.clone(),
+                        deadline,
+                        &label,
+                        encrypted_reasoning,
+                    )
+                    .await?;
                     Ok(DispatchResult::Complete(Response::Chat(response)))
                 }
             };
@@ -208,6 +216,7 @@ impl Adapter for CodexAdapter {
                     public_model,
                     deadline,
                     label,
+                    encrypted_reasoning,
                 ))),
                 DispatchResult::Complete(response) => Ok(AdapterOutput::Complete(response)),
             }

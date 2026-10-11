@@ -98,18 +98,20 @@ impl StreamState {
                 Some(events) => self.timeout.next(events).await,
                 None => return None,
             };
-            if let Ok(Some(Ok(NormalizedEvent::ChatReasoningDelta { text }))) = next {
-                match self.reasoning(text) {
-                    Some(frame) => return Some((Ok(frame), self)),
-                    None if self.timeout.expired() => {
-                        let frame =
-                            self.fail(super::super::deadline::timeout(TimeoutPhase::Overall));
+            match next {
+                Ok(Some(Ok(NormalizedEvent::ChatReasoningDelta { text }))) => {
+                    if let Some(frame) = self.reasoning(text) {
                         return Some((Ok(frame), self));
                     }
-                    None => continue,
                 }
+                // Chat completions have no field for encrypted reasoning.
+                Ok(Some(Ok(NormalizedEvent::ChatReasoningItem { .. }))) => {}
+                next => return Some((Ok(self.frame(next)), self)),
             }
-            return Some((Ok(self.frame(next)), self));
+            if self.timeout.expired() {
+                let frame = self.fail(super::super::deadline::timeout(TimeoutPhase::Overall));
+                return Some((Ok(frame), self));
+            }
         }
     }
 
@@ -173,7 +175,8 @@ impl StreamState {
                 usage,
             } => self.completed(finish_reason, usage),
             NormalizedEvent::ChatStarted { .. } => Err(upstream_failure()),
-            NormalizedEvent::ChatReasoningDelta { .. } => Err(upstream_failure()),
+            NormalizedEvent::ChatReasoningDelta { .. }
+            | NormalizedEvent::ChatReasoningItem { .. } => Err(upstream_failure()),
         }
     }
 

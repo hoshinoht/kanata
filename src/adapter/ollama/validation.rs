@@ -74,7 +74,7 @@ fn validate_chat(chat: &crate::core::ChatRequest) -> Result<(), GatewayError> {
 
     let mut call_ids = BTreeSet::new();
     let mut outstanding_call_ids = BTreeSet::new();
-    for message in &chat.messages {
+    for message in chat.messages_without_reasoning() {
         if message.content.is_empty() {
             return Err(invalid_request());
         }
@@ -95,12 +95,9 @@ fn validate_chat(chat: &crate::core::ChatRequest) -> Result<(), GatewayError> {
                     }
                     outstanding_call_ids.insert(call.id.clone());
                 }
-                ChatContent::ToolResult { call_id, content } => {
+                ChatContent::ToolResult { call_id, .. } => {
                     result += 1;
-                    if !valid_call_id(call_id)
-                        || content.is_empty()
-                        || !outstanding_call_ids.remove(call_id)
-                    {
+                    if !valid_call_id(call_id) || !outstanding_call_ids.remove(call_id) {
                         return Err(invalid_request());
                     }
                 }
@@ -108,6 +105,7 @@ fn validate_chat(chat: &crate::core::ChatRequest) -> Result<(), GatewayError> {
                 ChatContent::InputAudio { .. } | ChatContent::InputImage { .. } => {
                     return Err(unsupported_operation());
                 }
+                ChatContent::Reasoning { .. } | ChatContent::ReasoningText { .. } => {}
             }
         }
         match message.role {

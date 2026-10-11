@@ -195,6 +195,8 @@ max_audio_bytes = 26214400
 max_extension_bytes = 8192
 
 [timeouts]
+# Optional SSE keepalive interval in milliseconds (default 15000, capped by overall_ms).
+# sse_keepalive_ms = 15000
 upload_ms = 30000
 queue_ms = 1000
 connect_ms = 5000

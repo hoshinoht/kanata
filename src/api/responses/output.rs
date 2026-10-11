@@ -27,6 +27,7 @@ pub(in crate::api) struct Options {
     top_p: Option<f64>,
     reasoning_effort: Option<crate::core::ReasoningEffort>,
     expose_reasoning: bool,
+    encrypted_reasoning: bool,
     reasoning_summary: Option<&'static str>,
 }
 
@@ -50,6 +51,7 @@ impl Options {
             top_p: chat.options.sampling.top_p.map(|value| value.get()),
             reasoning_effort: chat.options.reasoning_effort,
             expose_reasoning,
+            encrypted_reasoning: expose_reasoning && chat.include_encrypted_reasoning,
             reasoning_summary: reasoning_summary.filter(|_| expose_reasoning),
         }
     }
@@ -67,6 +69,9 @@ pub(in crate::api) fn complete(
         let mut output = Output::new(options);
         if let Some(text) = response.reasoning {
             output.accept(NormalizedEvent::ChatReasoningDelta { text }, false)?;
+        }
+        for item in response.reasoning_items {
+            output.accept(NormalizedEvent::ChatReasoningItem { item }, false)?;
         }
         let mut calls = std::collections::BTreeSet::new();
         for content in response.message.content {
@@ -110,6 +115,7 @@ pub(super) struct Output {
     message_index: Option<usize>,
     reasoning_index: Option<usize>,
     expose_reasoning: bool,
+    encrypted_reasoning: bool,
     reasoning_bytes: usize,
     tools: std::collections::BTreeMap<String, usize>,
 }
@@ -132,6 +138,7 @@ impl Output {
             message_index: None,
             reasoning_index: None,
             expose_reasoning: options.expose_reasoning,
+            encrypted_reasoning: options.encrypted_reasoning,
             reasoning_bytes: 0,
             tools: std::collections::BTreeMap::new(),
         }
@@ -169,19 +176,7 @@ impl Output {
                 self.reserve(text.len())?;
                 let index = match self.message_index {
                     Some(index) => index,
-                    None => {
-                        let index = self.items().len();
-                        let id = format!("{}_msg", self.response["id"].as_str().expect("id"));
-                        let item = json!({"id":id,"type":"message","role":"assistant","status":"in_progress","content":[]});
-                        frames.push(json!({"type":"response.output_item.added","output_index":index,"item":item}));
-                        let part =
-                            json!({"type":"output_text","text":"","annotations":[],"logprobs":[]});
-                        frames.push(json!({"type":"response.content_part.added","item_id":id,"output_index":index,"content_index":0,"part":part}));
-                        self.items().push(item);
-                        self.response["output"][index]["content"] = json!([part]);
-                        self.message_index = Some(index);
-                        index
-                    }
+                    None => self.open_message(&mut frames),
                 };
                 let item = &mut self.response["output"][index];
                 frames.push(json!({"type":"response.output_text.delta","item_id":item["id"],"output_index":index,"content_index":0,"delta":text,"logprobs":[]}));
@@ -273,6 +268,27 @@ impl Output {
                     current.push_str(&text);
                 }
             }
+            // One output item per upstream reasoning item, apart from the summary item:
+            // its id was streamed before the upstream id was known, and a replayed item
+            // must carry the upstream id.
+            NormalizedEvent::ChatReasoningItem { item } => {
+                if !self.encrypted_reasoning {
+                    return Ok(frames);
+                }
+                self.reserve(item.encrypted_content().len())?;
+                let index = self.items().len();
+                let id = match item.id() {
+                    Some(id) => id.to_owned(),
+                    None => format!("{}_rs_{index}", self.response["id"].as_str().expect("id")),
+                };
+                let added = json!({"id":id,"type":"reasoning","status":"in_progress","summary":[]});
+                frames.push(
+                    json!({"type":"response.output_item.added","output_index":index,"item":added}),
+                );
+                let mut stored = added;
+                stored["encrypted_content"] = json!(item.encrypted_content());
+                self.items().push(stored);
+            }
             _ => return Err(failure()),
         }
         Ok(frames)
@@ -286,15 +302,7 @@ impl Output {
         if !finish_matches_tool_calls(reason, !self.tools.is_empty()) {
             return Err(failure());
         }
-        if self.message_index.is_none()
-            && self.tools.is_empty()
-            && !matches!(
-                reason,
-                FinishReason::Length | FinishReason::ContentFilter | FinishReason::Cancelled
-            )
-        {
-            return Err(failure());
-        }
+        let mut frames = Vec::new();
         let incomplete = match reason {
             FinishReason::Cancelled => {
                 return Err(GatewayError {
@@ -305,7 +313,10 @@ impl Output {
             FinishReason::ContentFilter => Some("content_filter"),
             _ => None,
         };
-        let mut frames = Vec::new();
+        // An empty answer is still one assistant message whose output_text is "".
+        if reason == FinishReason::Stop && self.message_index.is_none() && self.tools.is_empty() {
+            self.open_message(&mut frames);
+        }
         for (index, item) in self.items().iter_mut().enumerate() {
             item["status"] = json!(if incomplete.is_some() {
                 "incomplete"
@@ -316,12 +327,18 @@ impl Output {
                 frames.push(json!({"type":"response.output_text.done","item_id":item["id"],"output_index":index,"content_index":0,"text":item["content"][0]["text"],"logprobs":[]}));
                 frames.push(json!({"type":"response.content_part.done","item_id":item["id"],"output_index":index,"content_index":0,"part":item["content"][0]}));
             } else if item["type"] == "reasoning" {
-                frames.push(json!({"type":"response.reasoning_summary_text.done","item_id":item["id"],"output_index":index,"summary_index":0,"text":item["summary"][0]["text"]}));
-                let mut part_done = json!({"type":"response.reasoning_summary_part.done","item_id":item["id"],"output_index":index,"summary_index":0,"part":item["summary"][0]});
-                if incomplete.is_some() {
-                    part_done["status"] = json!("incomplete");
+                // Encrypted-only items have no summary part to close.
+                if item["summary"]
+                    .as_array()
+                    .is_some_and(|parts| !parts.is_empty())
+                {
+                    frames.push(json!({"type":"response.reasoning_summary_text.done","item_id":item["id"],"output_index":index,"summary_index":0,"text":item["summary"][0]["text"]}));
+                    let mut part_done = json!({"type":"response.reasoning_summary_part.done","item_id":item["id"],"output_index":index,"summary_index":0,"part":item["summary"][0]});
+                    if incomplete.is_some() {
+                        part_done["status"] = json!("incomplete");
+                    }
+                    frames.push(part_done);
                 }
-                frames.push(part_done);
             } else {
                 frames.push(json!({"type":"response.function_call_arguments.done","item_id":item["id"],"output_index":index,"arguments":item["arguments"]}));
             }
@@ -340,10 +357,24 @@ impl Output {
         self.response["usage"] = usage.map(|usage| {
             let mut value = json!({"input_tokens":usage.input_tokens,"output_tokens":usage.output_tokens,"total_tokens":usage.total_tokens});
             if let Some(tokens) = usage.reasoning_tokens { value["output_tokens_details"] = json!({"reasoning_tokens":tokens}); }
+            if let Some(tokens) = usage.cached_input_tokens { value["input_tokens_details"] = json!({"cached_tokens":tokens}); }
             value
         }).unwrap_or(Value::Null);
         frames.push(json!({"type":if incomplete.is_some() { "response.incomplete" } else { "response.completed" },"response":self.response}));
         Ok(frames)
+    }
+
+    fn open_message(&mut self, frames: &mut Vec<Value>) -> usize {
+        let index = self.items().len();
+        let id = format!("{}_msg", self.response["id"].as_str().expect("id"));
+        let item = json!({"id":id,"type":"message","role":"assistant","status":"in_progress","content":[]});
+        frames.push(json!({"type":"response.output_item.added","output_index":index,"item":item}));
+        let part = json!({"type":"output_text","text":"","annotations":[],"logprobs":[]});
+        frames.push(json!({"type":"response.content_part.added","item_id":id,"output_index":index,"content_index":0,"part":part}));
+        self.items().push(item);
+        self.response["output"][index]["content"] = json!([part]);
+        self.message_index = Some(index);
+        index
     }
 
     pub(super) fn failed(&mut self, error: GatewayError) -> Value {
@@ -370,5 +401,129 @@ impl Output {
 pub(super) fn failure() -> GatewayError {
     GatewayError {
         kind: ErrorKind::UpstreamFailure,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{ChatMessage, Extensions, ReasoningItem, ToolChoice};
+
+    fn chat(include_encrypted_reasoning: bool) -> ChatRequest {
+        ChatRequest {
+            model: ModelAlias("fixture-model".into()),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            tool_choice: ToolChoice::Auto,
+            stream: false,
+            options: Default::default(),
+            prompt_cache_key: None,
+            include_encrypted_reasoning,
+            extensions: Extensions::default(),
+        }
+    }
+
+    fn item() -> ReasoningItem {
+        ReasoningItem::new(Some("rs_fixture".into()), "ENCRYPTED".into()).unwrap()
+    }
+
+    fn usage(cached: Option<u64>) -> Usage {
+        Usage {
+            input_tokens: 2048,
+            output_tokens: 3,
+            total_tokens: 2051,
+            reasoning_tokens: None,
+            cached_input_tokens: cached,
+        }
+    }
+
+    async fn complete_json(include: bool, expose: bool, cached: Option<u64>) -> Value {
+        let response = ChatResponse {
+            model: ModelAlias("fixture-model".into()),
+            message: ChatMessage {
+                role: ChatRole::Assistant,
+                content: vec![ChatContent::Text {
+                    text: "answer".into(),
+                }],
+            },
+            finish_reason: FinishReason::Stop,
+            usage: Some(usage(cached)),
+            reasoning: Some("summary".into()),
+            reasoning_items: vec![item()],
+        };
+        let body = complete(response, Options::new(&chat(include), expose, None), None);
+        let bytes = axum::body::to_bytes(body.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn json_output_carries_encrypted_reasoning_only_when_requested_and_exposed() {
+        let value = complete_json(true, true, Some(1024)).await;
+        let output = value["output"].as_array().unwrap();
+        assert_eq!(output.len(), 3);
+        assert_eq!(output[0]["summary"][0]["text"], "summary");
+        assert!(output[0].get("encrypted_content").is_none());
+        assert_eq!(
+            output[1],
+            json!({"id":"rs_fixture","type":"reasoning","status":"completed","summary":[],
+                "encrypted_content":"ENCRYPTED"})
+        );
+        assert_eq!(output[2]["type"], "message");
+        assert_eq!(
+            value["usage"]["input_tokens_details"],
+            json!({"cached_tokens":1024})
+        );
+
+        let unrequested = complete_json(false, true, None).await;
+        assert_eq!(unrequested["output"].as_array().unwrap().len(), 2);
+        assert!(unrequested["usage"].get("input_tokens_details").is_none());
+
+        let public = complete_json(true, false, None).await;
+        let output = public["output"].as_array().unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0]["type"], "message");
+    }
+
+    #[test]
+    fn streamed_encrypted_item_is_announced_then_completed_with_its_payload() {
+        let mut output = Output::new(Options::new(&chat(true), true, None));
+        let added = output
+            .accept(NormalizedEvent::ChatReasoningItem { item: item() }, true)
+            .unwrap();
+        assert_eq!(
+            added,
+            vec![json!({"type":"response.output_item.added","output_index":0,
+                "item":{"id":"rs_fixture","type":"reasoning","status":"in_progress","summary":[]}})]
+        );
+        output
+            .accept(
+                NormalizedEvent::ChatTextDelta {
+                    text: "answer".into(),
+                },
+                true,
+            )
+            .unwrap();
+        let frames = output
+            .finish(FinishReason::Stop, Some(usage(Some(1024))))
+            .unwrap();
+        assert!(frames.iter().all(|frame| {
+            !frame["type"]
+                .as_str()
+                .unwrap()
+                .starts_with("response.reasoning_summary")
+        }));
+        assert_eq!(
+            frames[0],
+            json!({"type":"response.output_item.done","output_index":0,
+                "item":{"id":"rs_fixture","type":"reasoning","status":"completed","summary":[],
+                    "encrypted_content":"ENCRYPTED"}})
+        );
+        let completed = frames.last().unwrap();
+        assert_eq!(
+            completed["response"]["usage"]["input_tokens_details"]["cached_tokens"],
+            1024
+        );
     }
 }

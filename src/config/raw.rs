@@ -94,6 +94,8 @@ pub(super) struct RawAdapter {
     pub(super) max_in_flight: Option<u64>,
     #[serde(default)]
     pub(super) circuit_breaker: Option<RawCircuitBreaker>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) ca_file: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -230,6 +232,8 @@ pub(super) struct RawTimeouts {
     pub(super) first_byte_ms: u64,
     pub(super) idle_ms: u64,
     pub(super) overall_ms: u64,
+    #[serde(default)]
+    pub(super) sse_keepalive_ms: Option<u64>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]

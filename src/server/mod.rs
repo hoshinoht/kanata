@@ -82,6 +82,7 @@ pub(crate) struct ClientState {
     first_byte_ms: u64,
     idle_ms: u64,
     overall_ms: u64,
+    sse_keepalive_ms: u64,
     request_sequence: Arc<std::sync::atomic::AtomicU64>,
     telemetry: Arc<crate::telemetry::Telemetry>,
     listener: crate::telemetry::Listener,
@@ -128,6 +129,9 @@ impl ClientState {
     }
     pub(crate) fn overall_ms(&self) -> u64 {
         self.overall_ms
+    }
+    pub(crate) fn sse_keepalive_ms(&self) -> u64 {
+        self.sse_keepalive_ms
     }
     pub(crate) fn next_request_id(&self) -> String {
         format!(
@@ -314,6 +318,7 @@ impl TwoPlaneServer {
             first_byte_ms: config.timeouts().first_byte_ms(),
             idle_ms: config.timeouts().idle_ms(),
             overall_ms: config.timeouts().overall_ms(),
+            sse_keepalive_ms: config.timeouts().sse_keepalive_ms(),
             request_sequence: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             telemetry: telemetry.clone(),
             listener: crate::telemetry::Listener::Private,
@@ -638,6 +643,11 @@ async fn list_models(auth: Authenticated, State(state): State<ClientState>) -> R
                     "input": ["text"], "function_tools": route.capabilities.function_tools,
                     "streaming": route.capabilities.streaming_chat, "max_output_bytes": 8 * 1024 * 1024,
                 });
+                kanata["messages"] = json!({
+                    "endpoint": "/v1/messages", "operation": "chat", "stateless": true,
+                    "function_tools": route.capabilities.function_tools,
+                    "streaming": route.capabilities.streaming_chat,
+                });
             }
             if routes.iter().any(|route| {
                 route.identity.selector.operation == crate::core::Operation::Embeddings
@@ -778,16 +788,37 @@ pub(crate) fn error_response(
     error_type: &'static str,
     code: &'static str,
 ) -> Response {
+    error_response_with_param(status, message, error_type, code, None)
+}
+
+/// Fields of a JSON error kept beside its body, so an endpoint can re-shape the envelope.
+#[derive(Clone)]
+pub(crate) struct ErrorDetails {
+    pub(crate) message: &'static str,
+    pub(crate) param: Option<String>,
+}
+
+/// The one builder of JSON error bodies; `param` names the offending request member.
+pub(crate) fn error_response_with_param(
+    status: StatusCode,
+    message: &'static str,
+    error_type: &'static str,
+    code: &'static str,
+    param: Option<&str>,
+) -> Response {
     let mut response = (
         status,
         Json(
-            json!({"error": {"message": message, "type": error_type, "param": null, "code": code}}),
+            json!({"error": {"message": message, "type": error_type, "param": param, "code": code}}),
         ),
     )
         .into_response();
-    response
-        .extensions_mut()
-        .insert(crate::telemetry::ErrorCode(code));
+    let extensions = response.extensions_mut();
+    extensions.insert(crate::telemetry::ErrorCode(code));
+    extensions.insert(ErrorDetails {
+        message,
+        param: param.map(str::to_owned),
+    });
     response
 }
 

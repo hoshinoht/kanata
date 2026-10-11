@@ -18,7 +18,7 @@
 ## Repository map
 Kanata is a single Rust crate (edition 2024, `rust-version = "1.98"`): an OpenAI-compatible inference gateway with a private listener, an optional public listener and a loopback admin listener.
 
-- `src/`: the crate; see `src/AGENTS.md` (module map, layering), `src/api/AGENTS.md` (HTTP boundary), `src/adapter/AGENTS.md` (providers, transport).
+- `src/`: the crate; API modules include `src/api/messages/` (stateless Messages handler) and `src/api/keepalive.rs` (SSE keepalives); see `src/AGENTS.md` (module map, layering), `src/api/AGENTS.md` (HTTP boundary), `src/adapter/AGENTS.md` (providers, transport).
 - `tests/`: integration suites and fixtures; see `tests/AGENTS.md`.
 - `config/`: `*.example.toml` templates plus `config/README.md` (template index, config concepts). `config/config.toml` is the live, git-ignored config.
 - `deploy/docker/`, `deploy/cloudflared/`: Compose and public-tunnel runbooks (READMEs).

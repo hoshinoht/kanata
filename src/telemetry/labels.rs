@@ -10,11 +10,12 @@ pub(crate) enum Endpoint {
     Embeddings,
     Responses,
     Speech,
+    Messages,
     Other,
 }
 
 impl Endpoint {
-    pub(crate) const COUNT: usize = 7;
+    pub(crate) const COUNT: usize = 8;
     pub(crate) const ALL: [Self; Self::COUNT] = [
         Self::Chat,
         Self::Transcription,
@@ -22,6 +23,7 @@ impl Endpoint {
         Self::Embeddings,
         Self::Responses,
         Self::Speech,
+        Self::Messages,
         Self::Other,
     ];
 
@@ -33,6 +35,7 @@ impl Endpoint {
             "/v1/embeddings" => Self::Embeddings,
             "/v1/responses" => Self::Responses,
             "/v1/audio/speech" => Self::Speech,
+            "/v1/messages" => Self::Messages,
             _ => Self::Other,
         }
     }
@@ -46,6 +49,7 @@ impl Endpoint {
             Self::Embeddings => 4,
             Self::Responses => 5,
             Self::Speech => 6,
+            Self::Messages => 7,
         }
     }
 
@@ -57,6 +61,7 @@ impl Endpoint {
             Self::Embeddings => "embeddings",
             Self::Responses => "responses",
             Self::Speech => "speech",
+            Self::Messages => "messages",
             Self::Other => "other",
         }
     }

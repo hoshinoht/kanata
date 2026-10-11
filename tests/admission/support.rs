@@ -261,6 +261,7 @@ impl Adapter for PendingAdapter {
                 finish_reason: FinishReason::Stop,
                 usage: None,
                 reasoning: None,
+                reasoning_items: Vec::new(),
             })))
         })
     }
@@ -401,6 +402,7 @@ pub fn completed() -> Event {
             output_tokens: 1,
             total_tokens: 2,
             reasoning_tokens: None,
+            cached_input_tokens: None,
         }),
     })
 }

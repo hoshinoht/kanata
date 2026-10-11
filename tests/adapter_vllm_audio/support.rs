@@ -523,6 +523,8 @@ pub fn chat_request(alias: &str, content: Vec<ChatContent>) -> Request {
         stream: false,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     })
 }
 

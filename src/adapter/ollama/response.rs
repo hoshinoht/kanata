@@ -115,7 +115,7 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
             },
         });
     }
-    if content.is_empty() && finish_reason != FinishReason::Length {
+    if content.is_empty() && finish_reason == FinishReason::ContentFilter {
         return Err(upstream_failure());
     }
     let has_tool_calls = content
@@ -131,6 +131,7 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         reasoning_tokens: usage
             .completion_tokens_details
             .and_then(|details| details.reasoning_tokens),
+        cached_input_tokens: None,
     });
     Ok(ChatResponse {
         model: public_model,
@@ -141,6 +142,7 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         finish_reason,
         usage,
         reasoning,
+        reasoning_items: Vec::new(),
     })
 }
 
