@@ -1,6 +1,6 @@
 # Running Kanata with Docker
 
-One Kanata process runs in a hardened container: distroless, fixed non-root UID `10001`, read-only root filesystem, all capabilities dropped, `no-new-privileges`, and PID, CPU and memory limits. **No Compose profile publishes a host port.** Traffic reaches Kanata only over internal Docker networks:
+One Kanata process runs in a hardened container: distroless, fixed non-root UID `10001`, read-only root filesystem, all capabilities dropped, `no-new-privileges`, and PID, CPU and memory limits. **No Compose profile publishes a Kanata host port** (the opt-in CLIProxyAPI overlay publishes only CLIProxyAPI on `127.0.0.1:18317`). Traffic reaches Kanata only over internal Docker networks:
 
 | Listener | Address | Reached by |
 | --- | --- | --- |
@@ -21,6 +21,7 @@ Kanata makes its outbound calls to model backends over the separate `backend_egr
 | `compose.kanata.omnilion.yml` | Opt-in OmniLion API key as a Compose secret at `/run/secrets/omnilion-api-key` in both `kanata` and `kanata-public`, from `KANATA_OMNILION_KEY_FILE`; needs `compose.kanata.public.yml` |
 | `compose.kanata.chatgpt.yml` | Opt-in writable ChatGPT credential directory in the private container; host browser sign-in uses the same protected directory |
 | `compose.kanata.chatgpt-only.yml` | Apply after the ChatGPT overlay to replace private mounts and detach the retained Codex credential volume |
+| `compose.kanata.cliproxy.yml` | Opt-in CLIProxyAPI: the `cliproxy` service (pinned image, loopback port `18317`) and an unprivileged nginx TLS sidecar (`cliproxy-tls`) with a private CA, the CLIProxyAPI client key and CA as Compose secrets; see [CLIProxyAPI upstream](#cliproxyapi-upstream) |
 | `.env` (git-ignored; from `.env.example`) | `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`, and paths to the config, the host-side owner key and the tunnel token. Paths only, never secrets |
 
 ## Config and secrets
@@ -77,6 +78,68 @@ The legacy Codex adapter is deprecated and retained for explicit restoration. Ba
 Append `compose.kanata.chatgpt-only.yml` after `compose.kanata.chatgpt.yml` in `COMPOSE_FILE`, then run `scripts/kanata.sh check` and `scripts/kanata.sh restart`. This overlay requires [Compose support for `!override`](https://docs.docker.com/reference/compose-file/merge/#replace-value) (2.24.4 or newer). It replaces the private service's volume mounts with config, keys, usage state and ChatGPT state; include any other custom mounts explicitly. API-key secrets and public service mounts are preserved. The existing `codex_state` volume stays on disk and is unmounted; do not delete it when retaining a restoration path.
 
 To restore Codex, remove the ChatGPT-only overlay, restore the saved Codex adapter/auth configuration and selected exact routes, reconcile key grants against those routes, validate, and recreate the gateway. The base Compose file mounts the retained volume again. Restoration is an explicit operator action; failed ChatGPT requests never fall back to Codex.
+
+## CLIProxyAPI upstream
+
+A local [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) can serve its OpenAI-compatible models (for example Claude via account sign-in) through a `cliproxy` adapter. Like ChatGPT and Codex, these routes are private-only: they cannot be listed in `publication.public_routes`, the `kanata-public` container never loads the adapter, its client key or any application key holding a CLIProxyAPI scope, and `kanata routes` shows them as `never` public. Kanata only sends credentials over HTTPS or to a loopback IP, so the container path terminates TLS in a sidecar and pins a private CA with the adapter's `ca_file`.
+
+The overlay runs CLIProxyAPI itself as the `cliproxy` service, from the image digest tsuna pinned (v8.0.18). It mounts an existing `config.yaml` read-only (`CLIPROXY_CONFIG_FILE`) and the sign-in directory read-write (`CLIPROXY_AUTH_DIR`); point both at tsuna's `.runtime/proxy/` files so its client key and sign-ins carry over. It still publishes `127.0.0.1:18317` for host clients such as tsuna. Networks, all owned by this project:
+
+| Network | Members | Purpose |
+| --- | --- | --- |
+| `cliproxy_egress` | `cliproxy` | Outbound to Anthropic/OpenAI; default gateway for the published port |
+| `cliproxy_upstream` (internal) | `cliproxy`, `cliproxy-tls` | Plain HTTP from the sidecar to `cliproxy:8317` |
+| `cliproxy_tls` (internal) | `kanata`, `cliproxy-tls` | Kanata to the sidecar over TLS; Kanata never reaches `cliproxy` directly |
+
+`cliproxy` has a read-only root filesystem with a `/tmp` tmpfs, drops all capabilities, sets `no-new-privileges` and has PID, CPU and memory limits. It keeps the image's root user because `config.yaml` names `/root/.cli-proxy-api` as the auth directory and `/root` is `0700` in the image; the only writable path is the mounted sign-in directory. Without capabilities, root cannot bypass file modes: on Linux, make the config readable and the sign-in directory writable by uid 0 (macOS runtimes map host ownership). There is no healthcheck: the image has no HTTP client, and `/v1/models` needs the client key.
+
+> [!WARNING]
+> Routing subscription sign-ins through a third-party proxy may breach the provider's consumer terms. You decide whether to use it.
+
+1. Create the CA and server certificate: `scripts/cliproxy-tls-certs.sh ~/.config/kanata/cliproxy-tls`. Rerunning renews the server certificate and keeps the CA. On Linux, make `server.key` readable by the sidecar's uid 101.
+2. In `.env`, append `:compose.kanata.cliproxy.yml` to `COMPOSE_FILE` and set `CLIPROXY_TLS_DIR`, `KANATA_CLIPROXY_KEY_FILE` (CLIProxyAPI's client key, e.g. tsuna's `.runtime/proxy/client-key`), `CLIPROXY_CONFIG_FILE` and `CLIPROXY_AUTH_DIR`.
+3. Add the adapter and routes to the config, then `scripts/kanata.sh check` and `scripts/kanata.sh restart` (the restart recreates `kanata` to attach `cliproxy_tls` and the secrets):
+
+```toml
+[[adapters]]
+id = "cliproxy"
+kind = "cliproxy"
+base_url = "https://cliproxy-tls:8443/v1"
+ca_file = "/run/secrets/cliproxy-ca.pem"
+secret_ref = "file:/run/secrets/cliproxy-api-key"
+trust_zone = "external"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = true
+function_tools = true
+sampling_controls = true
+reasoning_control = true
+
+[models.chat]
+"claude-sonnet-5-5" = { adapter_id = "cliproxy", requires_function_tools = true, requires_streaming_chat = true, upstream_id = "claude-sonnet-5-5", efforts = ["low", "medium", "high"], default_effort = "medium" }
+```
+
+With `reasoning_control = true` and the family form `efforts = ["low", "medium", "high"], default_effort = "medium"`, `/v1/models` on the private listener lists one `claude-sonnet-5-5` entry whose `kanata.reasoning_efforts` holds the levels the key may use. Clients send the base ID with `reasoning_effort`; Kanata routes to `claude-sonnet-5-5:<effort>` and forwards that effort to CLIProxyAPI, and an omitted effort uses `medium`. Grant keys the exact scopes (`claude-sonnet-5-5`, `claude-sonnet-5-5:high`, ...); a key holding any of them is unavailable on the public listener, so use a separate key for public routes. An existing `kind = "vllm"` CLIProxyAPI adapter only needs `kind = "cliproxy"`, plus removing its routes from `publication.public_routes` if any were listed. The sidecar to CLIProxyAPI hop is plain HTTP on the internal `cliproxy_upstream` network. For a host-native Kanata, skip the sidecar and use `base_url = "http://127.0.0.1:18317/v1"`; `scripts/kanata.sh host-serve install /abs/config.toml [/abs/kanata]` keeps it running as a launchd login agent.
+
+Start or update only CLIProxyAPI and the sidecar, without recreating `kanata`:
+
+```sh
+docker compose up -d --no-deps cliproxy cliproxy-tls
+```
+
+`scripts/kanata.sh up` and `docker compose down` include them; `scripts/kanata.sh restart` recreates only the Kanata containers. With tsuna, set its `config/proxy.json` to this checkout, `compose.kanata.yml` + `compose.kanata.cliproxy.yml` and service `cliproxy`, so `tsuna proxy start|stop|login` drive this service (`login` runs `docker compose run --rm --no-deps -p 127.0.0.1:<callback>:<callback> cliproxy ./CLIProxyAPI --<provider>-login --no-browser`, which publishes only the OAuth callback).
+
+### Cutover from tsuna's `hoshi-omp-gateway`
+
+> [!NOTE]
+> Executed 2026-10-12 on the live stack (outage about 1 s; `kanata` not recreated). Model clients routed through CLIProxyAPI (including tsuna/OMP sessions) lose their upstream between steps 2 and 3; run it as one script, not step by step from an agent session that depends on the proxy.
+
+1. **Preflight** (no changes): `.env` has the overlay and the four `CLIPROXY_*`/`KANATA_CLIPROXY_KEY_FILE` paths; `docker compose config --quiet` succeeds; `docker compose config kanata` differs from the model without the overlay only by `cliproxy_tls` and the two secrets; `docker compose --dry-run up -d --no-deps cliproxy cliproxy-tls` lists only the `cliproxy*` networks and containers.
+2. **Stop and remove the old container** (the auth directory is a bind mount and stays on disk): `docker compose -f ~/.config/tsuna/compose.yml stop gateway && docker compose -f ~/.config/tsuna/compose.yml rm -f gateway`. Leave its `hoshi-omp_default` network; nothing in this project uses it.
+3. **Start Kanata's service:** `docker compose up -d --no-deps cliproxy cliproxy-tls`, then `docker compose ps` shows both running and `kanata` with its original creation time.
+4. **Verify:** `curl -fsS -H "Authorization: Bearer $(cat ~/.config/tsuna/.runtime/proxy/client-key)" http://127.0.0.1:18317/v1/models` lists the models; `docker compose logs cliproxy` shows no auth-directory or config errors. If the adapter is configured, call a CLIProxyAPI route through Kanata's private listener.
+5. **Switch tsuna:** set `config/proxy.json` to the Kanata target; `tsuna proxy status` reports the gateway reachable.
+6. **Rollback:** `docker compose stop cliproxy cliproxy-tls && docker compose rm -f cliproxy cliproxy-tls`, then `docker compose -f ~/.config/tsuna/compose.yml up -d gateway` (same files, same port), restore tsuna's `config/proxy.json` default, and repeat the `curl` check. Kanata's CLIProxyAPI routes fail until the sidecar is back.
 
 ## Private route (reverse proxy)
 

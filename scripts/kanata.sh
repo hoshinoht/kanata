@@ -50,6 +50,9 @@ Local models
                              (default NAME: MODEL-<N>k) and print the route to add
   fm-serve install|uninstall|status
                              Run Apple's `fm serve` (macOS 27+) on 127.0.0.1 as a login agent
+  host-serve install CONFIG [BIN] | uninstall | restart | status
+                             Run a host-native `kanata serve --plane private` as a login agent
+                             (macOS launchd; BIN defaults to `kanata` on PATH)
 EOF
 }
 
@@ -130,13 +133,35 @@ prepare_dirs() {
   fi
 }
 
+# File-backed Compose secrets of the kanata service, mounted where the container sees them,
+# so files read at config load (e.g. an adapter ca_file) resolve during `check`.
+secret_mounts() {
+  local model
+  model=$(docker compose config --format json) || die "cannot read the Compose model; check .env and COMPOSE_FILE"
+  python3 -c '
+import json, sys
+model = json.loads(sys.argv[1])
+files = {name: spec.get("file") for name, spec in (model.get("secrets") or {}).items()}
+for secret in model["services"]["kanata"].get("secrets") or []:
+    source = secret.get("source")
+    target = secret.get("target") or source
+    path = files.get(source)
+    if path:
+        print(path + ":/run/secrets/" + target + ":ro")' "$model" ||
+    die "cannot read the Compose secrets"
+}
+
 check_config() {
-  local services
+  local services mount
+  local -a mounts=()
   deploy_paths
   prepare_dirs
+  while IFS= read -r mount; do
+    [[ -n $mount ]] && mounts+=(-v "$mount")
+  done < <(secret_mounts)
   # Config at /c.toml, keys at /keys: the relative keys/keys.toml resolves the same way.
   # Explicit exits: callers use `check_config && …`, which disables set -e here.
-  docker run --rm --network none --read-only -v "$config:/c.toml:ro" -v "$keys_dir:/keys:ro" "$IMAGE" check --config /c.toml ||
+  docker run --rm --network none --read-only -v "$config:/c.toml:ro" -v "$keys_dir:/keys:ro" ${mounts[@]+"${mounts[@]}"} "$IMAGE" check --config /c.toml ||
     die "config failed kanata check"
   services=$(kanata_services) || exit 1
   if grep -qx kanata-public <<<"$services"; then
@@ -335,6 +360,69 @@ EOF
   esac
 }
 
+HOST_LABEL=dev.kanata.host-serve
+HOST_PLIST=$HOME/Library/LaunchAgents/$HOST_LABEL.plist
+HOST_LOG=$HOME/Library/Logs/kanata-host-serve.log
+
+# Host-native gateway for local clients (e.g. loopback upstreams such as CLIProxyAPI).
+host_serve() {
+  [[ $(uname -s) == Darwin ]] || die "host-serve uses launchd (macOS)"
+  local domain config bin
+  domain=gui/$(id -u)
+  case ${1:-} in
+    install)
+      [[ $# -ge 2 && $# -le 3 ]] || die "usage: host-serve install CONFIG [BIN]"
+      [[ $2 == /* && -f $2 ]] || die "CONFIG must be an absolute path to an existing file"
+      config=$2
+      bin=${3:-$(command -v kanata || true)}
+      [[ -n $bin && $bin == /* && -x $bin ]] || die "BIN must be an absolute path to the kanata binary"
+      [[ $config != *[\<\>\&]* && $bin != *[\<\>\&]* ]] || die "paths must not contain <, > or &"
+      "$bin" check --config "$config" --plane private >/dev/null || die "config failed kanata check"
+      mkdir -p "$(dirname -- "$HOST_PLIST")" "$(dirname -- "$HOST_LOG")"
+      cat >"$HOST_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$HOST_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$bin</string><string>serve</string>
+    <string>--config</string><string>$config</string>
+    <string>--plane</string><string>private</string>
+  </array>
+  <key>WorkingDirectory</key><string>$(dirname -- "$config")</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>$HOST_LOG</string>
+  <key>StandardErrorPath</key><string>$HOST_LOG</string>
+</dict>
+</plist>
+EOF
+      launchctl bootout "$domain/$HOST_LABEL" 2>/dev/null || true
+      launchctl bootstrap "$domain" "$HOST_PLIST"
+      echo "kanata host-serve agent installed ($config); log: $HOST_LOG"
+      ;;
+    uninstall)
+      launchctl bootout "$domain/$HOST_LABEL" 2>/dev/null || true
+      rm -f "$HOST_PLIST"
+      echo "kanata host-serve agent removed."
+      ;;
+    restart)
+      launchctl kickstart -k "$domain/$HOST_LABEL" || die "agent not loaded; run host-serve install first"
+      ;;
+    status)
+      if launchctl print "$domain/$HOST_LABEL" >/dev/null 2>&1; then echo "agent: loaded"; else echo "agent: not loaded"; fi
+      [[ -f $HOST_PLIST ]] || return 0
+      bin=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$HOST_PLIST")
+      config=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:3' "$HOST_PLIST")
+      if "$bin" health --config "$config" >/dev/null 2>&1; then echo "health: ok ($config)"; else echo "health: failing ($config)"; fi
+      ;;
+    *) die "usage: host-serve install CONFIG [BIN] | uninstall | restart | status" ;;
+  esac
+}
+
 # Legacy `owner-key rotate`: kanata key rotate --owner, key -> KANATA_OWNER_KEY_FILE.
 owner_key_rotate() {
   local expires= key_file key_dir
@@ -425,6 +513,7 @@ case $command in
     ;;
   ollama-context) ollama_context "$@" ;;
   fm-serve) fm_serve "$@" ;;
+  host-serve) host_serve "$@" ;;
   owner-key)
     [[ ${1:-} == rotate ]] || die "usage: owner-key rotate --expires <days>"
     shift
