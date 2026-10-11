@@ -129,13 +129,13 @@ docker compose up -d --no-deps cliproxy cliproxy-tls
 
 `scripts/kanata.sh up` and `docker compose down` include them; `scripts/kanata.sh restart` recreates only the Kanata containers. With tsuna, set its `config/proxy.json` to this checkout, `compose.kanata.yml` + `compose.kanata.cliproxy.yml` and service `cliproxy`, so `tsuna proxy start|stop|login` drive this service (`login` runs `docker compose run --rm --no-deps -p 127.0.0.1:<callback>:<callback> cliproxy ./CLIProxyAPI --<provider>-login --no-browser`, which publishes only the OAuth callback).
 
-### Cutover from tsuna's `hoshi-omp-gateway`
+### Cutover from tsuna's `tsuna-gateway`
 
 > [!NOTE]
-> Executed 2026-10-12 on the live stack (outage about 1 s; `kanata` not recreated). Model clients routed through CLIProxyAPI (including tsuna/OMP sessions) lose their upstream between steps 2 and 3; run it as one script, not step by step from an agent session that depends on the proxy.
+> Optional. Run it as one script, not step by step from an agent session that depends on the proxy: model clients routed through CLIProxyAPI (including tsuna/OMP sessions) lose their upstream between steps 2 and 3.
 
 1. **Preflight** (no changes): `.env` has the overlay and the four `CLIPROXY_*`/`KANATA_CLIPROXY_KEY_FILE` paths; `docker compose config --quiet` succeeds; `docker compose config kanata` differs from the model without the overlay only by `cliproxy_tls` and the two secrets; `docker compose --dry-run up -d --no-deps cliproxy cliproxy-tls` lists only the `cliproxy*` networks and containers.
-2. **Stop and remove the old container** (the auth directory is a bind mount and stays on disk): `docker compose -f ~/.config/tsuna/compose.yml stop gateway && docker compose -f ~/.config/tsuna/compose.yml rm -f gateway`. Leave its `hoshi-omp_default` network; nothing in this project uses it.
+2. **Stop and remove the old container** (the auth directory is a bind mount and stays on disk): `docker compose -f ~/.config/tsuna/compose.yml stop gateway && docker compose -f ~/.config/tsuna/compose.yml rm -f gateway`. Leave its `tsuna_default` network; nothing in this project uses it.
 3. **Start Kanata's service:** `docker compose up -d --no-deps cliproxy cliproxy-tls`, then `docker compose ps` shows both running and `kanata` with its original creation time.
 4. **Verify:** `curl -fsS -H "Authorization: Bearer $(cat ~/.config/tsuna/.runtime/proxy/client-key)" http://127.0.0.1:18317/v1/models` lists the models; `docker compose logs cliproxy` shows no auth-directory or config errors. If the adapter is configured, call a CLIProxyAPI route through Kanata's private listener.
 5. **Switch tsuna:** set `config/proxy.json` to the Kanata target; `tsuna proxy status` reports the gateway reachable.
