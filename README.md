@@ -8,7 +8,7 @@
 
 *Built for homelabs. Designed as the model gateway for [kanade](https://github.com/hoshinoht/kanade-bot).*
 
-[![Version](https://img.shields.io/badge/version-1.0.0--beta.7-orange)](CHANGELOG)
+[![Version](https://img.shields.io/badge/version-1.0.0--beta.8-orange)](CHANGELOG)
 [![Rust](https://img.shields.io/badge/rust-1.98%2B-b7410e?logo=rust)](Cargo.toml)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![OpenAI compatible](https://img.shields.io/badge/API-OpenAI%20compatible-412991)](#api)
@@ -22,7 +22,7 @@
 > Model execution, batching, tokenization, GPU scheduling and model loading belong to runtimes such as Ollama, vLLM and hosted providers. Kanata owns the application-facing boundary: keys, routing, validation, limits and a safe public edge.
 
 > [!NOTE]
-> **Beta (`1.0.0-beta.7`).** Kanata targets single-host personal deployments. Interfaces may still change before 1.0.
+> **Beta (`1.0.0-beta.8`).** Kanata targets single-host personal deployments. Interfaces may still change before 1.0.
 
 ## At a glance
 

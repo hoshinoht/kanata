@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [1.0.0-beta.8] - 2026-10-16
+
+Private-only Claude models through the Anthropic Messages API.
+
 ### Added
 
 - Security-relevant: private-only `kind = "anthropic"` adapter for Claude through the Messages API (`POST https://api.anthropic.com/v1/messages`) with a Console API key from `secret_ref`, sent as `Authorization: Bearer` with `anthropic-version: 2023-06-01` and an optional `[adapters.anthropic] workspace_id` (`anthropic-workspace-id`). Requires `trust_zone = "external"`, the exact `base_url` (`anthropic_pinned_origin_required`) and `secret_ref`; only `chat` (`anthropic_chat_only`); `input_audio` and `sampling_controls` are rejected. Listing one of its routes in `publication.public_routes` is a config error (`anthropic_not_public`); `--plane public` never loads its adapter, secret, routes or keys holding its scopes, and `kanata routes` shows `never`. Streaming, tools, inline images, `json_schema` output (`json_object` is a local 400) and `reasoning_effort` `low`–`max` as `output_config.effort` (pins and effort families as on CLIProxyAPI; `none`/`minimal` rejected, including route pins with `unsupported_effort`). Leading system/developer messages become the top-level `system`; later ones are a local 400. Requests always use automatic prompt caching; usage counts cache reads and writes as input and reports cache reads as cached tokens. Every request sends `max_tokens` from `default_max_output_tokens` (default 16000); client max-token fields are dropped as on other routes without sampling controls. Signed thinking is returned as namespaced reasoning items only when encrypted reasoning is requested on the private listener and replayed on later turns; other providers' items are skipped. Upstream 529 maps to `503 upstream_unavailable`; `doctor --probe-models` reports `not_supported`. Template `config/anthropic.example.toml` and opt-in `compose.kanata.anthropic.yml` (`KANATA_ANTHROPIC_KEY_FILE`, mounted only into `kanata`). Verified with offline config checks and loopback TLS fixtures; no live Anthropic API call, release or deployment is implied.
