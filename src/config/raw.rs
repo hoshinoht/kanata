@@ -96,6 +96,18 @@ pub(super) struct RawAdapter {
     pub(super) circuit_breaker: Option<RawCircuitBreaker>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) ca_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) anthropic: Option<RawAnthropicSettings>,
+}
+
+/// `[adapters.anthropic]`: only valid on `kind = "anthropic"`.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawAnthropicSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) default_max_output_tokens: Option<u32>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

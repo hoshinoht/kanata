@@ -5,6 +5,7 @@ use futures_core::Stream;
 
 use crate::core::{Capabilities, GatewayError, NormalizedEvent, Response, RoutedRequest};
 
+pub mod anthropic;
 pub mod chatgpt;
 pub mod codex;
 pub(crate) mod diagnostics;

@@ -1,0 +1,68 @@
+# Claude Messages API with a Console API key: private chat routes only.
+# With Compose, add compose.kanata.anthropic.yml and set KANATA_ANTHROPIC_KEY_FILE.
+[listeners.client]
+bind = "127.0.0.1"
+port = 8080
+
+[listeners.admin]
+bind = "127.0.0.1"
+port = 9090
+
+[publication]
+tailnet_addresses = ["100.64.0.10"]
+
+[[adapters]]
+id = "anthropic"
+kind = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+trust_zone = "external"
+secret_ref = "file:/run/secrets/anthropic-api-key"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = true
+function_tools = true
+input_images = true
+structured_output = true
+reasoning_control = true
+# Optional. A multi-workspace key needs its workspace; max_tokens defaults to 16000.
+# [adapters.anthropic]
+# workspace_id = "wrkspc_replace_with_workspace_id"
+# default_max_output_tokens = 32000
+
+# Base aliases pin the model's default effort; suffixed aliases select another level.
+[models.chat.claude-opus]
+adapter_id = "anthropic"
+upstream_id = "claude-opus-5-5"
+allows_input_images = true
+default_effort = "medium"
+efforts = ["low", "high", "xhigh", "max"]
+
+[models.chat.claude-haiku]
+adapter_id = "anthropic"
+upstream_id = "claude-haiku-5-5"
+allows_input_images = true
+default_effort = "medium"
+efforts = ["low", "high"]
+
+# kanata key new --config <path> --id claude-client --chat claude-opus,claude-haiku --expires 30
+[keys]
+file = "keys/keys.toml"
+usage_dir = "state"
+
+[limits]
+max_uploads = 8
+max_buffered_bytes = 268435456
+max_queue = 32
+max_in_flight = 8
+max_body_bytes = 4194304
+max_audio_bytes = 26214400
+max_extension_bytes = 8192
+
+[timeouts]
+upload_ms = 30000
+queue_ms = 1000
+connect_ms = 5000
+headers_ms = 30000
+first_byte_ms = 60000
+idle_ms = 60000
+overall_ms = 600000

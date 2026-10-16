@@ -505,7 +505,8 @@ fn adapter_changes(a: &ValidatedAdapter, b: &ValidatedAdapter) -> Vec<&'static s
         extension_allowlist,
         capabilities,
         max_in_flight,
-        circuit_breaker
+        circuit_breaker,
+        anthropic
     );
     fields
 }

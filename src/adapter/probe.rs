@@ -18,8 +18,13 @@ pub(crate) async fn models(
     timeouts: &ValidatedTimeouts,
     resolver: &impl SecretResolver,
 ) -> Result<BTreeSet<String>, &'static str> {
-    // Account adapters have no model list; CLIProxyAPI serves the OpenAI `/models`.
-    if matches!(adapter.kind(), ProviderKind::Codex | ProviderKind::Chatgpt) {
+    // Account adapters have no model list; CLIProxyAPI serves the OpenAI `/models`. The Claude
+    // model list is paginated (20 per page by default) and endpoints here carry no query, so a
+    // single page could report listed models as missing.
+    if matches!(
+        adapter.kind(),
+        ProviderKind::Codex | ProviderKind::Chatgpt | ProviderKind::Anthropic
+    ) {
         return Err("not_supported");
     }
     tokio::time::timeout(Duration::from_secs(10), async {

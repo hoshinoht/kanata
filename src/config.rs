@@ -369,6 +369,7 @@ pub struct ValidatedAdapter {
     max_in_flight: Option<u64>,
     circuit_breaker: CircuitBreakerPolicy,
     ca_bundle: Option<CaBundle>,
+    anthropic: Option<ValidatedAnthropicSettings>,
 }
 impl ValidatedAdapter {
     pub fn id(&self) -> &str {
@@ -405,6 +406,29 @@ impl ValidatedAdapter {
     /// Private CA that replaces the platform roots for this adapter's TLS (`ca_file`).
     pub fn ca_bundle(&self) -> Option<&CaBundle> {
         self.ca_bundle.as_ref()
+    }
+    /// `[adapters.anthropic]` settings, defaults applied; `Some` exactly for Anthropic adapters.
+    pub fn anthropic(&self) -> Option<&ValidatedAnthropicSettings> {
+        self.anthropic.as_ref()
+    }
+}
+
+/// Default `max_tokens` sent to the Claude Messages API, which requires one.
+pub const DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS: u32 = 16_000;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedAnthropicSettings {
+    workspace_id: Option<String>,
+    default_max_output_tokens: u32,
+}
+impl ValidatedAnthropicSettings {
+    /// Sent as `anthropic-workspace-id` when set.
+    pub fn workspace_id(&self) -> Option<&str> {
+        self.workspace_id.as_deref()
+    }
+    /// `max_tokens` on every request.
+    pub fn default_max_output_tokens(&self) -> u32 {
+        self.default_max_output_tokens
     }
 }
 
@@ -733,12 +757,17 @@ pub enum ProviderKind {
     /// CLIProxyAPI's OpenAI-compatible chat endpoint (account sign-ins behind a local proxy);
     /// reuses the vLLM chat path and, like Codex and ChatGPT, is never public.
     Cliproxy,
+    /// Claude Messages API with a Console API key; never public.
+    Anthropic,
 }
 
 impl ProviderKind {
     /// Never published, never on the public plane, and keys reaching it stay private.
     pub fn is_private_only(self) -> bool {
-        matches!(self, Self::Codex | Self::Chatgpt | Self::Cliproxy)
+        matches!(
+            self,
+            Self::Codex | Self::Chatgpt | Self::Cliproxy | Self::Anthropic
+        )
     }
 
     /// Whether the adapter applies a route's pinned effort itself (Codex
@@ -753,6 +782,8 @@ impl ProviderKind {
         match self {
             Self::Codex => CodexReasoningEffort::from_request(effort).is_some(),
             Self::Ollama | Self::Vllm | Self::Openrouter | Self::Chatgpt | Self::Cliproxy => true,
+            // `output_config.effort` has no off or minimal level.
+            Self::Anthropic => !matches!(effort, ReasoningEffort::None | ReasoningEffort::Minimal),
             Self::AppleFm | Self::Speech => false,
         }
     }
@@ -774,8 +805,9 @@ impl ProviderKind {
     }
 
     /// Whether assistant `ChatContent::Reasoning` items are replayed upstream; others skip them.
+    /// Anthropic replays only the thinking items it produced.
     pub fn replays_encrypted_reasoning(self) -> bool {
-        matches!(self, Self::Chatgpt | Self::Codex)
+        matches!(self, Self::Chatgpt | Self::Codex | Self::Anthropic)
     }
 
     /// Whether assistant `ChatContent::ReasoningText` is replayed upstream as the assistant
@@ -799,6 +831,7 @@ impl ProviderKind {
             Self::AppleFm => "apple_fm",
             Self::Speech => "speech",
             Self::Cliproxy => "cliproxy",
+            Self::Anthropic => "anthropic",
         }
     }
 
@@ -826,6 +859,8 @@ impl ProviderKind {
         match self {
             Self::Ollama | Self::Vllm | Self::Openrouter | Self::Cliproxy => (true, true, true),
             Self::Codex | Self::Chatgpt => (false, false, true),
+            // Claude 4.7+ rejects non-default sampling; the output cap is an adapter setting.
+            Self::Anthropic => (true, false, true),
             Self::AppleFm => (true, true, false),
             Self::Speech => (false, false, false),
         }

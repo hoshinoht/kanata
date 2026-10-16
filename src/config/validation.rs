@@ -41,7 +41,7 @@ pub(super) fn validate(
             )?)
         } else if matches!(
             adapter.kind,
-            ProviderKind::Openrouter | ProviderKind::Cliproxy
+            ProviderKind::Openrouter | ProviderKind::Cliproxy | ProviderKind::Anthropic
         ) || (matches!(adapter.kind, ProviderKind::Vllm | ProviderKind::Speech)
             && adapter.trust_zone == TrustZone::External)
         {
@@ -164,6 +164,20 @@ pub(super) fn validate(
                 ));
             }
         }
+        let anthropic = validate_anthropic(
+            adapter.kind,
+            adapter.anthropic,
+            adapter.capabilities.input_audio,
+            &operations,
+            &base_url,
+            &path,
+        )?;
+        if adapter.kind == ProviderKind::Anthropic && !extension_allowlist.is_empty() {
+            return Err(ConfigError::new(
+                format!("{path}.extension_allowlist"),
+                "unsupported_by_adapter_kind",
+            ));
+        }
         let transcription_mode = match (adapter.kind, adapter.transcription_mode) {
             (ProviderKind::Vllm, Some(_)) if !operations.contains(&Operation::Transcription) => {
                 return Err(ConfigError::new(
@@ -204,6 +218,7 @@ pub(super) fn validate(
                     | ProviderKind::Vllm
                     | ProviderKind::Openrouter
                     | ProviderKind::Cliproxy
+                    | ProviderKind::Anthropic
             ) {
                 return Err(ConfigError::new(
                     format!("{path}.capabilities.input_images"),
@@ -299,6 +314,7 @@ pub(super) fn validate(
             max_in_flight,
             circuit_breaker,
             ca_bundle,
+            anthropic,
         });
     }
     if adapters.is_empty() {
@@ -454,6 +470,12 @@ pub(super) fn validate(
                 return Err(ConfigError::new(
                     format!("{path}.reasoning_effort"),
                     "unsupported_by_adapter",
+                ));
+            }
+            if !adapter.kind.accepts_reasoning_effort(effort) {
+                return Err(ConfigError::new(
+                    format!("{path}.reasoning_effort"),
+                    "unsupported_effort",
                 ));
             }
             if alias_effort.is_some_and(|alias| alias != effort) {
@@ -983,6 +1005,7 @@ pub(super) fn validate_public_routes(
                 match adapter.kind {
                     ProviderKind::Codex => "codex_not_public",
                     ProviderKind::Cliproxy => "cliproxy_not_public",
+                    ProviderKind::Anthropic => "anthropic_not_public",
                     _ => "chatgpt_not_public",
                 },
             ));
@@ -1136,7 +1159,8 @@ pub(super) fn validate_provider_zone(adapter: &RawAdapter, path: &str) -> Result
         ProviderKind::Openrouter
         | ProviderKind::Codex
         | ProviderKind::Chatgpt
-        | ProviderKind::Cliproxy => adapter.trust_zone == TrustZone::External,
+        | ProviderKind::Cliproxy
+        | ProviderKind::Anthropic => adapter.trust_zone == TrustZone::External,
         ProviderKind::Vllm | ProviderKind::Speech => true,
         ProviderKind::Ollama | ProviderKind::AppleFm => matches!(
             adapter.trust_zone,
@@ -1151,6 +1175,73 @@ pub(super) fn validate_provider_zone(adapter: &RawAdapter, path: &str) -> Result
             "provider_zone_mismatch",
         ))
     }
+}
+
+/// Chat-only kind pinned to the Claude API origin; `[adapters.anthropic]` belongs to it alone.
+pub(super) fn validate_anthropic(
+    kind: ProviderKind,
+    settings: Option<RawAnthropicSettings>,
+    input_audio: bool,
+    operations: &BTreeSet<Operation>,
+    base_url: &Url,
+    path: &str,
+) -> Result<Option<ValidatedAnthropicSettings>, ConfigError> {
+    if kind != ProviderKind::Anthropic {
+        return match settings {
+            Some(_) => Err(ConfigError::new(
+                format!("{path}.anthropic"),
+                "anthropic_only",
+            )),
+            None => Ok(None),
+        };
+    }
+    if *operations != BTreeSet::from([Operation::Chat]) {
+        return Err(ConfigError::new(
+            format!("{path}.capabilities.operations"),
+            "anthropic_chat_only",
+        ));
+    }
+    if input_audio {
+        return Err(ConfigError::new(
+            format!("{path}.capabilities.input_audio"),
+            "unsupported_by_adapter_kind",
+        ));
+    }
+    if base_url.as_str() != "https://api.anthropic.com/v1" {
+        return Err(ConfigError::new(
+            format!("{path}.base_url"),
+            "anthropic_pinned_origin_required",
+        ));
+    }
+    let settings = settings.unwrap_or(RawAnthropicSettings {
+        workspace_id: None,
+        default_max_output_tokens: None,
+    });
+    if let Some(workspace_id) = &settings.workspace_id {
+        let valid = workspace_id.len() <= 128
+            && workspace_id.strip_prefix("wrkspc_").is_some_and(|rest| {
+                !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            });
+        if !valid {
+            return Err(ConfigError::new(
+                format!("{path}.anthropic.workspace_id"),
+                "invalid_workspace_id",
+            ));
+        }
+    }
+    let default_max_output_tokens = settings
+        .default_max_output_tokens
+        .unwrap_or(DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS);
+    if !(1..=crate::core::MAX_OUTPUT_TOKENS).contains(&default_max_output_tokens) {
+        return Err(ConfigError::new(
+            format!("{path}.anthropic.default_max_output_tokens"),
+            "out_of_range",
+        ));
+    }
+    Ok(Some(ValidatedAnthropicSettings {
+        workspace_id: settings.workspace_id,
+        default_max_output_tokens,
+    }))
 }
 
 pub(super) fn validate_application_keys(

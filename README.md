@@ -29,7 +29,7 @@
 | | |
 | --- | --- |
 | **Endpoints** | `GET /v1/models` · `POST /v1/chat/completions` (JSON and SSE) · `POST /v1/responses` (stateless text/tools/SSE) · `POST /v1/messages` (stateless Messages subset) · `POST /v1/audio/transcriptions` · `POST /v1/embeddings` · `POST /v1/audio/speech` |
-| **Backends** | Ollama · vLLM · OpenRouter · Apple Foundation Models (macOS 27+) · Sign in with ChatGPT · CLIProxyAPI (private) · speech · Codex (deprecated) |
+| **Backends** | Ollama · vLLM · OpenRouter · Apple Foundation Models (macOS 27+) · Sign in with ChatGPT · CLIProxyAPI (private) · Anthropic Claude API (private) · speech · Codex (deprecated) |
 | **Auth** | `Authorization: Bearer` or `x-api-key` with static `kanata_sk_…` keys, exact per-model scopes and SHA-256 digest storage |
 | **Listeners** | Private (behind your tailnet proxy) · optional public (Cloudflare tunnel) · loopback admin |
 | **Deploy** | Distroless, non-root, read-only container; Compose profiles publish **no** host ports |
@@ -75,6 +75,7 @@ A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md
 | **Apple Foundation Models** | Apple's on-device model through macOS 27's `fm serve`: chat, streaming, JSON-schema output and sampling. 8,192-token context, no tools. Expect loose formatting; guardrail refusals return `finish_reason: "content_filter"` |
 | **ChatGPT** | Official OAuth integration for eligible ChatGPT plan usage (preview); private text and function chat, complete or streaming |
 | **CLIProxyAPI** | Private-only chat through a local [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) OpenAI endpoint (`kind = "cliproxy"`): streaming, tools and per-request or pinned reasoning effort, over loopback HTTP or HTTPS with a private CA. Never published, like ChatGPT and Codex |
+| **Anthropic** | Private-only Claude chat through the Messages API with a Console API key (`kind = "anthropic"`, `config/anthropic.example.toml`): streaming, tools, inline images, JSON-schema output, `output_config.effort` reasoning levels, automatic prompt caching and replay of its own signed thinking. Fixed upstream `max_tokens` per adapter; never published |
 | **Speech** | Bounded MP3/WAV output through a Kokoro-FastAPI compatible backend with voice and format allowlists |
 | **Codex** ⚠️ *deprecated* | Legacy device-code integration with an unofficial private backend that may change or break without notice. Retained for explicit restoration; use the ChatGPT adapter for new setups |
 
@@ -101,8 +102,8 @@ The deprecated Codex adapter remains available for explicit restoration. The [Co
 - **Selectable reasoning levels:** pinned effort families advertise one model ID and key-accessible `kanata.reasoning_efforts`. Send the base ID with Chat `reasoning_effort` or Responses `reasoning.effort`; legacy suffixed requests remain accepted. See [client integration and migration](docs/guides/service-handoff.md).
 - **Daily allowances:** optional per-key request limits and token reservations survive restarts. `kanata key usage` reports model and UTC-day usage with explicit missing reports and optional cost estimates; see [usage and quotas](docs/guides/usage-quotas.md). Each process plane has a separate allowance.
 - **Usage and audit:** the server records per-key request counts, last use and reported token totals; the CLI appends every change to `keys/audit.jsonl` (never secrets).
-- **Owner key:** only one key may be the owner. Any key may be given private provider scopes. Codex, ChatGPT and CLIProxyAPI routes are never served publicly, and the public container never loads the owner key or keys with any of their scopes, so use a separate key for public routes.
-- **Public listener:** its allowlist is empty by default. Missing or invalid keys get 403 except on the exact public guide paths (`GET`/`HEAD /v1` and `/v1/`); it never serves Codex, the Sign in with ChatGPT provider or CLIProxyAPI.
+- **Owner key:** only one key may be the owner. Any key may be given private provider scopes. Codex, ChatGPT, CLIProxyAPI and Anthropic routes are never served publicly, and the public container never loads the owner key or keys with any of their scopes, so use a separate key for public routes.
+- **Public listener:** its allowlist is empty by default. Missing or invalid keys get 403 except on the exact public guide paths (`GET`/`HEAD /v1` and `/v1/`); it never serves Codex, the Sign in with ChatGPT provider, CLIProxyAPI or Anthropic.
 
 ### 📈 Operations
 - **Admission and limits:** bounded admission, shared request-buffer reservations, upload concurrency limits and a dedicated upload deadline.
@@ -222,10 +223,10 @@ Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you
 ## Security
 
 > [!IMPORTANT]
-> Keys are bearer credentials: whoever holds one gets its scopes. Only one key may be `owner = true`. Any key may hold ChatGPT, Codex or CLIProxyAPI scopes on the private listener; treat such keys like the owner key.
+> Keys are bearer credentials: whoever holds one gets its scopes. Only one key may be `owner = true`. Any key may hold ChatGPT, Codex, CLIProxyAPI or Anthropic scopes on the private listener; treat such keys like the owner key.
 
 > [!WARNING]
-> **Separate processes, shared host.** With the public profile, the public listener runs in its own `kanata-public` container (`kanata serve --plane public`) that loads only public routes, their adapters and public keys. ChatGPT, Codex and CLIProxyAPI adapters and credentials stay in the private container; publishing one of their routes is a config error. Both containers share the host, the Docker daemon and backends such as Ollama, and Docker bridges alone don't isolate containers from each other. Running both listeners in one process (`--plane all`, the default outside Compose) puts account credentials in the public process again.
+> **Separate processes, shared host.** With the public profile, the public listener runs in its own `kanata-public` container (`kanata serve --plane public`) that loads only public routes, their adapters and public keys. ChatGPT, Codex, CLIProxyAPI and Anthropic adapters and credentials stay in the private container; publishing one of their routes is a config error. Both containers share the host, the Docker daemon and backends such as Ollama, and Docker bridges alone don't isolate containers from each other. Running both listeners in one process (`--plane all`, the default outside Compose) puts account credentials in the public process again.
 
 > [!CAUTION]
 > **Deprecated Codex adapter.** The legacy `codex` adapter uses an unofficial private backend that may change or break without notice. It remains private-only and is retained for explicit restoration. Use the [ChatGPT OAuth integration](#sign-in-with-chatgpt) for new setups.

@@ -56,7 +56,7 @@ fn parse_config_plane(arguments: &[String]) -> Option<(PathBuf, config::Plane)> 
     }
 }
 
-/// Private-only kinds (Codex, ChatGPT, CLIProxyAPI) are never public; others are public when
+/// Private-only kinds (Codex, ChatGPT, CLIProxyAPI, Anthropic) are never public; others are public when
 /// listed in `publication.public_routes`.
 fn route_exposure(config: &ValidatedConfig, route: &config::ValidatedRoute) -> Exposure {
     let selector = &route.identity().selector;
@@ -288,6 +288,14 @@ fn build_adapter(
         ProviderKind::Codex => {
             std::sync::Arc::new(CodexAdapter::from_config(config, configured.id()).map_err(|_| ())?)
         }
+        ProviderKind::Anthropic => std::sync::Arc::new(
+            crate::adapter::anthropic::AnthropicAdapter::from_config(
+                config,
+                configured.id(),
+                resolver,
+            )
+            .map_err(|_| ())?,
+        ),
     };
     Ok(adapter)
 }
