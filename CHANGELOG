@@ -6,6 +6,10 @@
 
 - Deployment files moved under `deploy/`: Compose files to `deploy/compose/`, the `Dockerfile` (with `Dockerfile.dockerignore`) to `deploy/docker/`, and `kanata.sh`, `cliproxy-tls-certs.sh` and `container-smoke.sh` to `deploy/scripts/`. Run Compose and the helper from the repo root as before; existing deployments must prefix each `COMPOSE_FILE` entry in `.env` with `deploy/compose/` (see `.env.example`). The project name, build context, mounts, volumes and networks are unchanged, so running containers are not recreated.
 
+### Security
+
+- `rustls` 0.23.46 fixes RUSTSEC-2026-0346 (TLS secrets in `Debug` output), -0347, -0348 and -0349.
+
 ## [1.0.0-beta.8] - 2026-10-16
 
 Private-only Claude models through the Anthropic Messages API.
