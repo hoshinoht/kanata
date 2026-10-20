@@ -249,7 +249,8 @@ async fn models_report_kanata_capabilities_per_alias() {
             "messages": {"endpoint":"/v1/messages","operation":"chat","stateless":true,"function_tools":true,"streaming":true},
             "admission": {
                 "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000,
-                "adapter_max_in_flight": null
+                "adapter_max_in_flight": null,
+                "in_flight": 0, "queued": 0, "adapter_in_flight": null, "breaker": "closed"
             }
         })
     );
@@ -265,7 +266,8 @@ async fn models_report_kanata_capabilities_per_alias() {
             "messages": {"endpoint":"/v1/messages","operation":"chat","stateless":true,"function_tools":true,"streaming":true},
             "admission": {
                 "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000,
-                "adapter_max_in_flight": null
+                "adapter_max_in_flight": null,
+                "in_flight": 0, "queued": 0, "adapter_in_flight": null, "breaker": "closed"
             }
         })
     );

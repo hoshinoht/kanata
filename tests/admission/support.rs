@@ -114,6 +114,32 @@ fn chat_request_with_options(
         .expect("chat request")
 }
 
+pub fn models_request() -> Request<Body> {
+    Request::builder()
+        .uri("/v1/models")
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .expect("models request")
+}
+
+/// The `kanata.admission` object of `model` in the private listing.
+pub async fn private_admission(server: &TwoPlaneServer, model: &str) -> Value {
+    let models = response_json(
+        server
+            .client_oneshot(models_request())
+            .await
+            .expect("models response"),
+    )
+    .await;
+    models["data"]
+        .as_array()
+        .expect("model data")
+        .iter()
+        .find(|entry| entry["id"] == model)
+        .unwrap_or_else(|| panic!("model {model} listed"))["kanata"]["admission"]
+        .clone()
+}
+
 pub async fn response_json(response: Response) -> Value {
     serde_json::from_slice(
         &to_bytes(response.into_body(), usize::MAX)

@@ -585,7 +585,7 @@ async fn list_models(auth: Authenticated, State(state): State<ClientState>) -> R
             .or_default()
             .push(route);
     }
-    // Capacity settings are published to private clients only.
+    // Capacity settings and live load are published to private clients only.
     let publish_admission = state.listener() == crate::telemetry::Listener::Private;
     let limits = state.admission().limits();
     let data: Vec<_> = aliases
@@ -628,16 +628,20 @@ async fn list_models(auth: Authenticated, State(state): State<ClientState>) -> R
                 });
             }
             if publish_admission {
-                let adapter = routes
+                let load = routes
                     .iter()
                     .find(|route| route.identity.selector.operation == crate::core::Operation::Chat)
                     .or(routes.first())
-                    .and_then(|route| state.admission().adapter_max_in_flight(&route.adapter_id));
+                    .and_then(|route| state.admission().route_load(route));
                 kanata["admission"] = json!({
                     "max_in_flight": limits.max_in_flight,
                     "max_queue": limits.max_queue,
                     "queue_ms": limits.queue_ms,
-                    "adapter_max_in_flight": adapter,
+                    "adapter_max_in_flight": load.and_then(|load| load.adapter_max_in_flight),
+                    "in_flight": load.map(|load| load.in_flight),
+                    "queued": load.map(|load| load.queued),
+                    "adapter_in_flight": load.and_then(|load| load.adapter_in_flight),
+                    "breaker": load.map(|load| load.breaker.as_str()),
                 });
             }
             json!({
