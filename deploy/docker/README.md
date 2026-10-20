@@ -14,27 +14,26 @@ Kanata makes its outbound calls to model backends over the separate `backend_egr
 
 | File | Purpose |
 | --- | --- |
-| `deploy/compose/compose.kanata.yml` | Base service: private listener, egress network, Codex volume, read-only config mount |
+| `deploy/compose/compose.kanata.yml` | Base service: private listener, egress network, read-only config and keys mounts, usage state |
 | `deploy/compose/compose.kanata.host-ollama.yml` | Opt-in `host.orb.internal` mapping so Kanata can reach Ollama running on the Docker host (e.g. macOS for Metal) |
-| `deploy/compose/compose.kanata.public.yml` | Opt-in public plane: a separate `kanata-public` container (`--plane public`, no Codex volume) on the public network, the `cloudflared` sidecar, and `--plane private` for the main container |
+| `deploy/compose/compose.kanata.public.yml` | Opt-in public plane: a separate `kanata-public` container (`--plane public`) on the public network, the `cloudflared` sidecar, and `--plane private` for the main container |
 | `deploy/compose/compose.kanata.openrouter.yml` | Opt-in OpenRouter API key as a Compose secret at `/run/secrets/openrouter-api-key`, from `KANATA_OPENROUTER_KEY_FILE` |
 | `deploy/compose/compose.kanata.omnilion.yml` | Opt-in OmniLion API key as a Compose secret at `/run/secrets/omnilion-api-key` in both `kanata` and `kanata-public`, from `KANATA_OMNILION_KEY_FILE`; needs `deploy/compose/compose.kanata.public.yml` |
 | `deploy/compose/compose.kanata.chatgpt.yml` | Opt-in writable ChatGPT credential directory in the private container; host browser sign-in uses the same protected directory |
-| `deploy/compose/compose.kanata.chatgpt-only.yml` | Apply after the ChatGPT overlay to replace private mounts and detach the retained Codex credential volume |
 | `deploy/compose/compose.kanata.cliproxy.yml` | Opt-in CLIProxyAPI: the `cliproxy` service (pinned image, loopback port `18317`) and an unprivileged nginx TLS sidecar (`cliproxy-tls`) with a private CA, the CLIProxyAPI client key and CA as Compose secrets; see [CLIProxyAPI upstream](#cliproxyapi-upstream) |
-| `.env` (git-ignored; from `.env.example`) | `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`, and paths to the config, the host-side owner key and the tunnel token. Paths only, never secrets |
+| `.env` (git-ignored; from `.env.example`) | `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`, and paths to the config, keys, state and secret files. Paths only, never secrets |
 
 ## Config and secrets
 
 - `KANATA_CONFIG_FILE` is mounted read-only at `/etc/kanata/config.toml`. Start from `config/container.example.toml`.
-- **Client keys** live in `keys.toml` as `sha256:` digests only; the owner key's plaintext stays on the host at `KANATA_OWNER_KEY_FILE`. Manage keys with the host CLI (`cargo install --locked --path .`, then `kanata key ...`); changes apply within about 2 s, no restart.
+- **Client keys** live in `keys.toml` as `sha256:` digests only; the owner key's plaintext stays on the host, outside the repository. Manage keys with the host CLI (`cargo install --locked --path .`, then `kanata key ...`); changes apply within about 2 s, no restart.
 - **Keys and state mounts** (required): `KANATA_KEYS_DIR` must be `<config dir>/keys` and `KANATA_STATE_DIR` must be `<config dir>/state`, the same paths the host CLI derives from the config's `[keys]` table. The keys directory is mounted read-only at `/etc/kanata/keys` in both containers; `state/private` and `state/public` are mounted writable at `/etc/kanata/state` in `kanata` and `kanata-public`. `deploy/scripts/kanata.sh` checks these paths and creates missing directories (0700).
 - **Why a directory:** the CLI replaces `keys.toml` by atomic rename. A single-file bind mount keeps pointing at the old inode, so the container would never see the change; mounting the directory does.
 - **Ownership:** the container runs as uid 10001 and must read `keys.toml` (0600).
   - macOS: when the Docker runtime maps host ownership, run `kanata key ...` as your own user. Verify that the container can read the key file before starting services.
   - Linux: `sudo chown -R 10001:10001 <config dir>/keys <config dir>/state`, then run the CLI as the container uid: `sudo -u '#10001' kanata key ... --config <config>`. Do not change the container uid.
 - **File permissions:** bind mounts and Compose file secrets keep their host ownership and mode. Make the config file, and the tunnel token if used, readable by the container user, e.g. `0444` inside a `0700` directory.
-- **Codex credentials** live only in the dedicated `codex_state` volume. Log in with `deploy/scripts/kanata.sh codex login`. No host home directory, keychain or Docker socket is mounted.
+- **No host home directory, keychain or Docker socket** is mounted. ChatGPT credentials use the opt-in overlay below.
 
 ## Host key portal
 
@@ -55,7 +54,7 @@ Use a dedicated directory outside the checkout, owned by the user running the ho
 KANATA_CHATGPT_STATE_DIR=/absolute/path/outside/repo/kanata-chatgpt
 ```
 
-Set `[chatgpt_auth].state_dir` in the deployed config to **that same absolute path**. The overlay mounts the directory at the identical path in the private container. Host sign-in and container inference share one installation's saved host identity and refresh lock. No credential directory is mounted in `kanata-public`; existing API-key Compose secrets and the Codex volume remain separate.
+Set `[chatgpt_auth].state_dir` in the deployed config to **that same absolute path**. The overlay mounts the directory at the identical path in the private container. Host sign-in and container inference share one installation's saved host identity and refresh lock. No credential directory is mounted in `kanata-public`; existing API-key Compose secrets remain separate.
 
 Add the `chatgpt` adapter from [`config/chatgpt.example.toml`](../../config/chatgpt.example.toml), then:
 
@@ -71,17 +70,13 @@ On macOS, verify that the Docker runtime maps host ownership and the private con
 
 The directory must stay writable because refresh rotates saved credentials. A static Compose secret cannot replace this state store. Verify sign-in consent, the account catalog and a short inference request with your account before relying on the integration.
 
-### Retire the experimental Codex provider
+### Upgrading from the Codex provider
 
-The legacy Codex adapter is deprecated and retained for explicit restoration. Back up the operator-managed config, then replace its Codex routes with explicit ChatGPT routes using the same aliases and upstream IDs. Replace `codex_reasoning_effort` with `reasoning_effort`; explicitly pin formerly unpinned Codex defaults to `medium`. Replace any `codex_reasoning_summary` with `reasoning_summary` using the same value, and remove the unused Codex adapter and `[codex_auth]`. Preserve existing key scopes and publication rules. Verify each service's requested models through ChatGPT before switching.
-
-Append `deploy/compose/compose.kanata.chatgpt-only.yml` after `deploy/compose/compose.kanata.chatgpt.yml` in `COMPOSE_FILE`, then run `deploy/scripts/kanata.sh check` and `deploy/scripts/kanata.sh restart`. This overlay requires [Compose support for `!override`](https://docs.docker.com/reference/compose-file/merge/#replace-value) (2.24.4 or newer). It replaces the private service's volume mounts with config, keys, usage state and ChatGPT state; include any other custom mounts explicitly. API-key secrets and public service mounts are preserved. The existing `codex_state` volume stays on disk and is unmounted; do not delete it when retaining a restoration path.
-
-To restore Codex, remove the ChatGPT-only overlay, restore the saved Codex adapter/auth configuration and selected exact routes, reconcile key grants against those routes, validate, and recreate the gateway. The base Compose file mounts the retained volume again. Restoration is an explicit operator action; failed ChatGPT requests never fall back to Codex.
+The Codex provider was removed in this release. Before upgrading, move Codex routes to the `chatgpt` provider (see [service handoff](../../docs/guides/service-handoff.md#codex-removal)) and drop `deploy/compose/compose.kanata.chatgpt-only.yml` from `COMPOSE_FILE`. The base Compose file no longer mounts the old `kanata_codex_state` volume; it stays on disk until you delete it (`docker volume rm kanata_codex_state`).
 
 ## CLIProxyAPI upstream
 
-A local [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) can serve its OpenAI-compatible models (for example Claude via account sign-in) through a `cliproxy` adapter. Like ChatGPT and Codex, these routes are private-only: they cannot be listed in `publication.public_routes`, the `kanata-public` container never loads the adapter, its client key or any application key holding a CLIProxyAPI scope, and `kanata routes` shows them as `never` public. Kanata only sends credentials over HTTPS or to a loopback IP, so the container path terminates TLS in a sidecar and pins a private CA with the adapter's `ca_file`.
+A local [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) can serve its OpenAI-compatible models (for example Claude via account sign-in) through a `cliproxy` adapter. Like ChatGPT and Anthropic, these routes are private-only: they cannot be listed in `publication.public_routes`, the `kanata-public` container never loads the adapter, its client key or any application key holding a CLIProxyAPI scope, and `kanata routes` shows them as `never` public. Kanata only sends credentials over HTTPS or to a loopback IP, so the container path terminates TLS in a sidecar and pins a private CA with the adapter's `ca_file`.
 
 The overlay runs CLIProxyAPI itself as the `cliproxy` service, from the image digest tsuna pinned (v8.0.18). It mounts an existing `config.yaml` read-only (`CLIPROXY_CONFIG_FILE`) and the sign-in directory read-write (`CLIPROXY_AUTH_DIR`); point both at tsuna's `.runtime/proxy/` files so its client key and sign-ins carry over. It still publishes `127.0.0.1:18317` for host clients such as tsuna. Networks, all owned by this project:
 

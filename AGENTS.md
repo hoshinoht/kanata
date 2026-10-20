@@ -21,5 +21,5 @@ Single Rust crate (edition 2024, `rust-version = "1.98"`): an OpenAI-compatible 
 
 ## Conventions
 - User-facing or security-relevant changes also update, as applicable: `CHANGELOG`, `README.md`, `config/README.md`, `config/*.example.toml`, the quickstart error table.
-- Security invariants (`SECURITY.md`): exact `(model_alias, operation)` routing with no fallback, wildcard or general retries; private-only providers (Codex, ChatGPT, CLIProxyAPI, Anthropic) are never public, and the public plane never loads the owner key or keys scoped to them; secrets never enter the repo (keys stored as `sha256:` digests; `*.key`, `.env`, live config are ignored).
+- Security invariants (`SECURITY.md`): exact `(model_alias, operation)` routing with no fallback, wildcard or retries; private-only providers (ChatGPT, CLIProxyAPI, Anthropic) are never public, and the public plane never loads the owner key or keys scoped to them; secrets never enter the repo (keys stored as `sha256:` digests; `*.key`, `.env`, live config are ignored).
 - Commits: Conventional Commits with a scope and a one-sentence body (`feat(admission): ...`). Releases: `chore(release): X.Y.Z-beta.N`, bumping `Cargo.toml`, `Cargo.lock`, the README beta badge and dating the `CHANGELOG` section. Work on `dev`; `master` takes PRs from `dev`.

@@ -17,13 +17,10 @@ port = 9090
 [publication]
 # Host tailnet IPv4 for the private route; must match the edge's EDGE_TAILNET_IPV4.
 tailnet_addresses = ["100.64.0.10"]
-# Exact alias/operation pairs reachable publicly. Empty by default; Codex is
-# always rejected. Example: { model_alias = "qwen3-0.6b", operation = "chat" }
+# Exact alias/operation pairs reachable publicly. Empty by default; private-only
+# providers (ChatGPT, CLIProxyAPI, Anthropic) are always rejected.
+# Example: { model_alias = "qwen3-0.6b", operation = "chat" }
 public_routes = []
-
-[codex_auth]
-store = "file"
-state_dir = "/var/lib/kanata/codex"
 
 [[adapters]]
 id = "ollama-mac"
@@ -36,18 +33,6 @@ operations = ["chat"]
 streaming_chat = true
 function_tools = false
 
-[[adapters]]
-id = "codex"
-kind = "codex"
-base_url = "https://chatgpt.com/backend-api/codex"
-trust_zone = "external"
-[adapters.capabilities]
-operations = ["chat"]
-streaming_chat = true
-function_tools = true
-# Request reasoning_effort (low/medium/high) overrides the alias default.
-reasoning_control = true
-
 [[routes]]
 id = "ollama-qwen3-0-6b"
 model_alias = "qwen3-0.6b"
@@ -56,15 +41,6 @@ adapter_id = "ollama-mac"
 upstream_id = "qwen3:0.6b"
 requires_streaming_chat = true
 requires_function_tools = false
-
-[[routes]]
-id = "codex-gpt-6-sol"
-model_alias = "gpt-6-sol"
-operation = "chat"
-adapter_id = "codex"
-upstream_id = "gpt-6-sol"
-requires_streaming_chat = true
-requires_function_tools = true
 
 # Application keys live in a machine-managed file (paths are relative to this
 # file). Create the owner key with the host CLI:

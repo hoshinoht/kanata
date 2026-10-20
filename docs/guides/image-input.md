@@ -1,6 +1,6 @@
 # Inline images in chat
 
-Chat routes can accept image parts when the adapter declares `input_images = true` and the route declares `allows_input_images = true`. Both settings default to false. Configure these only after checking that the selected upstream model supports vision. The implemented transports are Ollama, vLLM and OpenRouter; Apple FM, Codex and ChatGPT sign-in backends reject this capability.
+Chat routes can accept image parts when the adapter declares `input_images = true` and the route declares `allows_input_images = true`. Both settings default to false. Configure these only after checking that the selected upstream model supports vision. The implemented transports are Ollama, vLLM and OpenRouter; Apple FM and ChatGPT sign-in backends reject this capability.
 
 Use the [`vision.example.toml`](../../config/vision.example.toml) template or add the two flags to an existing chat adapter and route. Image requests use the same exact `chat` key scope, public-route allowlist, admission limits and deadlines as text chat.
 

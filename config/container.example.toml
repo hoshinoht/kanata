@@ -13,11 +13,6 @@ port = 9090
 # Host tailnet IPv4; must match the edge's EDGE_TAILNET_IPV4.
 tailnet_addresses = ["100.64.0.10"]
 
-[codex_auth]
-store = "file"
-# Dedicated Codex volume; log in with `kanata auth codex login` inside the container.
-state_dir = "/var/lib/kanata/codex"
-
 [[adapters]]
 id = "ollama-mac"
 kind = "ollama"
@@ -48,7 +43,7 @@ function_tools = false
 # sampling_controls = true
 
 # CLIProxyAPI through deploy/compose/compose.kanata.cliproxy.yml (see deploy/docker/README.md).
-# Private-only like Codex/ChatGPT: never list its routes in public_routes.
+# Private-only like ChatGPT/Anthropic: never list its routes in public_routes.
 # [[adapters]]
 # id = "cliproxy"
 # kind = "cliproxy"
@@ -62,19 +57,10 @@ function_tools = false
 # function_tools = true
 # reasoning_control = true
 
-[[adapters]]
-id = "codex"
-kind = "codex"
-base_url = "https://chatgpt.com/backend-api/codex"
-trust_zone = "external"
-[adapters.capabilities]
-operations = ["chat"]
-streaming_chat = true
-function_tools = true
-# Request reasoning_effort (low/medium/high) overrides the alias default.
-reasoning_control = true
+# ChatGPT plan models: add the adapter, [chatgpt_auth] and routes from
+# chatgpt.example.toml together with deploy/compose/compose.kanata.chatgpt.yml.
 
-# Aliases may not contain ':' except a Codex effort suffix, so dash the Ollama tag.
+# Aliases may not contain ':' except an effort suffix, so dash the Ollama tag.
 [[routes]]
 id = "ollama-qwen3-0-6b"
 model_alias = "qwen3-0.6b"
@@ -99,37 +85,6 @@ requires_function_tools = false
 # requires_streaming_chat = true
 # requires_function_tools = false
 
-# Codex: the unsuffixed alias uses the default (medium) effort; add :low/:high
-# variants per model. Available models depend on the ChatGPT plan.
-[[routes]]
-id = "codex-gpt-6-sol"
-model_alias = "gpt-6-sol"
-operation = "chat"
-adapter_id = "codex"
-upstream_id = "gpt-6-sol"
-requires_streaming_chat = true
-requires_function_tools = true
-
-[[routes]]
-id = "codex-gpt-6-sol-low"
-model_alias = "gpt-6-sol:low"
-operation = "chat"
-adapter_id = "codex"
-upstream_id = "gpt-6-sol"
-codex_reasoning_effort = "low"
-requires_streaming_chat = true
-requires_function_tools = true
-
-[[routes]]
-id = "codex-gpt-6-sol-high"
-model_alias = "gpt-6-sol:high"
-operation = "chat"
-adapter_id = "codex"
-upstream_id = "gpt-6-sol"
-codex_reasoning_effort = "high"
-requires_streaming_chat = true
-requires_function_tools = true
-
 # Application keys live in a machine-managed file (paths are relative to this
 # file). Create the owner key with the host CLI:
 # `kanata key new --config <this file> --owner --id owner --chat <alias>... --expires <days>`
@@ -153,7 +108,7 @@ max_body_bytes = 1048576
 max_audio_bytes = 26214400
 max_extension_bytes = 8192
 
-# Long enough for high-effort Codex turns.
+# Long enough for high-effort reasoning turns.
 [timeouts]
 # Optional SSE keepalive interval in milliseconds (default 15000, capped by overall_ms).
 # sse_keepalive_ms = 15000

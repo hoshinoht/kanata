@@ -10,8 +10,6 @@ if [[ -z $IMAGE && -f .env ]]; then
   IMAGE=$(sed -n 's/^KANATA_IMAGE=//p' .env | tail -1)
 fi
 IMAGE=${IMAGE:-kanata:test}
-# Temp paths are global so EXIT traps can still see them.
-tmp=
 
 usage() {
   cat <<'EOF'
@@ -23,11 +21,8 @@ Lifecycle
   up                         Check the config, then start the stack
   down                       Stop and remove the stack
   restart                    Recreate Kanata (both containers with the public profile)
-  status                     Show containers and Codex sign-in state
+  status                     Show containers
   logs [compose logs args]   Follow Kanata logs (default: -f --tail 100 of both Kanata containers)
-
-Codex
-  codex login|status|logout  Device-code sign-in inside the running container
 
 ChatGPT (host browser sign-in, deploy/compose/compose.kanata.chatgpt.yml)
   chatgpt login|status|logout|models [--profile NAME]
@@ -37,12 +32,8 @@ Private dashboard (host `kanata` binary: cargo install --locked --path .)
   portal [--port PORT]        Manage deployed keys at 127.0.0.1 (default port 9091)
 
 Keys (host `kanata` binary: cargo install --locked --path .; changes apply without restart)
-  key <new|list|show|edit|rm|rotate|migrate> [args]
+  key <new|list|show|edit|rm|rotate|usage> [args]
                              Run `kanata key ...` with --config set to the deployed config
-  key new ID OUT --chat ALIAS... --expires DAYS
-                             Deprecated: kanata key new --id ID --key-out OUT ...
-  owner-key rotate --expires DAYS
-                             Deprecated: kanata key rotate --owner, key -> KANATA_OWNER_KEY_FILE
 
 Local models
   ollama-context MODEL TOKENS [NAME]
@@ -92,8 +83,7 @@ try:
         keys = settings.get("keys")
 except (OSError, tomllib.TOMLDecodeError) as e:
     fail(f"cannot read {config}: {e}")
-# Inline [[application_keys]] (no [keys]) is deprecated but still deployable.
-if keys is not None and (keys.get("file") != "keys/keys.toml" or keys.get("usage_dir") != "state"):
+if keys is None or keys.get("file") != "keys/keys.toml" or keys.get("usage_dir") != "state":
     fail(f'{config}: Compose requires [keys] file = "keys/keys.toml" and usage_dir = "state"')
 auth = settings.get("chatgpt_auth")
 if auth is not None:
@@ -175,8 +165,6 @@ host_kanata() {
   command -v kanata >/dev/null || die 'host `kanata` not found; install it with: cargo install --locked --path .'
 }
 
-deprecated() { echo "deprecated: $*" >&2; }
-
 # `kanata key <sub> ...` against the deployed config.
 key_passthrough() {
   local arg
@@ -211,8 +199,6 @@ chatgpt() {
   exec kanata auth chatgpt "$action" --config "$config" "$@"
 }
 
-running() { docker compose ps --status running --services | grep -qx kanata; }
-
 # Kanata containers in this Compose model: kanata, plus kanata-public with the public profile.
 kanata_services() {
   local services
@@ -227,40 +213,6 @@ recreate_kanata() {
   services=$(kanata_services) || exit 1
   # shellcheck disable=SC2086
   docker compose up -d --no-build --force-recreate $services
-}
-
-codex() {
-  local action=${1:-}
-  case $action in login | status | logout) ;; *) die "usage: codex login|status|logout" ;; esac
-  running || die 'Kanata is not running; start it with: deploy/scripts/kanata.sh up'
-  run() { docker compose exec "$@" kanata /usr/local/bin/kanata auth codex "$action" --config /etc/kanata/config.toml; }
-  if [[ $action == login ]]; then
-    cat <<'EOF'
-Before continuing, enable "device code authorization for Codex" in ChatGPT:
-  Settings -> Security (personal account) or workspace permissions (admin).
-Then open the URL below, sign in, and enter the one-time code. Ctrl-C cancels.
-
-EOF
-    run
-    action=status
-  fi
-  run -T
-}
-
-# Legacy `key new ID OUT ...`.
-key_new_legacy() {
-  local id=$1 out=$2 arg
-  shift 2
-  deprecated "key new ID OUT; use: kanata key new --config <config> --id $id --key-out $out ..."
-  for arg in "$@"; do [[ $arg == --expires ]] && break; done
-  [[ $arg == --expires ]] ||
-    die "--expires is required: deploy/scripts/kanata.sh key new --id $id --key-out $out $* --expires <1|3|7|13|30|60|unlimited>"
-  host_kanata
-  case $(cd -- "$(dirname -- "$out")" 2>/dev/null && pwd)/ in
-    "$PWD"/*) die 'write keys outside the repository (e.g. ~/.config/kanata/keys/)' ;;
-  esac
-  deploy_paths
-  exec kanata key new --config "$config" --id "$id" --key-out "$out" "$@"
 }
 
 # Host Ollama, as seen from this machine (not from the container).
@@ -423,62 +375,6 @@ EOF
   esac
 }
 
-# Legacy `owner-key rotate`: kanata key rotate --owner, key -> KANATA_OWNER_KEY_FILE.
-owner_key_rotate() {
-  local expires= key_file key_dir
-  deprecated "owner-key rotate; use: kanata key rotate --owner --config <config> --expires <days> --key-out <file>"
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      --no-restart) shift ;;
-      --expires) [[ $# -ge 2 ]] || die "--expires needs a value"; expires=$2; shift 2 ;;
-      *) die "usage: owner-key rotate --expires <1|3|7|13|30|60|unlimited>" ;;
-    esac
-  done
-  [[ -n $expires ]] || die "--expires is required: deploy/scripts/kanata.sh owner-key rotate --expires <1|3|7|13|30|60|unlimited>"
-  host_kanata
-  # Host-side key path: KANATA_OWNER_KEY_FILE from the environment or .env.
-  key_file=${KANATA_OWNER_KEY_FILE:-$(sed -n 's/^KANATA_OWNER_KEY_FILE=//p' .env 2>/dev/null | tail -1)}
-  key_file=${key_file:-$HOME/.config/kanata/owner-client-key}
-  key_dir=$(dirname -- "$key_file")
-  [[ -d $key_dir ]] || die "key directory does not exist: $key_dir"
-  case $key_file in "$PWD"/*) die 'the owner key must live outside the repository' ;; esac
-  deploy_paths
-  python3 - "$config" "$keys_dir/keys.toml" "$key_file" "$expires" <<'PY' || exit 1
-import sys, tomllib
-config, keys_file, key_file, expires = sys.argv[1:5]
-with open(config, "rb") as f:
-    if "keys" not in tomllib.load(f):
-        sys.exit(f"error: {config} uses inline [[application_keys]]; run `kanata key migrate --config {config}` first")
-try:
-    with open(keys_file, "rb") as f:
-        keys = tomllib.load(f).get("keys", [])
-except FileNotFoundError:
-    keys = []
-if not any(k.get("owner") and "revoked_at" not in k for k in keys):
-    sys.exit(f"error: no active owner key; create one with:\n  kanata key new --owner --id owner --chat <alias>... --expires {expires} --config {config} --key-out {key_file}")
-PY
-  # The CLI never overwrites a key file; write beside it, then replace.
-  tmp=$(mktemp -d "$key_dir/.owner-key.XXXXXX")
-  trap 'rm -rf "$tmp"' EXIT
-  kanata key rotate --owner --config "$config" --expires "$expires" --key-out "$tmp/key"
-  chmod 600 "$tmp/key"
-  mv -f "$tmp/key" "$key_file"
-  rm -rf "$tmp"
-  trap - EXIT
-  cat <<EOF
-New owner key written to $key_file (not printed); the previous one stops working within seconds.
-
-Next:
-  - Update every client that uses the owner key (copy it from the key file; don't paste it into chats).
-If you suspect a compromise, also:
-  - Rotate other keys: kanata key rotate <id> --config $config --expires <days> (or revoke: kanata key rm <id>).
-  - Codex: \`codex logout\`, sign out Codex sessions in ChatGPT security settings, then \`codex login\`.
-  - Cloudflare: refresh the tunnel token (replace its file, then \`up\`), and roll any
-    Cloudflare API tokens used by your reverse proxy.
-  - Check \`deploy/scripts/kanata.sh logs\` for unfamiliar key ids or client IPs.
-EOF
-}
-
 command=${1:-help}
 [[ $# -eq 0 ]] || shift
 case $command in
@@ -487,10 +383,7 @@ case $command in
   up) check_config && docker compose up -d --no-build ;;
   down) docker compose down ;;
   restart) check_config && recreate_kanata ;;
-  status)
-    docker compose ps
-    if running; then codex status; fi
-    ;;
+  status) docker compose ps ;;
   logs)
     if [[ $# -eq 0 ]]; then
       services=$(kanata_services) || exit 1
@@ -500,25 +393,15 @@ case $command in
       docker compose logs "$@"
     fi
     ;;
-  codex) codex "$@" ;;
   chatgpt) chatgpt "$@" ;;
   portal) portal "$@" ;;
   key)
-    [[ $# -gt 0 ]] || die "usage: key <new|list|show|edit|rm|rotate|migrate> [args] (see: kanata key)"
-    if [[ $1 == new && $# -ge 3 && $2 != -* && $3 != -* ]]; then
-      shift
-      key_new_legacy "$@"
-    fi
+    [[ $# -gt 0 ]] || die "usage: key <new|list|show|edit|rm|rotate|usage> [args] (see: kanata key)"
     key_passthrough "$@"
     ;;
   ollama-context) ollama_context "$@" ;;
   fm-serve) fm_serve "$@" ;;
   host-serve) host_serve "$@" ;;
-  owner-key)
-    [[ ${1:-} == rotate ]] || die "usage: owner-key rotate --expires <days>"
-    shift
-    owner_key_rotate "$@"
-    ;;
   help | -h | --help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

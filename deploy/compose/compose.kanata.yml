@@ -49,19 +49,11 @@ services:
         target: /etc/kanata/state
         bind:
           create_host_path: false
-      - type: volume
-        source: codex_state
-        target: /var/lib/kanata/codex
-        volume:
-          nocopy: false
     networks:
       private_ingress:
         ipv4_address: 172.30.0.2
       backend_egress:
         ipv4_address: 172.31.0.2
-
-volumes:
-  codex_state:
 
 networks:
   private_ingress:
