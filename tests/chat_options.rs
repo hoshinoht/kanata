@@ -17,7 +17,7 @@ use support::{
 };
 
 const OLLAMA_CAPABILITIES: &str = "id = \"ollama-local\"\nkind = \"ollama\"\nbase_url = \"http://ollama.invalid:11434\"\ntrust_zone = \"local\"\n[adapters.capabilities]\noperations = [\"chat\"]\nstreaming_chat = true\nfunction_tools = true\n";
-const CODEX_CAPABILITIES_END: &str = "function_tools = true\n\n[[routes]]";
+const CHATGPT_CAPABILITIES_END: &str = "function_tools = true\n\n[[routes]]";
 
 fn option_config() -> ValidatedConfig {
     let contents = std::fs::read_to_string("tests/fixtures/config/example.toml")
@@ -29,8 +29,13 @@ fn option_config() -> ValidatedConfig {
             ),
         )
         .replacen(
-            CODEX_CAPABILITIES_END,
+            CHATGPT_CAPABILITIES_END,
             "function_tools = true\nreasoning_control = true\n\n[[routes]]",
+            1,
+        )
+        .replacen(
+            "upstream_id = \"gpt-5\"\n",
+            "upstream_id = \"gpt-5\"\nreasoning_effort = \"medium\"\n",
             1,
         )
         .replacen(
@@ -101,8 +106,8 @@ fn server(config: &ValidatedConfig) -> support::ServerWithRequests {
                 chat_outcome("ok"),
             ),
             adapter_spec(
-                "codex-private",
-                capabilities(config, "codex-private"),
+                "chatgpt-private",
+                capabilities(config, "chatgpt-private"),
                 chat_outcome("ok"),
             ),
         ],
@@ -299,7 +304,7 @@ async fn max_output_tokens_are_dropped_on_a_route_without_sampling_controls() {
     let (server, requests) = server(&config);
     let response = server
         .client_oneshot(chat_request(&body(
-            "codex-chat",
+            "chatgpt-chat",
             json!({"max_completion_tokens": 16}),
         )))
         .await
@@ -347,32 +352,38 @@ async fn reasoning_effort_outside_the_route_backend_range_is_rejected() {
     let (server, requests) = server(&config);
     assert_rejected(
         &server,
-        "codex-chat",
+        "chatgpt-chat",
         json!({"reasoning_effort": "xhigh"}),
         json!("reasoning_effort"),
     )
     .await;
     assert_rejected(
         &server,
-        "codex-chat",
+        "chatgpt-chat",
         json!({"reasoning_effort": "low"}),
         json!("reasoning_effort"),
     )
     .await;
-    assert_rejected(&server, "codex-chat", json!({"seed": 1}), json!("seed")).await;
+    assert_rejected(&server, "chatgpt-chat", json!({"seed": 1}), json!("seed")).await;
     for param in ["stop", "presence_penalty", "frequency_penalty"] {
         let value = if param == "stop" {
             json!("END")
         } else {
             json!(0)
         };
-        assert_rejected(&server, "codex-chat", json!({ param: value }), json!(param)).await;
+        assert_rejected(
+            &server,
+            "chatgpt-chat",
+            json!({ param: value }),
+            json!(param),
+        )
+        .await;
     }
     assert_eq!(recorded_len(&requests), 0);
 
     let accepted = server
         .client_oneshot(chat_request(&body(
-            "codex-chat",
+            "chatgpt-chat",
             json!({"reasoning_effort": "medium"}),
         )))
         .await

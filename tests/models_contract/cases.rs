@@ -1,5 +1,3 @@
-use std::fs;
-
 use axum::http::StatusCode;
 use serde_json::Value;
 
@@ -50,7 +48,7 @@ async fn models_are_sorted_deduplicated_authorized_and_bound() {
 
 #[tokio::test]
 async fn models_keep_exact_key_permissions_with_a_bound_adapter() {
-    let old = "permissions = [\n  { model_alias = \"local-chat\", operation = \"chat\" },\n  { model_alias = \"private-chat\", operation = \"chat\" },\n  { model_alias = \"private-transcribe\", operation = \"transcription\" },\n  { model_alias = \"remote-chat\", operation = \"chat\" },\n  { model_alias = \"codex-chat\", operation = \"chat\" },\n]";
+    let old = "permissions = [\n  { model_alias = \"local-chat\", operation = \"chat\" },\n  { model_alias = \"private-chat\", operation = \"chat\" },\n  { model_alias = \"private-transcribe\", operation = \"transcription\" },\n  { model_alias = \"remote-chat\", operation = \"chat\" },\n  { model_alias = \"chatgpt-chat\", operation = \"chat\" },\n]";
     let config = load_variant(&[(
         old,
         "permissions = [{ model_alias = \"private-chat\", operation = \"chat\" }]",
@@ -188,9 +186,9 @@ fn duplicate_missing_and_mismatched_adapter_bindings_fail_closed() {
     );
 }
 
+/// The fixture, keys file records included, with every `replacements` pair applied.
 fn load_variant(replacements: &[(&str, &str)]) -> kanata::config::ValidatedConfig {
-    let mut contents =
-        fs::read_to_string("tests/fixtures/config/example.toml").expect("example config");
+    let mut contents = crate::scratch::example_with_keys_text();
     for (old, new) in replacements {
         assert!(contents.contains(old), "fixture contains {old}");
         contents = contents.replace(old, new);
@@ -215,15 +213,19 @@ async fn models_report_kanata_capabilities_per_alias() {
             "trust_zone = \"local\"\n[adapters.capabilities]\noperations = [\"chat\"]\nstructured_output = true\nsampling_controls = true\nreasoning_control = true\n",
         ),
         (
-            "backend-api/codex\"\ntrust_zone = \"external\"\n[adapters.capabilities]\n",
-            "backend-api/codex\"\ntrust_zone = \"external\"\n[adapters.capabilities]\nreasoning_control = true\n",
+            "api.openai.com/v1\"\ntrust_zone = \"external\"\n[adapters.capabilities]\n",
+            "api.openai.com/v1\"\ntrust_zone = \"external\"\n[adapters.capabilities]\nreasoning_control = true\n",
+        ),
+        (
+            "upstream_id = \"gpt-5\"\n",
+            "upstream_id = \"gpt-5\"\nreasoning_effort = \"medium\"\n",
         ),
         (
             "upstream_id = \"llama3.2:latest\"\n",
             "upstream_id = \"llama3.2:latest\"\ncontext_tokens = 16384\nmax_output_tokens = 4096\n",
         ),
     ]);
-    let specs = ["ollama-local", "codex-private"]
+    let specs = ["ollama-local", "chatgpt-private"]
         .into_iter()
         .map(|id| adapter_spec(id, capabilities(&config, id), chat_outcome("unused")))
         .collect();
@@ -235,7 +237,7 @@ async fn models_report_kanata_capabilities_per_alias() {
             .expect("response"),
     )
     .await;
-    assert_eq!(ids(&value), ["codex-chat", "local-chat"]);
+    assert_eq!(ids(&value), ["chatgpt-chat", "local-chat"]);
     assert_eq!(
         entry(&value, "local-chat")["kanata"],
         serde_json::json!({
@@ -252,7 +254,7 @@ async fn models_report_kanata_capabilities_per_alias() {
         })
     );
     assert_eq!(
-        entry(&value, "codex-chat")["kanata"],
+        entry(&value, "chatgpt-chat")["kanata"],
         serde_json::json!({
             "operations": ["chat"], "structured_output": false, "sampling_controls": false,
             "reasoning_control": true, "function_tools": true, "streaming": true,

@@ -27,16 +27,11 @@ where
     for warning in config.key_warnings(crate::keys::time::now()) {
         tracing::warn!(target: "kanata::keys", "{warning}");
     }
-    let resolver = EnvironmentSecretResolver;
-    let adapters = build_adapters(&config, &resolver)
+    let adapters = build_adapters(&config, &EnvironmentSecretResolver)
         .map_err(|_| "server initialization failed".to_owned())?;
-    let server = TwoPlaneServer::from_validated_with_adapters(
-        &config,
-        &resolver,
-        Readiness::new(true),
-        adapters,
-    )
-    .map_err(|_| "server initialization failed".to_owned())?;
+    let server =
+        TwoPlaneServer::from_validated_with_adapters(&config, Readiness::new(true), adapters)
+            .map_err(|_| "server initialization failed".to_owned())?;
     let reloader = reload::Reloader::new(
         config_path,
         full_config,

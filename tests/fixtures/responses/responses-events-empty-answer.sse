@@ -1,4 +1,4 @@
-data: {"type":"response.created","sequence_number":0,"response":{"id":"TEST_ONLY_RESPONSE_ID_NOT_SECRET_0004","created_at":1700000004,"model":"fixture-codex-model"}}
+data: {"type":"response.created","sequence_number":0,"response":{"id":"TEST_ONLY_RESPONSE_ID_NOT_SECRET_0004","created_at":1700000004,"model":"fixture-responses-model"}}
 
 data: {"type":"response.output_item.added","output_index":0,"sequence_number":1,"item":{"type":"message","id":"TEST_ONLY_TEXT_ITEM_ID_NOT_SECRET_0004","role":"assistant","content":[],"status":"in_progress","phase":"final_answer"}}
 
@@ -10,7 +10,7 @@ data: {"type":"response.content_part.done","item_id":"TEST_ONLY_TEXT_ITEM_ID_NOT
 
 data: {"type":"response.output_item.done","output_index":0,"sequence_number":5,"item":{"type":"message","id":"TEST_ONLY_TEXT_ITEM_ID_NOT_SECRET_0004","role":"assistant","content":[{"type":"output_text","text":"","annotations":[],"logprobs":[]}],"status":"completed","phase":"final_answer"}}
 
-data: {"type":"response.completed","sequence_number":6,"response":{"id":"TEST_ONLY_RESPONSE_ID_NOT_SECRET_0004","created_at":1700000004,"model":"fixture-codex-model","output":[{"type":"message","id":"TEST_ONLY_TEXT_ITEM_ID_NOT_SECRET_0004","role":"assistant","content":[{"type":"output_text","text":"","annotations":[],"logprobs":[]}],"status":"completed","phase":"final_answer"}],"usage":{"input_tokens":5,"output_tokens":0,"total_tokens":5}}}
+data: {"type":"response.completed","sequence_number":6,"response":{"id":"TEST_ONLY_RESPONSE_ID_NOT_SECRET_0004","created_at":1700000004,"model":"fixture-responses-model","output":[{"type":"message","id":"TEST_ONLY_TEXT_ITEM_ID_NOT_SECRET_0004","role":"assistant","content":[{"type":"output_text","text":"","annotations":[],"logprobs":[]}],"status":"completed","phase":"final_answer"}],"usage":{"input_tokens":5,"output_tokens":0,"total_tokens":5}}}
 
 data: [DONE]
 

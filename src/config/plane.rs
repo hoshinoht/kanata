@@ -47,10 +47,9 @@ impl ValidatedConfig {
                 config
                     .adapters
                     .retain(|adapter| adapter_ids.contains(&adapter.id));
-                config.codex_auth = None;
                 config.chatgpt_auth = None;
-                config.application_keys = config
-                    .application_keys
+                config.keys = config
+                    .keys
                     .into_iter()
                     // Keys that can reach private-only providers never enter the public process.
                     .filter(|key| {

@@ -82,13 +82,8 @@ fn server() -> TwoPlaneServer {
     let adapter = Arc::new(ReasoningAdapter {
         capabilities: gateway::capabilities(&config, "vllm-private"),
     });
-    TwoPlaneServer::from_validated_with_adapters(
-        &config,
-        &gateway::Resolver,
-        Readiness::new(true),
-        vec![adapter],
-    )
-    .expect("server")
+    TwoPlaneServer::from_validated_with_adapters(&config, Readiness::new(true), vec![adapter])
+        .expect("server")
 }
 
 fn body(stream: bool) -> String {

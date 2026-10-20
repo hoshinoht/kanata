@@ -1,7 +1,5 @@
 #[path = "support/scratch.rs"]
 mod scratch;
-#[path = "support/template.rs"]
-mod template;
 
 use std::fs;
 
@@ -23,16 +21,16 @@ fn registry_retains_exact_route_and_adapter_identity() {
     let registry = Registry::from_validated(&config);
     let route = registry
         .resolve(&RouteSelector {
-            model_alias: ModelAlias("codex-chat".into()),
+            model_alias: ModelAlias("chatgpt-chat".into()),
             operation: Operation::Chat,
         })
         .expect("exact route");
-    assert_eq!(route.identity.route_id, "codex-chat");
-    assert_eq!(route.identity.upstream_id, "gpt-5-codex");
-    assert_eq!(route.adapter_id, "codex-private");
+    assert_eq!(route.identity.route_id, "chatgpt-chat");
+    assert_eq!(route.identity.upstream_id, "gpt-5");
+    assert_eq!(route.adapter_id, "chatgpt-private");
     assert_eq!(registry.routes().count(), 5);
     assert_eq!(config.listeners().client().port(), 8080);
-    assert_eq!(config.application_keys()[0].permissions().len(), 5);
+    assert_eq!(config.keys()[0].permissions().len(), 5);
     assert_eq!(config.limits().max_queue(), 32);
     assert_eq!(config.timeouts().overall_ms(), 60_000);
 }
@@ -41,7 +39,7 @@ fn registry_retains_exact_route_and_adapter_identity() {
 fn aliases_do_not_wildcard_or_suffix_match() {
     let config = check(example()).expect("example validates");
     let registry = Registry::from_validated(&config);
-    for alias in ["codex-chat-extra", "chat", "codex-*"] {
+    for alias in ["chatgpt-chat-extra", "chat", "chatgpt-*"] {
         assert!(
             registry
                 .resolve(&RouteSelector {
@@ -54,9 +52,8 @@ fn aliases_do_not_wildcard_or_suffix_match() {
 }
 
 #[test]
-fn codex_effort_alias_routes_only_by_its_exact_selector_and_upstream_id() {
-    let template = template::Template::new("personal.example.toml");
-    let config = config::load(&template.0).expect("personal config validates");
+fn chatgpt_effort_alias_routes_only_by_its_exact_selector_and_upstream_id() {
+    let config = check(scratch::personal_with_chatgpt()).expect("personal config validates");
     let registry = Registry::from_validated(&config);
     let low = registry
         .resolve(&RouteSelector {
@@ -65,7 +62,7 @@ fn codex_effort_alias_routes_only_by_its_exact_selector_and_upstream_id() {
         })
         .expect("configured effort alias");
 
-    assert_eq!(low.identity.route_id, "codex-gpt-6-luna-low");
+    assert_eq!(low.identity.route_id, "chatgpt-gpt-6-luna-low");
     assert_eq!(low.identity.upstream_id, "gpt-6-luna");
     for alias in ["gpt-6-luna", "gpt-6-luna:medium"] {
         assert!(
@@ -122,14 +119,16 @@ fn invalid_routes_never_build_a_registry() {
 }
 
 #[test]
-fn rejects_codex_transcription_and_wildcard_aliases() {
-    let codex = check(example().replace(
-        "id = \"codex-private\"\nkind = \"codex\"\nbase_url = \"https://chatgpt.invalid/backend-api/codex\"\ntrust_zone = \"external\"\n[adapters.capabilities]\noperations = [\"chat\"]",
-        "id = \"codex-private\"\nkind = \"codex\"\nbase_url = \"https://chatgpt.invalid/backend-api/codex\"\ntrust_zone = \"external\"\n[adapters.capabilities]\noperations = [\"chat\", \"transcription\"]",
-    ));
+fn rejects_chatgpt_transcription_and_wildcard_aliases() {
+    let chatgpt = "kind = \"chatgpt\"\nbase_url = \"https://api.openai.com/v1\"\ntrust_zone = \"external\"\n[adapters.capabilities]\noperations = [\"chat\"]";
+    let transcription = example().replace(
+        chatgpt,
+        &chatgpt.replace("[\"chat\"]", "[\"chat\", \"transcription\"]"),
+    );
+    assert_ne!(transcription, example());
     assert_eq!(
-        codex.unwrap_err(),
-        "config error at adapters[3].capabilities.operations: codex_chat_only"
+        check(transcription).unwrap_err(),
+        "config error at adapters[3].capabilities: chatgpt_text_chat_only"
     );
     let wildcard =
         check(example().replace("model_alias = \"local-chat\"", "model_alias = \"local-*\""));
@@ -190,10 +189,8 @@ fn audio_route_permissions_are_explicit_and_intersect_adapter_capabilities() {
 
 #[test]
 fn multiple_vllm_transcription_modes_keep_exact_adapter_and_route_identity() {
-    let mut contents = example().replace(
-        "  { model_alias = \"codex-chat\", operation = \"chat\" },\n]",
-        "  { model_alias = \"codex-chat\", operation = \"chat\" },\n  { model_alias = \"private-audio-chat\", operation = \"chat\" },\n  { model_alias = \"private-audio-transcribe\", operation = \"transcription\" },\n]",
-    );
+    // The fixture key need not grant the new aliases for the routes to validate.
+    let mut contents = example();
     contents.push_str(
         r#"
 

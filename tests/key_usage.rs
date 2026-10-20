@@ -335,7 +335,6 @@ async fn tokens_are_recorded_for_complete_and_streamed_replies_with_missing_usag
     let config = scratch.load();
     let server = kanata::server::TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &support::Resolver,
         kanata::server::Readiness::new(true),
         vec![Arc::new(Metered {
             caps: support::capabilities(&config, "ollama-local"),
@@ -536,7 +535,6 @@ async fn cancellation_keeps_token_reservation_and_storage_failure_rejects_dispat
     let server = Arc::new(
         TwoPlaneServer::from_validated_with_adapters(
             &config,
-            &support::Resolver,
             kanata::server::Readiness::new(true),
             vec![Arc::new(Pending {
                 caps: support::capabilities(&config, "ollama-local"),
@@ -714,7 +712,7 @@ fn quota_requires_durable_usage_directory_at_startup_and_reload() {
             .unwrap();
     assert!(
         config
-            .with_application_keys(&keys)
+            .with_keys(&keys)
             .unwrap_err()
             .to_string()
             .contains("required_for_daily_quota")

@@ -8,14 +8,13 @@ use crate::core::{
 };
 
 pub mod anthropic;
-mod auth_files;
 mod chat_completions;
 pub mod chatgpt;
-pub mod codex;
 pub(crate) mod diagnostics;
 pub mod ollama;
 pub mod openrouter;
 pub(crate) mod probe;
+mod responses;
 pub mod speech;
 pub mod vllm;
 

@@ -63,17 +63,6 @@ impl UpstreamLabel {
         );
     }
 
-    /// `reason` must be a secret-free category, such as a unit error variant.
-    pub(crate) fn credential(&self, reason: impl std::fmt::Debug) {
-        tracing::warn!(
-            target: TARGET,
-            adapter = %self.adapter,
-            provider = self.provider,
-            reason = ?reason,
-            "upstream credential unavailable",
-        );
-    }
-
     /// Logs a failure found while parsing an otherwise successful response stream.
     pub(crate) fn stream(&self, event: &str, error: &ProviderError) {
         self.log(None, Some(event), error, "upstream stream failed");
@@ -105,32 +94,6 @@ impl UpstreamLabel {
                 "upstream error message",
             );
         }
-    }
-}
-
-/// `body` must be an error response; success bodies carry tokens.
-pub(crate) fn token_refresh_failed(
-    provider: &'static str,
-    category: &'static str,
-    status: Option<u16>,
-    body: Option<&[u8]>,
-) {
-    let error = body
-        .map(|body| &body[..body.len().min(MAX_ERROR_BODY_BYTES)])
-        .and_then(|body| serde_json::from_slice::<Value>(body).ok())
-        .map(|value| ProviderError::from_json(&value))
-        .unwrap_or_default();
-    tracing::warn!(
-        target: TARGET,
-        provider,
-        category,
-        status,
-        code = error.code.as_deref().unwrap_or(UNSET),
-        error_type = error.error_type.as_deref().unwrap_or(UNSET),
-        "upstream token refresh failed",
-    );
-    if let Some(message) = error.message.as_deref() {
-        tracing::debug!(target: TARGET, provider, message, "upstream token refresh error message");
     }
 }
 

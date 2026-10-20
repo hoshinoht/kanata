@@ -20,8 +20,7 @@ use axum::{
 use futures_core::Stream;
 use kanata::{
     adapter::{Adapter, AdapterFuture, AdapterOutput},
-    auth::{SecretResolutionError, SecretResolver},
-    config::{SecretReference, ValidatedConfig},
+    config::ValidatedConfig,
     core::{
         Capabilities, ChatContent, ChatMessage, ChatResponse, ChatRole, FinishReason, GatewayError,
         ModelAlias, NormalizedEvent, Response as CoreResponse, RoutedRequest,
@@ -31,26 +30,19 @@ use kanata::{
 use serde_json::{Value, json};
 use tokio::sync::{Notify, Semaphore, mpsc};
 
-pub struct Resolver;
-
-impl SecretResolver for Resolver {
-    fn resolve(&self, _: &SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
-        Ok(b"test-key".to_vec())
-    }
-}
-
 pub fn config(max_queue: u64, max_in_flight: u64, queue_ms: u64) -> ValidatedConfig {
     config_with(max_queue, max_in_flight, queue_ms, &[])
 }
 
-/// Like `config`, with extra `(find, replace)` edits applied to the fixture first.
+/// Like `config`, with extra `(find, replace)` edits applied first to the fixture text,
+/// keys file records included ([`scratch::example_with_keys_text`]).
 pub fn config_with(
     max_queue: u64,
     max_in_flight: u64,
     queue_ms: u64,
     edits: &[(&str, &str)],
 ) -> ValidatedConfig {
-    let mut contents = include_str!("../../tests/fixtures/config/example.toml").to_owned();
+    let mut contents = scratch::example_with_keys_text();
     for (find, replace) in edits {
         assert!(contents.contains(find), "fixture contains {find:?}");
         contents = contents.replacen(find, replace, 1);
@@ -76,13 +68,8 @@ pub fn capabilities(config: &ValidatedConfig, id: &str) -> Capabilities {
 
 pub fn server(config: &ValidatedConfig, adapters: Vec<Arc<dyn Adapter>>) -> Arc<TwoPlaneServer> {
     Arc::new(
-        TwoPlaneServer::from_validated_with_adapters(
-            config,
-            &Resolver,
-            Readiness::new(true),
-            adapters,
-        )
-        .expect("reliability server"),
+        TwoPlaneServer::from_validated_with_adapters(config, Readiness::new(true), adapters)
+            .expect("reliability server"),
     )
 }
 

@@ -7,8 +7,8 @@ mod tests;
 
 use super::{
     Adapter, AdapterFuture, AdapterOutput,
-    codex::stream,
     diagnostics::UpstreamLabel,
+    responses::{self, stream},
     transport::{
         Accept, COMPLETE_RESPONSE_BYTES, CredentialHeader, Endpoint, ResponseContentType,
         STREAM_RESPONSE_BYTES, Transport, TransportRequest,
@@ -95,7 +95,7 @@ impl Adapter for ChatgptAdapter {
             let model = chat.model.clone();
             let streaming = chat.stream;
             let encrypted_reasoning =
-                super::codex::protocol::requests_encrypted_reasoning(chat, ProviderKind::Chatgpt);
+                responses::requests_encrypted_reasoning(chat, ProviderKind::Chatgpt);
             let deadline = tokio::time::Instant::now() + timeout;
             tokio::time::timeout(timeout, async {
                 let token = auth.access_token().await.map_err(|_| unavailable())?;
@@ -169,21 +169,21 @@ async fn execute_with_token(
         return Err(failure());
     }
     if streaming {
-        Ok(AdapterOutput::Events(stream::event_stream_with_parser(
+        Ok(AdapterOutput::Events(stream::event_stream(
             response.body,
             model,
             deadline,
             label,
-            Some(NAMESPACE),
+            NAMESPACE,
             encrypted_reasoning,
         )))
     } else {
-        let response = stream::collect_response_with_parser(
+        let response = stream::collect_response(
             response.body,
             model,
             deadline,
             &label,
-            Some(NAMESPACE),
+            NAMESPACE,
             encrypted_reasoning,
         )
         .await?;

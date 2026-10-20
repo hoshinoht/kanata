@@ -12,7 +12,7 @@ pub(super) struct Reloader<B> {
     config: ValidatedConfig,
     plane: Plane,
     handle: ConfigurationHandle,
-    keys: Option<KeyReloader>,
+    keys: KeyReloader,
     build: B,
 }
 
@@ -52,7 +52,7 @@ where
         let adapters = (self.build)(&narrowed, &EnvironmentSecretResolver)
             .map_err(|_| "configuration reload: adapter initialization failed")?;
         self.handle
-            .apply(&narrowed, &EnvironmentSecretResolver, adapters)
+            .apply(&narrowed, adapters)
             .map_err(|error| format!("configuration reload: {error}"))?;
         self.keys = KeyReloader::new(full.clone(), self.plane, self.handle.keys());
         self.config = full;
@@ -81,7 +81,9 @@ where
                         Err(error) => tracing::warn!(target: "kanata::lifecycle", "configuration rejected; previous generation stays active: {error}"),
                     }
                     self.handle.record(result);
-                } else if let Some(keys) = self.keys.as_mut() { keys.poll_once(); }
+                } else {
+                    self.keys.poll_once();
+                }
                 self
             }).await {
                 Ok(reloader) => reloader,

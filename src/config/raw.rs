@@ -6,8 +6,6 @@ pub(super) struct RawConfig {
     pub(super) listeners: RawListeners,
     pub(super) publication: RawPublication,
     #[serde(default)]
-    pub(super) codex_auth: Option<RawCodexAuth>,
-    #[serde(default)]
     pub(super) chatgpt_auth: Option<RawChatgptAuth>,
     #[serde(default)]
     pub(super) adapters: Vec<RawAdapter>,
@@ -19,8 +17,6 @@ pub(super) struct RawConfig {
     pub(super) route_profiles: std::collections::BTreeMap<String, RawModel>,
     #[serde(default, skip_serializing_if = "RawModels::is_empty")]
     pub(super) models: RawModels,
-    #[serde(default)]
-    pub(super) application_keys: Vec<RawApplicationKey>,
     #[serde(default)]
     pub(super) keys: Option<RawKeys>,
     pub(super) limits: RawLimits,
@@ -60,15 +56,6 @@ pub(super) struct RawPublication {
     pub(super) tailnet_addresses: Vec<String>,
     #[serde(default)]
     pub(super) public_routes: Vec<RawPermission>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct RawCodexAuth {
-    #[serde(default)]
-    pub(super) store: Option<CodexAuthStore>,
-    #[serde(default)]
-    pub(super) state_dir: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -156,10 +143,6 @@ pub(super) struct RawRoute {
     #[serde(default)]
     pub(super) reasoning_summary: Option<ReasoningSummary>,
     #[serde(default)]
-    pub(super) codex_reasoning_effort: Option<CodexReasoningEffort>,
-    #[serde(default)]
-    pub(super) codex_reasoning_summary: Option<CodexReasoningSummary>,
-    #[serde(default)]
     pub(super) extension_allowlist: Vec<String>,
     pub(super) requires_streaming_chat: bool,
     pub(super) requires_function_tools: bool,
@@ -181,20 +164,6 @@ pub(super) struct RawRoute {
     pub(super) max_output_tokens: Option<u32>,
     #[serde(default)]
     pub(super) enable_thinking: Option<bool>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct RawApplicationKey {
-    pub(super) id: String,
-    pub(super) secret_ref: String,
-    #[serde(default)]
-    pub(super) owner: bool,
-    pub(super) permissions: Vec<RawPermission>,
-    #[serde(default)]
-    pub(super) max_in_flight: Option<u64>,
-    #[serde(default)]
-    pub(super) rate_limit: Option<RawRateLimit>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -329,10 +298,6 @@ pub(super) struct RawModel {
     pub(super) reasoning_effort: Option<ReasoningEffort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) reasoning_summary: Option<ReasoningSummary>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) codex_reasoning_effort: Option<CodexReasoningEffort>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) codex_reasoning_summary: Option<CodexReasoningSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) extension_allowlist: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

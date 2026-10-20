@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-use key_fixtures::{EXAMPLE_INLINE_KEY, set_mode};
+use key_fixtures::set_mode;
 use scratch::ScratchDir;
 
 fn example() -> String {
@@ -18,15 +18,14 @@ fn personal_example() -> String {
     fs::read_to_string("config/personal.example.toml").expect("personal example exists")
 }
 
-/// A unique directory holding `config.toml` and optionally `keys/keys.toml`, so
-/// relative `[keys]` paths never resolve to shared or live files.
+/// A unique directory holding `config.toml` (beside a copy of the schema fixture's
+/// `example-keys.toml`) and optionally `keys/keys.toml`, so relative `[keys]` paths never
+/// resolve to shared or live files.
 struct Scratch(ScratchDir);
 
 impl Scratch {
     fn new(config: &str) -> Self {
-        let dir = ScratchDir::new("config");
-        fs::write(dir.join("config.toml"), config).expect("config writes");
-        Self(dir)
+        Self(scratch::config_dir("config", config))
     }
 
     fn with_keys(config: &str, keys: &str) -> Self {
@@ -83,7 +82,7 @@ fn assert_only_missing_keys_warning(output: &Output) {
     assert!(stderr.contains(MISSING_KEYS_WARNING), "{stderr}");
 }
 
-/// The schema fixture with its inline key replaced by `[keys]`.
+/// The schema fixture with its keys file moved to `keys/keys.toml`.
 fn keyed_example() -> String {
     key_fixtures::keyed_example(
         "[keys]\nfile = \"keys/keys.toml\"\nusage_dir = \"state\"\n",
@@ -118,11 +117,8 @@ fn example_passes_offline_cli_check_without_resolving_secrets() {
         String::from_utf8(output.stdout).expect("utf8"),
         "configuration valid\n"
     );
-    // Inline keys still load; the only diagnostic is the deprecation notice.
-    assert_eq!(
-        String::from_utf8(output.stderr).expect("utf8"),
-        "warning: inline [[application_keys]] are deprecated; move them to a keys file with `kanata key migrate`\n"
-    );
+    // The keys file exists and nothing expires soon, so there is no diagnostic.
+    assert_eq!(String::from_utf8(output.stderr).expect("utf8"), "");
 }
 
 #[test]
@@ -130,7 +126,7 @@ fn personal_template_keeps_multiple_vllm_endpoints_constructible_offline() {
     let scratch = Scratch::new(&personal_example());
     assert_only_missing_keys_warning(&scratch.run_check());
     let config = scratch.load().expect("template validates");
-    assert!(config.application_keys().is_empty());
+    assert!(config.keys().is_empty());
     for adapter in config
         .adapters()
         .iter()
@@ -161,15 +157,12 @@ fn personal_template_keeps_multiple_vllm_endpoints_constructible_offline() {
             .iter()
             .any(|route| { route.adapter_id() == audio_chat.id() && route.allows_input_audio() })
     );
-    assert_eq!(
-        config.codex_auth().expect("Codex auth config").store(),
-        kanata::config::CodexAuthStore::Keyring
-    );
+    assert!(config.chatgpt_auth().is_none());
 }
 
 #[test]
-fn codex_scopes_allow_any_key_with_one_active_owner() {
-    let personal = personal_example();
+fn chatgpt_scopes_allow_any_key_with_one_active_owner() {
+    let example = keyed_example();
     let owner = record(
         "renamed-owner",
         1,
@@ -180,19 +173,19 @@ fn codex_scopes_allow_any_key_with_one_active_owner() {
             "external-client",
             2,
             &format!(
-                "{owner_flag}{revoked}permissions = [{{ model_alias = \"gpt-6-luna:low\", operation = \"chat\" }}]"
+                "{owner_flag}{revoked}permissions = [{{ model_alias = \"chatgpt-chat\", operation = \"chat\" }}]"
             ),
         )
     };
-    let config = Scratch::with_keys(&personal, &keys_file(&[owner.clone(), external("", "")]))
+    let config = Scratch::with_keys(&example, &keys_file(&[owner.clone(), external("", "")]))
         .load()
-        .expect("non-owner keys may hold Codex scopes");
-    assert!(config.application_keys()[0].is_owner());
-    assert!(!config.application_keys()[1].is_owner());
+        .expect("non-owner keys may hold ChatGPT scopes");
+    assert!(config.keys()[0].is_owner());
+    assert!(!config.keys()[1].is_owner());
 
     let duplicate_owners = keys_file(&[owner.clone(), external("owner = true\n", "")]);
     assert_eq!(
-        Scratch::with_keys(&personal, &duplicate_owners)
+        Scratch::with_keys(&example, &duplicate_owners)
             .load()
             .unwrap_err(),
         "config error at keys_file.keys[1].owner: multiple_owners"
@@ -201,23 +194,18 @@ fn codex_scopes_allow_any_key_with_one_active_owner() {
         owner,
         external("owner = true\n", "revoked_at = \"2026-02-01T00:00:00Z\"\n"),
     ]);
-    Scratch::with_keys(&personal, &revoked_owner)
+    Scratch::with_keys(&example, &revoked_owner)
         .load()
         .expect("a revoked owner does not count toward the single owner");
 }
 
 #[test]
-fn container_template_uses_explicit_file_store_without_runtime_io() {
+fn container_template_checks_offline_without_runtime_io() {
     let scratch = Scratch::new(&template("container.example.toml"));
     assert_only_missing_keys_warning(&scratch.run_check());
 
     let config = scratch.load().expect("template validates");
-    let auth = config.codex_auth().expect("Codex auth config");
-    assert_eq!(auth.store(), kanata::config::CodexAuthStore::File);
-    assert_eq!(
-        auth.state_dir(),
-        std::path::Path::new("/var/lib/kanata/codex")
-    );
+    assert!(config.chatgpt_auth().is_none());
     assert!(config.adapters()[0].secret_ref().is_none());
 }
 
@@ -238,14 +226,13 @@ fn validated_config_retains_later_composition_state() {
         Some("KANATA_OPENROUTER_TOKEN")
     );
     assert!(config.adapters()[3].secret_ref().is_none());
-    let codex_auth = config.codex_auth().expect("Codex auth config");
-    assert_eq!(codex_auth.store(), kanata::config::CodexAuthStore::Keyring);
+    let chatgpt_auth = config.chatgpt_auth().expect("ChatGPT auth config");
     assert_eq!(
-        codex_auth.state_dir().to_str(),
-        Some("/replace/with/owner-writable/absolute/path/kanata-codex")
+        chatgpt_auth.state_dir().to_str(),
+        Some("/replace/with/owner-writable/absolute/path/kanata-chatgpt")
     );
     assert_eq!(
-        config.application_keys()[0].permissions()[2].operation,
+        config.keys()[0].permissions()[2].operation,
         kanata::core::Operation::Transcription
     );
     assert_eq!(config.limits().max_in_flight(), 8);
@@ -267,91 +254,67 @@ fn validated_config_retains_later_composition_state() {
     assert_eq!(config.timeouts().overall_ms(), 60_000);
 }
 
+const CHATGPT_AUTH: &str =
+    "[chatgpt_auth]\nstate_dir = \"/replace/with/owner-writable/absolute/path/kanata-chatgpt\"\n\n";
+
 #[test]
-fn codex_auth_is_required_only_for_codex_and_defaults_to_keyring() {
-    let without_store = check(example().replace("store = \"keyring\"\n", ""))
-        .expect("keyring is the default store");
+fn chatgpt_auth_is_required_only_for_chatgpt() {
+    let missing = check(example().replace(CHATGPT_AUTH, ""));
     assert_eq!(
-        without_store
-            .codex_auth()
-            .expect("Codex auth config")
-            .store(),
-        kanata::config::CodexAuthStore::Keyring
+        missing.unwrap_err(),
+        "config error at chatgpt_auth: required"
     );
 
-    let missing = check(example().replace(
-        "[codex_auth]\nstore = \"keyring\"\nstate_dir = \"/replace/with/owner-writable/absolute/path/kanata-codex\"\n\n",
-        "",
-    ));
-    assert_eq!(missing.unwrap_err(), "config error at codex_auth: required");
-
     let orphan = example().replace(
-        "kind = \"codex\"\nbase_url = \"https://chatgpt.invalid/backend-api/codex\"\ntrust_zone = \"external\"",
+        "kind = \"chatgpt\"\nbase_url = \"https://api.openai.com/v1\"\ntrust_zone = \"external\"",
         "kind = \"vllm\"\nbase_url = \"http://vllm.invalid:8000\"\ntrust_zone = \"private_network\"",
     );
     assert_eq!(
         check(orphan.clone()).unwrap_err(),
-        "config error at codex_auth: without_codex_adapter"
+        "config error at chatgpt_auth: without_chatgpt_adapter"
     );
-    let no_codex_section = orphan.replace(
-        "[codex_auth]\nstore = \"keyring\"\nstate_dir = \"/replace/with/owner-writable/absolute/path/kanata-codex\"\n\n",
-        "",
-    );
-    assert!(check(no_codex_section).is_ok());
+    let no_chatgpt_section = orphan.replace(CHATGPT_AUTH, "");
+    assert_ne!(no_chatgpt_section, orphan);
+    assert!(check(no_chatgpt_section).is_ok());
 }
 
 #[test]
-fn codex_auth_state_dir_and_store_errors_are_field_oriented() {
-    let missing = check(example().replace(
-        "state_dir = \"/replace/with/owner-writable/absolute/path/kanata-codex\"\n",
-        "",
-    ));
+fn chatgpt_auth_state_dir_errors_are_field_oriented() {
+    let state_dir = "state_dir = \"/replace/with/owner-writable/absolute/path/kanata-chatgpt\"";
+    let missing = check(example().replace(&format!("{state_dir}\n"), ""));
     assert_eq!(
         missing.unwrap_err(),
-        "config error at codex_auth.state_dir: required"
+        "config error at chatgpt_auth: schema_error"
     );
 
-    let invalid_store = check(example().replace("store = \"keyring\"", "store = \"STORE_MARKER\""));
-    let error = invalid_store.unwrap_err();
-    assert_eq!(error, "config error at codex_auth.store: schema_error");
-    assert!(!error.contains("STORE_MARKER"));
-
-    for (value, class) in [
-        ("", "empty"),
-        ("relative/codex", "absolute_path_required"),
-        ("/var/lib/kanata/../outside", "parent_traversal_forbidden"),
-        ("/", "root_not_allowed"),
-    ] {
-        let contents = example().replace(
-            "state_dir = \"/replace/with/owner-writable/absolute/path/kanata-codex\"",
-            &format!("state_dir = \"{value}\""),
-        );
+    for value in ["", "relative/chatgpt", "/var/lib/kanata/../outside", "/"] {
+        let contents = example().replace(state_dir, &format!("state_dir = \"{value}\""));
         assert_eq!(
             check(contents).unwrap_err(),
-            format!("config error at codex_auth.state_dir: {class}")
+            "config error at chatgpt_auth.state_dir: invalid_absolute_path"
         );
     }
 }
 
 #[test]
-fn legacy_codex_secret_references_are_rejected_without_echoing_values() {
-    let adapter = "base_url = \"https://chatgpt.invalid/backend-api/codex\"\ntrust_zone = \"external\"\n[adapters.capabilities]";
+fn chatgpt_secret_references_are_rejected_without_echoing_values() {
+    let adapter = "base_url = \"https://api.openai.com/v1\"\ntrust_zone = \"external\"\n[adapters.capabilities]";
     for reference in [
-        "env:CODEX_TOKEN_MARKER",
-        "file:/run/secrets/CODEX_TOKEN_MARKER",
+        "env:CHATGPT_TOKEN_MARKER",
+        "file:/run/secrets/CHATGPT_TOKEN_MARKER",
     ] {
         let contents = example().replace(
             adapter,
             &format!(
-                "base_url = \"https://chatgpt.invalid/backend-api/codex\"\ntrust_zone = \"external\"\nsecret_ref = \"{reference}\"\n[adapters.capabilities]"
+                "base_url = \"https://api.openai.com/v1\"\ntrust_zone = \"external\"\nsecret_ref = \"{reference}\"\n[adapters.capabilities]"
             ),
         );
         let error = check(contents).unwrap_err();
         assert_eq!(
             error,
-            "config error at adapters[3].secret_ref: codex_secret_ref_unsupported"
+            "config error at adapters[3].secret_ref: chatgpt_secret_ref_unsupported"
         );
-        assert!(!error.contains("CODEX_TOKEN_MARKER"));
+        assert!(!error.contains("CHATGPT_TOKEN_MARKER"));
     }
 }
 
@@ -533,31 +496,40 @@ fn audio_capability_flags_require_their_text_and_audio_prerequisites() {
 
 #[test]
 fn chat_option_capabilities_are_limited_to_what_each_adapter_kind_encodes() {
-    let codex_anchor = "function_tools = true\n\n[[routes]]";
-    let codex = check(example().replacen(
-        codex_anchor,
+    let chatgpt_anchor = "function_tools = true\n\n[[routes]]";
+    let chatgpt = check(example().replacen(
+        chatgpt_anchor,
         "function_tools = true\nstructured_output = true\n\n[[routes]]",
         1,
     ));
     assert_eq!(
-        codex.unwrap_err(),
+        chatgpt.unwrap_err(),
         "config error at adapters[3].capabilities.structured_output: unsupported_by_adapter_kind"
     );
-    let codex_sampling = check(example().replacen(
-        codex_anchor,
+    let chatgpt_sampling = check(example().replacen(
+        chatgpt_anchor,
         "function_tools = true\nsampling_controls = true\n\n[[routes]]",
         1,
     ));
     assert_eq!(
-        codex_sampling.unwrap_err(),
+        chatgpt_sampling.unwrap_err(),
         "config error at adapters[3].capabilities.sampling_controls: unsupported_by_adapter_kind"
     );
-    check(example().replacen(
-        codex_anchor,
+    // Reasoning control makes every ChatGPT route pin its effort.
+    let chatgpt_reasoning = example().replacen(
+        chatgpt_anchor,
         "function_tools = true\nreasoning_control = true\n\n[[routes]]",
         1,
+    );
+    assert_eq!(
+        check(chatgpt_reasoning.clone()).unwrap_err(),
+        "config error at routes[4].reasoning_effort: required"
+    );
+    check(chatgpt_reasoning.replace(
+        "upstream_id = \"gpt-5\"\n",
+        "upstream_id = \"gpt-5\"\nreasoning_effort = \"medium\"\n",
     ))
-    .expect("codex may declare reasoning control");
+    .expect("chatgpt may declare reasoning control");
 
     let vllm_reasoning = example().replace(
         "function_tools = true\n\n[[adapters]]\nid = \"openrouter-remote\"",
@@ -611,11 +583,12 @@ fn rejects_invalid_publication_and_secret_references_without_echoing_them() {
         duplicate.unwrap_err(),
         "config error at publication.tailnet_addresses[1]: duplicate"
     );
-    let secret = check(example().replace("env:KANATA_CLIENT_KEY", "plaintext-should-not-appear"));
+    let secret =
+        check(example().replace("env:KANATA_OPENROUTER_TOKEN", "plaintext-should-not-appear"));
     let error = secret.unwrap_err();
     assert_eq!(
         error,
-        "config error at application_keys[0].secret_ref: invalid_secret_reference"
+        "config error at adapters[2].secret_ref: invalid_secret_reference"
     );
     assert!(!error.contains("plaintext-should-not-appear"));
 }
@@ -669,13 +642,18 @@ fn rejects_urls_permissions_and_bounds_that_change_the_security_contract() {
         "config error at adapters[2].base_url: query_forbidden"
     );
     assert!(!error.contains("QUERY_MARKER"));
-    let permission = check(example().replace(
-        "{ model_alias = \"local-chat\", operation = \"chat\" }",
-        "{ model_alias = \"missing\", operation = \"chat\" }",
-    ));
+    let permission = Scratch::with_keys(
+        &keyed_example(),
+        &keys_file(&[record(
+            "personal-client",
+            1,
+            "owner = true\npermissions = [{ model_alias = \"missing\", operation = \"chat\" }]",
+        )]),
+    )
+    .load();
     assert_eq!(
         permission.unwrap_err(),
-        "config error at application_keys[0].permissions[0]: unknown_route_selector"
+        "config error at keys_file.keys[0].permissions[0]: unknown_route_selector"
     );
     let bounds = check(example().replace("max_queue = 32", "max_queue = 0"));
     assert_eq!(
@@ -792,7 +770,7 @@ fn public_routes_default_empty_and_tailnet_publication_remains_mandatory() {
 }
 
 #[test]
-fn public_route_allowlist_requires_exact_capable_non_codex_routes_and_listener() {
+fn public_route_allowlist_requires_exact_capable_non_chatgpt_routes_and_listener() {
     let routes = r#"[
   { model_alias = "private-chat", operation = "chat" },
   { model_alias = "private-transcribe", operation = "transcription" },
@@ -855,13 +833,13 @@ fn public_route_allowlist_requires_exact_capable_non_codex_routes_and_listener()
         "config error at publication.public_routes[1]: duplicate"
     );
 
-    let codex = with_public_listener(
+    let chatgpt = with_public_listener(
         example(),
-        r#"[{ model_alias = "codex-chat", operation = "chat" }]"#,
+        r#"[{ model_alias = "chatgpt-chat", operation = "chat" }]"#,
     );
     assert_eq!(
-        check(codex).unwrap_err(),
-        "config error at publication.public_routes[0]: codex_not_public"
+        check(chatgpt).unwrap_err(),
+        "config error at publication.public_routes[0]: chatgpt_not_public"
     );
 
     let unsupported_selector = with_public_listener(
@@ -1010,11 +988,8 @@ fn public_container_template_is_offline_only_and_keeps_private_tailnet_input() {
     );
     assert_eq!(config.publication().tailnet_addresses().len(), 1);
     assert!(config.publication().public_routes().is_empty());
-    assert_eq!(
-        config.codex_auth().expect("Codex auth").store(),
-        kanata::config::CodexAuthStore::File
-    );
-    assert!(config.application_keys().is_empty());
+    assert!(config.chatgpt_auth().is_none());
+    assert!(config.keys().is_empty());
 }
 
 #[test]
@@ -1043,57 +1018,47 @@ fn rejects_provider_zone_mismatches_and_duplicate_declarations() {
         operations.unwrap_err(),
         "config error at adapters[1].capabilities.operations[2]: duplicate"
     );
-    let permissions = check(example().replace(
-        "{ model_alias = \"local-chat\", operation = \"chat\" },\n  { model_alias = \"private-chat\", operation = \"chat\" },",
-        "{ model_alias = \"local-chat\", operation = \"chat\" },\n  { model_alias = \"local-chat\", operation = \"chat\" },",
-    ));
+    let permissions = Scratch::with_keys(
+        &keyed_example(),
+        &keys_file(&[record(
+            "personal-client",
+            1,
+            "owner = true\npermissions = [\n  { model_alias = \"local-chat\", operation = \"chat\" },\n  { model_alias = \"local-chat\", operation = \"chat\" },\n]",
+        )]),
+    )
+    .load();
     assert_eq!(
         permissions.unwrap_err(),
-        "config error at application_keys[0].permissions[1]: duplicate"
+        "config error at keys_file.keys[0].permissions[1]: duplicate"
     );
 }
 
 #[test]
-fn codex_effort_aliases_are_exact_scoped_and_field_validated() {
-    let baseline = check(example()).expect("legacy baseline validates");
-    let legacy_route = baseline
-        .routes()
-        .iter()
-        .find(|route| route.identity().route_id == "codex-chat")
-        .expect("legacy Codex route");
-    assert_eq!(
-        legacy_route.codex_reasoning_effort(),
-        Some(kanata::config::CodexReasoningEffort::Medium)
-    );
+fn chatgpt_effort_aliases_are_exact_scoped_and_field_validated() {
+    use kanata::core::ReasoningEffort;
 
-    let personal_contents = personal_example();
-    let personal = check(personal_contents.clone()).expect("personal template validates");
-    let low_route = personal
+    let personal_contents = scratch::personal_with_chatgpt();
+    let personal = check(personal_contents.clone()).expect("personal ChatGPT config validates");
+    let base_route = personal
         .routes()
         .iter()
-        .find(|route| route.identity().route_id == "codex-gpt-6-luna-low")
-        .expect("configured low alias");
+        .find(|route| route.identity().route_id == "chatgpt-chat")
+        .expect("ChatGPT base route");
+    assert_eq!(base_route.reasoning_effort(), Some(ReasoningEffort::Medium));
+    let low_route = &personal.routes()[9];
+    assert_eq!(low_route.identity().route_id, "chatgpt-gpt-6-luna-low");
     assert_eq!(
         low_route.identity().selector.model_alias.0,
         "gpt-6-luna:low"
     );
     assert_eq!(low_route.identity().upstream_id, "gpt-6-luna");
-    assert_eq!(
-        low_route.codex_reasoning_effort(),
-        Some(kanata::config::CodexReasoningEffort::Low)
-    );
+    assert_eq!(low_route.reasoning_effort(), Some(ReasoningEffort::Low));
 
     for (alias, effort, expected) in [
-        (
-            "gpt-6-luna:medium",
-            "medium",
-            kanata::config::CodexReasoningEffort::Medium,
-        ),
-        (
-            "gpt-6-luna:high",
-            "high",
-            kanata::config::CodexReasoningEffort::High,
-        ),
+        ("gpt-6-luna:medium", "medium", ReasoningEffort::Medium),
+        ("gpt-6-luna:high", "high", ReasoningEffort::High),
+        // ChatGPT pins every route, so a base alias carries its effort too.
+        ("gpt-6-luna", "high", ReasoningEffort::High),
     ] {
         let contents = personal_contents
             .replace(
@@ -1101,32 +1066,16 @@ fn codex_effort_aliases_are_exact_scoped_and_field_validated() {
                 &format!("model_alias = \"{alias}\""),
             )
             .replace(
-                "codex_reasoning_effort = \"low\"",
-                &format!("codex_reasoning_effort = \"{effort}\""),
+                "reasoning_effort = \"low\"",
+                &format!("reasoning_effort = \"{effort}\""),
             );
         let config = check(contents).expect("supported suffix and field agree");
         let route = config
             .routes()
             .iter()
-            .find(|route| route.identity().route_id == "codex-gpt-6-luna-low")
-            .expect("configured Codex effort route");
-        assert_eq!(route.codex_reasoning_effort(), Some(expected));
-    }
-
-    for effort in ["low", "medium", "high"] {
-        let contents = personal_contents
-            .replace(
-                "model_alias = \"gpt-6-luna:low\"",
-                "model_alias = \"gpt-6-luna\"",
-            )
-            .replace(
-                "codex_reasoning_effort = \"low\"",
-                &format!("codex_reasoning_effort = \"{effort}\""),
-            );
-        assert_eq!(
-            check(contents).unwrap_err(),
-            "config error at routes[9].codex_reasoning_effort: effort_requires_alias"
-        );
+            .find(|route| route.identity().route_id == "chatgpt-gpt-6-luna-low")
+            .expect("configured ChatGPT effort route");
+        assert_eq!(route.reasoning_effort(), Some(expected));
     }
 
     for alias in ["gpt-6-luna:fast", "gpt-6-luna:", "gpt-6-luna:low:medium"] {
@@ -1140,10 +1089,10 @@ fn codex_effort_aliases_are_exact_scoped_and_field_validated() {
         );
     }
 
-    let missing_effort = check(personal_contents.replace("codex_reasoning_effort = \"low\"\n", ""));
+    let missing_effort = check(personal_contents.replace("reasoning_effort = \"low\"\n", ""));
     assert_eq!(
         missing_effort.unwrap_err(),
-        "config error at routes[9].codex_reasoning_effort: required_for_effort_alias"
+        "config error at routes[9].reasoning_effort: required"
     );
     let mismatched_effort = check(personal_contents.replace(
         "model_alias = \"gpt-6-luna:low\"",
@@ -1151,59 +1100,54 @@ fn codex_effort_aliases_are_exact_scoped_and_field_validated() {
     ));
     assert_eq!(
         mismatched_effort.unwrap_err(),
-        "config error at routes[9].codex_reasoning_effort: does_not_match_alias"
+        "config error at routes[9].reasoning_effort: does_not_match_alias"
     );
 
     let invalid_effort = check(personal_contents.replace(
-        "codex_reasoning_effort = \"low\"",
-        "codex_reasoning_effort = \"EFFORT_MARKER\"",
+        "reasoning_effort = \"low\"",
+        "reasoning_effort = \"EFFORT_MARKER\"",
     ));
     let invalid_effort_error = invalid_effort.unwrap_err();
     assert_eq!(
         invalid_effort_error,
-        "config error at routes[9].codex_reasoning_effort: schema_error"
+        "config error at routes[9].reasoning_effort: schema_error"
     );
     assert!(!invalid_effort_error.contains("EFFORT_MARKER"));
 
-    let non_codex_alias = check(personal_contents.replace(
+    let non_chatgpt_alias = check(personal_contents.replace(
         "model_alias = \"local-chat\"",
         "model_alias = \"local-chat:low\"",
     ));
     assert_eq!(
-        non_codex_alias.unwrap_err(),
-        "config error at routes[0].model_alias: codex_effort_alias_only"
+        non_chatgpt_alias.unwrap_err(),
+        "config error at routes[0].model_alias: effort_alias_requires_reasoning_effort"
     );
 
-    let non_codex_effort = check(personal_contents.replace(
+    let non_chatgpt_effort = check(personal_contents.replace(
         "upstream_id = \"qwen3:0.6b\"\nrequires_streaming_chat",
-        "upstream_id = \"qwen3:0.6b\"\ncodex_reasoning_effort = \"low\"\nrequires_streaming_chat",
+        "upstream_id = \"qwen3:0.6b\"\nreasoning_effort = \"low\"\nrequires_streaming_chat",
     ));
     assert_eq!(
-        non_codex_effort.unwrap_err(),
-        "config error at routes[0].codex_reasoning_effort: codex_only"
+        non_chatgpt_effort.unwrap_err(),
+        "config error at routes[0].reasoning_effort: unsupported_by_adapter"
     );
 
     let summary = check(personal_contents.replace(
-        "codex_reasoning_effort = \"low\"\n",
-        "codex_reasoning_effort = \"low\"\ncodex_reasoning_summary = \"detailed\"\n",
+        "reasoning_effort = \"low\"\n",
+        "reasoning_effort = \"low\"\nreasoning_summary = \"detailed\"\n",
     ))
-    .expect("Codex route accepts a reasoning summary");
-    let route = summary
-        .routes()
-        .iter()
-        .find(|route| route.identity().route_id == "codex-gpt-6-luna-low")
-        .expect("configured Codex effort route");
+    .expect("ChatGPT route accepts a reasoning summary");
     assert_eq!(
-        route.codex_reasoning_summary(),
-        Some(kanata::config::CodexReasoningSummary::Detailed)
+        summary.routes()[9].reasoning_summary(),
+        Some(kanata::config::ReasoningSummary::Detailed)
     );
-    let non_codex_summary = check(personal_contents.replace(
+    let non_chatgpt_summary = check(personal_contents.replace(
         "upstream_id = \"qwen3:0.6b\"\nrequires_streaming_chat",
-        "upstream_id = \"qwen3:0.6b\"\ncodex_reasoning_summary = \"auto\"\nrequires_streaming_chat",
+        "upstream_id = \"qwen3:0.6b\"\nreasoning_summary = \"auto\"\nrequires_streaming_chat",
     ));
     assert_eq!(
-        non_codex_summary.unwrap_err(),
-        "config error at routes[0].codex_reasoning_summary: codex_only"
+        non_chatgpt_summary.unwrap_err(),
+        "config error at routes[0].reasoning_summary: unsupported_by_adapter"
     );
 
     let context = |value: &str| {
@@ -1256,22 +1200,13 @@ fn codex_effort_aliases_are_exact_scoped_and_field_validated() {
     ));
     assert_eq!(
         transcription_effort.unwrap_err(),
-        "config error at routes[9].codex_reasoning_effort: codex_chat_only"
+        "config error at routes[9].reasoning_effort: unsupported_by_adapter"
     );
 }
 
 #[test]
-fn digest_references_are_application_key_only_and_strictly_formatted() {
+fn adapter_secret_refs_reject_digest_references_without_echoing_them() {
     let digest = "ab".repeat(32);
-    let owner = check(example().replace("env:KANATA_CLIENT_KEY", &format!("sha256:{digest}")))
-        .expect("owner digest key validates");
-    assert!(
-        owner.application_keys()[0]
-            .secret_ref()
-            .sha256_digest()
-            .is_some()
-    );
-
     let adapter =
         check(example().replace("env:KANATA_OPENROUTER_TOKEN", &format!("sha256:{digest}")))
             .unwrap_err();
@@ -1280,39 +1215,6 @@ fn digest_references_are_application_key_only_and_strictly_formatted() {
         "config error at adapters[2].secret_ref: digest_reference_unsupported"
     );
     assert!(!adapter.contains(&digest));
-
-    for malformed in [
-        "ab".repeat(31),
-        "ab".repeat(33),
-        "AB".repeat(32),
-        format!("{}zz", "ab".repeat(31)),
-    ] {
-        let error =
-            check(example().replace("env:KANATA_CLIENT_KEY", &format!("sha256:{malformed}")))
-                .unwrap_err();
-        assert_eq!(
-            error,
-            "config error at application_keys[0].secret_ref: invalid_secret_reference"
-        );
-        assert!(!error.contains(&malformed));
-    }
-
-    let duplicate = check(
-        example()
-            .replace("env:KANATA_CLIENT_KEY", &format!("sha256:{digest}"))
-            .replace(
-                "\n[limits]",
-                &format!(
-                    "\n[[application_keys]]\nid = \"second\"\nsecret_ref = \"sha256:{digest}\"\npermissions = [{{ model_alias = \"local-chat\", operation = \"chat\" }}]\n\n[limits]"
-                ),
-            ),
-    )
-    .unwrap_err();
-    assert_eq!(
-        duplicate,
-        "config error at application_keys[1].secret_ref: duplicate_secret"
-    );
-    assert!(!duplicate.contains(&digest));
 }
 
 #[test]
@@ -1376,10 +1278,10 @@ fn apple_fm_adapters_are_local_chat_without_tools() {
 }
 
 #[test]
-fn planes_split_listeners_routes_keys_and_codex() {
+fn planes_split_listeners_routes_keys_and_chatgpt() {
     use kanata::config::{Plane, ProviderKind};
 
-    let public_template = template("container.public.example.toml");
+    let public_template = scratch::with_chatgpt(&template("container.public.example.toml"));
     let keys = keys_file(&[
         record(
             "owner",
@@ -1392,7 +1294,7 @@ fn planes_split_listeners_routes_keys_and_codex() {
             "permissions = [{ model_alias = \"qwen3-0.6b\", operation = \"chat\" }]",
         ),
         record(
-            "private-codex",
+            "private-chatgpt",
             3,
             "permissions = [\n  { model_alias = \"qwen3-0.6b\", operation = \"chat\" },\n  { model_alias = \"gpt-6-sol\", operation = \"chat\" },\n]",
         ),
@@ -1406,23 +1308,23 @@ fn planes_split_listeners_routes_keys_and_codex() {
     )
     .load()
     .expect("public template with a route");
-    assert_eq!(config.application_keys().len(), 3);
+    assert_eq!(config.keys().len(), 3);
 
     let private = config.for_plane(Plane::Private).expect("private plane");
     assert!(private.listeners().public().is_none());
     assert!(private.publication().public_routes().is_empty());
     assert_eq!(private.routes().len(), config.routes().len());
-    assert!(private.codex_auth().is_some());
+    assert!(private.chatgpt_auth().is_some());
 
     let public = config.for_plane(Plane::Public).expect("public plane");
     assert!(public.listeners().public().is_some());
     assert!(public.listeners().client().bind().is_loopback());
-    assert!(public.codex_auth().is_none());
+    assert!(public.chatgpt_auth().is_none());
     assert!(
         public
             .adapters()
             .iter()
-            .all(|adapter| adapter.kind() != ProviderKind::Codex)
+            .all(|adapter| adapter.kind() != ProviderKind::Chatgpt)
     );
     let aliases: Vec<_> = public
         .routes()
@@ -1430,14 +1332,10 @@ fn planes_split_listeners_routes_keys_and_codex() {
         .map(|route| route.identity().selector.model_alias.0.as_str())
         .collect();
     assert_eq!(aliases, ["qwen3-0.6b"]);
-    // Codex-capable keys (owner or not) never enter the public process; others keep only public scopes.
-    let ids: Vec<_> = public
-        .application_keys()
-        .iter()
-        .map(|key| key.id())
-        .collect();
+    // ChatGPT-capable keys (owner or not) never enter the public process; others keep only public scopes.
+    let ids: Vec<_> = public.keys().iter().map(|key| key.id()).collect();
     assert_eq!(ids, ["tester"]);
-    assert!(public.application_keys().iter().all(|key| {
+    assert!(public.keys().iter().all(|key| {
         !key.is_owner()
             && key
                 .permissions()
@@ -1452,7 +1350,7 @@ fn planes_split_listeners_routes_keys_and_codex() {
     let nothing_public = nothing_public
         .for_plane(Plane::Public)
         .expect("public plane");
-    assert!(nothing_public.application_keys().is_empty());
+    assert!(nothing_public.keys().is_empty());
     assert!(nothing_public.routes().is_empty() && nothing_public.adapters().is_empty());
 
     let without_listener = check(template("container.example.toml")).expect("private template");
@@ -1468,22 +1366,23 @@ fn planes_split_listeners_routes_keys_and_codex() {
 #[test]
 fn optional_capacity_limits_validate_bounds() {
     let adapter = "transcription_mode = \"native_asr\"\n";
-    let key = "owner = true\n";
-    let config = check(
-        example()
-            .replacen(
-                adapter,
-                &format!("{adapter}max_in_flight = 2\ncircuit_breaker = {{ enabled = false }}\n"),
-                1,
-            )
-            .replacen(
-                key,
-                &format!(
-                    "{key}max_in_flight = 1\nrate_limit = {{ requests = 4, per_ms = 300000 }}\n"
-                ),
-                1,
-            ),
+    let local = "permissions = [{ model_alias = \"local-chat\", operation = \"chat\" }]";
+    let key = |limits: &str| {
+        keys_file(&[record(
+            "personal-client",
+            1,
+            &format!("owner = true\n{limits}{local}"),
+        )])
+    };
+    let config = Scratch::with_keys(
+        &keyed_example().replacen(
+            adapter,
+            &format!("{adapter}max_in_flight = 2\ncircuit_breaker = {{ enabled = false }}\n"),
+            1,
+        ),
+        &key("max_in_flight = 1\nrate_limit = { requests = 4, per_ms = 300000 }\n"),
     )
+    .load()
     .expect("limits validate");
     let vllm = &config.adapters()[1];
     assert_eq!(vllm.max_in_flight(), Some(2));
@@ -1497,31 +1396,30 @@ fn optional_capacity_limits_validate_bounds() {
         config.adapters()[0].circuit_breaker().enabled,
         "on by default"
     );
-    assert_eq!(config.application_keys()[0].max_in_flight(), Some(1));
+    assert_eq!(config.keys()[0].max_in_flight(), Some(1));
 
-    for (find, insert, error) in [
+    for (insert, error) in [
+        ("max_in_flight = 0\n", "adapters[1].max_in_flight: zero"),
         (
-            adapter,
-            "max_in_flight = 0\n",
-            "adapters[1].max_in_flight: zero",
-        ),
-        (
-            adapter,
             "circuit_breaker = { failures = 0 }\n",
             "adapters[1].circuit_breaker.failures: zero",
         ),
-        (
-            key,
-            "rate_limit = { requests = 1, per_ms = 0 }\n",
-            "application_keys[0].rate_limit.per_ms: zero",
-        ),
     ] {
-        let contents = example().replacen(find, &format!("{find}{insert}"), 1);
+        let contents = example().replacen(adapter, &format!("{adapter}{insert}"), 1);
         assert_eq!(
             check(contents).unwrap_err(),
             format!("config error at {error}")
         );
     }
+    assert_eq!(
+        Scratch::with_keys(
+            &keyed_example(),
+            &key("rate_limit = { requests = 1, per_ms = 0 }\n")
+        )
+        .load()
+        .unwrap_err(),
+        "config error at keys_file.keys[0].rate_limit.per_ms: zero"
+    );
 }
 
 #[test]
@@ -1551,32 +1449,25 @@ fn keys_file_loads_active_records_and_skips_revoked_ones() {
     let scratch = Scratch::with_keys(&keyed_example(), &keys);
     let config = scratch.load().expect("keys file loads");
 
-    let ids: Vec<_> = config
-        .application_keys()
-        .iter()
-        .map(|key| key.id())
-        .collect();
+    let ids: Vec<_> = config.keys().iter().map(|key| key.id()).collect();
     assert_eq!(ids, ["alice", "bob"]);
-    let alice = &config.application_keys()[0];
+    let alice = &config.keys()[0];
     assert!(alice.is_owner());
-    assert_eq!(alice.secret_ref().sha256_digest(), Some(&[1; 32]));
+    assert_eq!(alice.digest(), &[1; 32]);
     assert_eq!(alice.max_in_flight(), Some(2));
     let rate_limit = alice.rate_limit().expect("rate limit");
     assert_eq!((rate_limit.requests, rate_limit.per_ms), (4, 60_000));
     assert_eq!(alice.expires_at(), time::parse("2027-01-01T00:00:00Z"));
     assert_eq!(alice.permissions()[1].model_alias.0, "private-transcribe");
     assert_eq!(alice.permissions()[1].operation, Operation::Transcription);
-    let bob = &config.application_keys()[1];
+    let bob = &config.keys()[1];
     assert!(!bob.is_owner() && bob.expires_at().is_none() && bob.rate_limit().is_none());
-    let KeySource::File {
+    let KeySource {
         path,
         usage_dir,
         missing,
         sha256,
-    } = config.key_source()
-    else {
-        panic!("file key source");
-    };
+    } = config.key_source();
     assert_eq!(path, &scratch.keys());
     assert_eq!(
         usage_dir.as_deref(),
@@ -1592,8 +1483,8 @@ fn keys_file_loads_active_records_and_skips_revoked_ones() {
         .validated(config.routes())
         .expect("rendered file validates");
     assert_eq!(reparsed.records(), file.records());
-    let reloaded = config.with_application_keys(&reparsed).expect("reload");
-    assert_eq!(reloaded.application_keys().len(), 2);
+    let reloaded = config.with_keys(&reparsed).expect("reload");
+    assert_eq!(reloaded.keys().len(), 2);
 }
 
 #[test]
@@ -1680,10 +1571,10 @@ fn keys_file_hardening_rules_report_path_and_class_only() {
 }
 
 #[test]
-fn key_sources_missing_unreadable_and_conflicting() {
+fn key_sources_missing_and_unreadable() {
     let missing = Scratch::new(&keyed_example());
     let config = missing.load().expect("missing keys file loads empty");
-    assert!(config.application_keys().is_empty());
+    assert!(config.keys().is_empty());
     let warnings = config.key_warnings(0);
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains(MISSING_KEYS_WARNING));
@@ -1697,12 +1588,6 @@ fn key_sources_missing_unreadable_and_conflicting() {
             "config error at keys.file: read_error"
         );
     }
-
-    let conflicting = format!("{}\n{EXAMPLE_INLINE_KEY}", keyed_example());
-    assert_eq!(
-        check(conflicting).unwrap_err(),
-        "config error at keys: conflicting_key_sources"
-    );
 }
 
 #[test]
@@ -1732,7 +1617,7 @@ fn key_warnings_name_expired_and_soon_expiring_keys_only() {
     let config = Scratch::with_keys(&keyed_example(), &keys)
         .load()
         .expect("keys load");
-    assert!(config.application_keys()[0].is_expired(now));
+    assert!(config.keys()[0].is_expired(now));
     assert_eq!(
         config.key_warnings(now),
         [
@@ -1743,7 +1628,7 @@ fn key_warnings_name_expired_and_soon_expiring_keys_only() {
 }
 
 #[test]
-fn upload_budget_bounds_and_unsupported_output_caps_are_rejected() {
+fn removed_settings_upload_budgets_and_unsupported_output_caps_are_rejected() {
     for (find, replace, expected) in [
         (
             "max_uploads = 64",
@@ -1765,13 +1650,43 @@ fn upload_budget_bounds_and_unsupported_output_caps_are_rejected() {
             "upstream_id = \"llama3.2:latest\"\nmax_output_tokens = 100",
             "routes[0].max_output_tokens: unsupported_output_cap",
         ),
+        // Removed settings name what replaced them.
+        (
+            "kind = \"chatgpt\"",
+            "kind = \"codex\"",
+            "adapters[3].kind: codex_removed",
+        ),
+        (
+            "[chatgpt_auth]",
+            "[codex_auth]\nstore = \"file\"\n\n[chatgpt_auth]",
+            "codex_auth: codex_removed",
+        ),
+        (
+            "upstream_id = \"gpt-5\"",
+            "upstream_id = \"gpt-5\"\ncodex_reasoning_summary = \"auto\"",
+            "routes[4].codex_reasoning_summary: use_reasoning_summary",
+        ),
+        (
+            "upstream_id = \"gpt-5\"",
+            "upstream_id = \"gpt-5\"\ncodex_reasoning_effort = \"low\"",
+            "routes[4].codex_reasoning_effort: codex_removed",
+        ),
+        (
+            "[keys]",
+            "[[application_keys]]\nid = \"inline\"\nsecret_ref = \"env:KANATA_CLIENT_KEY\"\npermissions = [{ model_alias = \"local-chat\", operation = \"chat\" }]\n\n[keys]",
+            "application_keys: inline_keys_removed",
+        ),
+        (
+            "[keys]\nfile = \"example-keys.toml\"\n",
+            "",
+            "keys: required",
+        ),
     ] {
         let source = example();
         assert!(source.contains(find));
-        assert!(
-            check(source.replacen(find, replace, 1))
-                .unwrap_err()
-                .ends_with(expected)
+        assert_eq!(
+            check(source.replacen(find, replace, 1)).unwrap_err(),
+            format!("config error at {expected}")
         );
     }
 }

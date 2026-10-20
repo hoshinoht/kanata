@@ -13,8 +13,7 @@ use axum::body::Body;
 use http::{Request, StatusCode, header};
 use kanata::{
     adapter::{AdapterOutput, ollama::OllamaAdapter},
-    auth::{SecretResolutionError, SecretResolver},
-    config::{self, ValidatedConfig},
+    config::ValidatedConfig,
     core::{
         Capabilities, ChatContent, ChatMessage, ChatRequest, ChatRole, ModelAlias, Operation,
         Request as CoreRequest, RequestContext, Response as CoreResponse, RouteIdentity,
@@ -40,14 +39,6 @@ pub const TEXT_STREAM: &str = include_str!("../fixtures/ollama/chat-stream-text.
 pub const SEPARATE_USAGE_STREAM: &str =
     include_str!("../fixtures/ollama/chat-stream-text-separate-usage.sse");
 pub const TOOLS_STREAM: &str = include_str!("../fixtures/ollama/chat-stream-tools.sse");
-
-pub struct Resolver;
-
-impl SecretResolver for Resolver {
-    fn resolve(&self, _: &config::SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
-        Ok(b"test-key".to_vec())
-    }
-}
 
 pub struct MockServer {
     pub address: String,

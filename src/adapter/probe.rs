@@ -23,7 +23,7 @@ pub(crate) async fn models(
     // single page could report listed models as missing.
     if matches!(
         adapter.kind(),
-        ProviderKind::Codex | ProviderKind::Chatgpt | ProviderKind::Anthropic
+        ProviderKind::Chatgpt | ProviderKind::Anthropic
     ) {
         return Err("not_supported");
     }

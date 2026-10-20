@@ -169,7 +169,7 @@ impl Adapter for AnthropicAdapter {
             return Box::pin(async { Err(unsupported_operation()) });
         };
         let capture_reasoning =
-            super::codex::protocol::requests_encrypted_reasoning(&chat, ProviderKind::Anthropic);
+            super::responses::requests_encrypted_reasoning(&chat, ProviderKind::Anthropic);
         let streaming = chat.stream;
         // Encoded here so request errors surface before any network call.
         let prepared = request::encode(&chat, &context.route.upstream_id, self.max_tokens)

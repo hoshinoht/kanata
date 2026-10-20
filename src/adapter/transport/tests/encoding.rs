@@ -97,31 +97,7 @@ async fn json_encoding_round_trips_and_rejects_budget_overflow() {
 }
 
 #[tokio::test]
-async fn sensitive_json_and_preencoded_form_bodies_preserve_their_contract() {
-    let value = json!({
-        "device_auth_id": "TEST_ONLY_DEVICE_AUTH_ID_NOT_SECRET",
-        "user_code": "TEST-ONLY-CODE",
-    });
-    let request = TransportRequest::sensitive_json(
-        Method::POST,
-        endpoint(),
-        &value,
-        256,
-        COMPLETE_RESPONSE_BYTES,
-    )
-    .unwrap_or_else(|_| panic!("sensitive json request"));
-    assert!(request.body.is_sensitive());
-    assert_eq!(request.body.content_type(), "application/json");
-    let bytes = encoded_frames(request.body, 256)
-        .await
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|_| panic!("sensitive json")),
-        value
-    );
-
+async fn preencoded_form_bodies_preserve_their_contract() {
     let form = "grant_type=authorization_code&code=TEST_ONLY_CODE&redirect_uri=https%3A%2F%2Fauth.openai.com%2Fdeviceauth%2Fcallback";
     let request = TransportRequest::form_encoded(
         Method::POST,

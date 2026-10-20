@@ -1,22 +1,15 @@
-use std::{fs, sync::Arc};
+#[path = "support/scratch.rs"]
+mod scratch;
+
+use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use http::{Request, StatusCode};
 use kanata::{
     adapter::ollama::OllamaAdapter,
-    auth::{SecretResolutionError, SecretResolver},
-    config::{self, SecretReference},
     server::{Readiness, TwoPlaneServer},
 };
 use serde_json::{Value, json};
-
-struct SmokeKey;
-
-impl SecretResolver for SmokeKey {
-    fn resolve(&self, _: &SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
-        Ok(b"local-smoke-only".to_vec())
-    }
-}
 
 #[tokio::test]
 #[ignore = "requires explicit authorization and local Ollama qwen3:0.6b"]
@@ -33,11 +26,7 @@ async fn local_qwen_chat_and_stream_through_gateway() {
         .replace("headers_ms = 10000", "headers_ms = 60000")
         .replace("first_byte_ms = 15000", "first_byte_ms = 60000")
         .replace("overall_ms = 60000", "overall_ms = 120000");
-    let path = std::env::temp_dir().join(format!("kanata-local-smoke-{}.toml", std::process::id()));
-    fs::write(&path, contents).expect("write synthetic smoke config");
-    let loaded = config::load(&path);
-    fs::remove_file(path).expect("remove synthetic smoke config");
-    let config = loaded.expect("validate smoke config");
+    let config = scratch::load_text(&contents).expect("validate smoke config");
     assert_eq!(
         config.adapters()[0].base_url().as_str(),
         "http://127.0.0.1:11434/v1"
@@ -47,7 +36,6 @@ async fn local_qwen_chat_and_stream_through_gateway() {
         .expect("construct local adapter");
     let gateway = TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &SmokeKey,
         Readiness::new(true),
         vec![Arc::new(adapter)],
     )
@@ -63,7 +51,7 @@ async fn local_qwen_chat_and_stream_through_gateway() {
             payload["stream_options"] = json!({"include_usage": true});
         }
         let request = Request::post("/v1/chat/completions")
-            .header("authorization", "Bearer local-smoke-only")
+            .header("authorization", format!("Bearer {}", scratch::TEST_KEY))
             .header("content-type", "application/json")
             .body(Body::from(payload.to_string()))
             .expect("build smoke request");

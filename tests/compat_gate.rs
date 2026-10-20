@@ -22,7 +22,7 @@ const PRIOR_ENCRYPTED: &str = "PRIOR_ENCRYPTED_FIXTURE";
 async fn private_requests_reach_a_replaying_route_with_cache_key_include_and_reasoning() {
     let (server, recorded) = support::server();
 
-    let chat = json!({"model":"codex-chat","messages":[{"role":"user","content":"hi"}],
+    let chat = json!({"model":"chatgpt-chat","messages":[{"role":"user","content":"hi"}],
         "prompt_cache_key":CACHE_KEY});
     let response = server
         .client_oneshot(support::post("/v1/chat/completions", &chat))
@@ -37,7 +37,7 @@ async fn private_requests_reach_a_replaying_route_with_cache_key_include_and_rea
     assert!(!request.include_encrypted_reasoning);
 
     let responses = json!({
-        "model":"codex-chat","stream":false,"prompt_cache_key":CACHE_KEY,
+        "model":"chatgpt-chat","stream":false,"prompt_cache_key":CACHE_KEY,
         "include":["reasoning.encrypted_content"],
         "tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}],
         "input":[

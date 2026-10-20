@@ -5,25 +5,14 @@ use std::{fs, path::Path};
 
 use sha2::{Digest as _, Sha256};
 
-/// The schema fixture's inline application key, replaced by a `[keys]` section in keyed configs.
-pub const EXAMPLE_INLINE_KEY: &str = "[[application_keys]]
-id = \"personal-client\"
-secret_ref = \"env:KANATA_CLIENT_KEY\"
-owner = true
-permissions = [
-  { model_alias = \"local-chat\", operation = \"chat\" },
-  { model_alias = \"private-chat\", operation = \"chat\" },
-  { model_alias = \"private-transcribe\", operation = \"transcription\" },
-  { model_alias = \"remote-chat\", operation = \"chat\" },
-  { model_alias = \"codex-chat\", operation = \"chat\" },
-]
-";
+/// The schema fixture's `[keys]` section, replaced by `keys_section` in keyed configs.
+pub const EXAMPLE_KEYS_SECTION: &str = "[keys]\nfile = \"example-keys.toml\"\n";
 
-/// The schema fixture with its inline key replaced by `keys_section`; `public` adds a public
-/// listener publishing `local-chat`.
+/// The schema fixture with its `[keys]` section replaced by `keys_section`; `public` adds a
+/// public listener publishing `local-chat`.
 pub fn keyed_example(keys_section: &str, public: bool) -> String {
     let example = fs::read_to_string("tests/fixtures/config/example.toml").expect("example config");
-    let mut config = example.replace(EXAMPLE_INLINE_KEY, keys_section);
+    let mut config = example.replace(EXAMPLE_KEYS_SECTION, keys_section);
     assert_ne!(config, example);
     if public {
         config = config

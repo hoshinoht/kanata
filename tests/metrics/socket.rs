@@ -19,7 +19,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::gateway::{Resolver, load_valid};
+use crate::gateway::load_valid;
 
 struct Running {
     client_addr: std::net::SocketAddr,
@@ -110,7 +110,6 @@ async fn start_with(header_read_timeout: Option<Duration>, delay: Duration) -> R
         .clone();
     let server = TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &Resolver,
         Readiness::new(true),
         vec![Arc::new(FixedAdapter {
             capabilities,

@@ -14,9 +14,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::config::{
-    self, KeyRateLimit, KeySource, ValidatedConfig, parse_model_alias, valid_identifier,
-};
+use crate::config::{self, KeyRateLimit, ValidatedConfig, parse_model_alias, valid_identifier};
 use crate::core::{ModelAlias, Operation, RouteSelector};
 use crate::keys::file::{self, KeysFile, StoredKey};
 use crate::keys::store::{self, AuditEvent, LockedKeys, SecretFile};
@@ -29,7 +27,6 @@ pub const KEY_USAGE: &str = "usage: kanata key new --config <path> --id <id> [--
        kanata key edit <id> --config <path> [--add-chat A]... [--remove-chat A]... [--add-transcription A]... [--remove-transcription A]... [--add-embeddings A]... [--remove-embeddings A]... [--add-speech A]... [--remove-speech A]... [--expires <choice>] [--max-in-flight N] [--rate-limit N/MS] [--daily-requests N] [--daily-tokens N --reservation-tokens N] [--clear-quota] [--clear-limits] [--force] [--keys <path>]
        kanata key rm <id> --config <path> [--force] [--keys <path>]
        kanata key rotate (<id>|--owner) --config <path> --expires <choice> [--key-out <path>] [--keys <path>]
-       kanata key migrate --config <path> [--keys <path>]
        kanata key usage (--config <path>|--usage-dir <path>) [--plane all|private|public] [--key-id <id>] [--model <alias>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--input-cost-per-million N --output-cost-per-million N --cost-unit <label>] [--json]";
 
 const KEY_PREFIX: &str = "kanata_sk_";
@@ -70,7 +67,6 @@ pub fn run(
         "edit" => edit(rest, catalog),
         "rm" => rm(rest),
         "rotate" => rotate(rest),
-        "migrate" => migrate(rest),
         _ => Err(KEY_USAGE.into()),
     }
 }
@@ -151,15 +147,7 @@ fn mutating_location(args: &Args, command: &str) -> Result<(ValidatedConfig, Pat
         .one("--config")?
         .ok_or_else(|| format!("kanata key {command} requires --config <path>"))?;
     let config = load_config(config_path)?;
-    let derived = match config.key_source() {
-        KeySource::File { path, .. } => path.clone(),
-        KeySource::Inline => {
-            return Err(format!(
-                "{config_path} uses inline [[application_keys]]; run `kanata key migrate --config {config_path}` first"
-            ));
-        }
-    };
-    let keys_path = keys_override(args)?.unwrap_or(derived);
+    let keys_path = keys_override(args)?.unwrap_or_else(|| config.key_source().path.clone());
     Ok((config, keys_path))
 }
 
@@ -171,17 +159,10 @@ struct ReadLocation {
 
 fn read_location(args: &Args) -> Result<ReadLocation, String> {
     let config = args.one("--config")?.map(load_config).transpose()?;
-    let (derived_path, derived_usage) = match config.as_ref().map(ValidatedConfig::key_source) {
-        Some(KeySource::File {
-            path, usage_dir, ..
-        }) => (Some(path.clone()), usage_dir.clone()),
-        Some(KeySource::Inline) if args.one("--keys")?.is_none() => {
-            return Err(
-                "config uses inline [[application_keys]]; run `kanata key migrate` first".into(),
-            );
-        }
-        _ => (None, None),
-    };
+    let (derived_path, derived_usage) = config.as_ref().map_or((None, None), |config| {
+        let source = config.key_source();
+        (Some(source.path.clone()), source.usage_dir.clone())
+    });
     let keys_path = keys_override(args)?
         .or(derived_path)
         .ok_or_else(|| "pass --config <path> or --keys <path>".to_owned())?;
@@ -205,10 +186,7 @@ fn scope_label(selector: &RouteSelector) -> String {
 
 /// The configured `[keys] usage_dir`, required for daily quotas.
 pub(crate) fn usage_dir(config: &ValidatedConfig) -> Option<&Path> {
-    match config.key_source() {
-        KeySource::File { usage_dir, .. } => usage_dir.as_deref(),
-        KeySource::Inline => None,
-    }
+    config.key_source().usage_dir.as_deref()
 }
 
 /// Whether a key with these scopes is loaded by the public listener.
@@ -957,83 +935,6 @@ fn edit(
     }
     eprintln!("{APPLY_NOTE}");
     Ok(lines.join("\n"))
-}
-
-fn migrate(arguments: &[String]) -> Result<String, String> {
-    let args = Args::parse(arguments, &["--config", "--keys"], &[], 0)?;
-    let config_path = args
-        .one("--config")?
-        .ok_or("kanata key migrate requires --config <path>")?;
-    let config = load_config(config_path)?;
-    if !matches!(config.key_source(), KeySource::Inline) {
-        return Err(format!(
-            "{config_path} already uses a [keys] file; nothing to migrate"
-        ));
-    }
-    let config_dir = std::path::absolute(config_path)
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .ok_or_else(|| format!("cannot resolve --config {config_path}"))?;
-    let keys_path = keys_override(&args)?.unwrap_or_else(|| config_dir.join("keys/keys.toml"));
-    let refused: Vec<&str> = config
-        .application_keys()
-        .iter()
-        .filter(|key| key.secret_ref().sha256_digest().is_none())
-        .map(|key| key.id())
-        .collect();
-    if !refused.is_empty() {
-        return Err(format!(
-            "keys using env: or file: references cannot be migrated: {}; re-issue them with `kanata key new`",
-            refused.join(", ")
-        ));
-    }
-
-    let locked = store::lock(&keys_path, store::LOCK_TIMEOUT)?;
-    let mut keys = locked.read()?;
-    if !keys.records().is_empty() {
-        return Err(format!(
-            "{} already has keys; refusing to migrate into it",
-            keys_path.display()
-        ));
-    }
-    let now = time::now();
-    let mut events = Vec::new();
-    for key in config.application_keys() {
-        let digest = *key.secret_ref().sha256_digest().expect("checked above");
-        keys.push(StoredKey::new(
-            key.id().to_owned(),
-            digest,
-            key.is_owner(),
-            key.permissions().to_vec(),
-            key.max_in_flight(),
-            key.rate_limit(),
-            now,
-            None,
-        ));
-        events.push(AuditEvent {
-            action: "migrate",
-            key_id: key.id().to_owned(),
-            owner: key.is_owner(),
-            changes: None,
-        });
-    }
-    write_keys(&locked, &keys, &config)?;
-    locked.audit(&events)?;
-    drop(locked);
-    eprintln!(
-        "warning: migrated keys never expire; set an expiry with `kanata key edit <id> --expires <days>`"
-    );
-    let file_value = keys_path
-        .strip_prefix(&config_dir)
-        .unwrap_or(&keys_path)
-        .display()
-        .to_string();
-    Ok(format!(
-        "migrated {} keys to {}\nadd this to {config_path}, delete its [[application_keys]] blocks, then run `kanata check --config {config_path}`:\n\n[keys]\nfile = {}\nusage_dir = \"state\"",
-        events.len(),
-        keys_path.display(),
-        toml_string(&file_value)
-    ))
 }
 
 fn quota_flags(

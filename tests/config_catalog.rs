@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
@@ -199,11 +202,8 @@ fn families_expand_only_explicit_efforts_and_preserve_custom_ids_and_exact_grant
             .iter()
             .all(|r| r.reasoning_summary() == Some(config::ReasoningSummary::Auto))
     );
-    assert_eq!(config.application_keys()[0].permissions().len(), 1);
-    assert_eq!(
-        config.application_keys()[0].permissions()[0].model_alias.0,
-        "assistant"
-    );
+    assert_eq!(config.keys()[0].permissions().len(), 1);
+    assert_eq!(config.keys()[0].permissions()[0].model_alias.0, "assistant");
     fixture.export("compact", "compact.toml");
     assert_eq!(
         success(fixture.command(&[
@@ -318,16 +318,12 @@ fn fragment_definitions_compose_with_root_paths_and_legacy_routes() {
     );
     fixture.write("config.toml", &root);
     let config = fixture.load().unwrap();
-    assert_eq!(config.routes().len(), 11);
-    match config.key_source() {
-        KeySource::File {
-            path, usage_dir, ..
-        } => {
-            assert_eq!(path, &fixture.0.join("keys/keys.toml"));
-            assert_eq!(usage_dir.as_ref().unwrap(), &fixture.0.join("state"));
-        }
-        _ => panic!("file keys"),
-    }
+    assert_eq!(config.routes().len(), 8);
+    let KeySource {
+        path, usage_dir, ..
+    } = config.key_source();
+    assert_eq!(path, &fixture.0.join("keys/keys.toml"));
+    assert_eq!(usage_dir.as_ref().unwrap(), &fixture.0.join("state"));
     root.as_table_mut().unwrap().insert(
         "include".into(),
         Value::Array(vec![
@@ -578,7 +574,9 @@ fn fragments_reject_overrides_recursion_duplicates_and_path_escape() {
 
 #[test]
 fn public_allowlist_remains_exact_and_account_families_stay_private() {
-    let mut root = parse(include_str!("../config/container.public.example.toml"));
+    let mut root = parse(&scratch::with_chatgpt(include_str!(
+        "../config/container.public.example.toml"
+    )));
     let fixture = Fixture::new(&toml::to_string(&root).unwrap());
     fixture.export("compact", "compact.toml");
     let compact = config::load(fixture.0.join("compact.toml")).unwrap();
@@ -596,7 +594,7 @@ fn public_allowlist_remains_exact_and_account_families_stay_private() {
     fixture.write("config.toml", &root);
     let error = fixture.load().unwrap_err();
     assert!(
-        error.ends_with("codex_not_public") || error.ends_with("unknown_route_selector"),
+        error.ends_with("chatgpt_not_public") || error.ends_with("unknown_route_selector"),
         "{error}"
     );
     let mut root = parse(&fs::read_to_string(fixture.0.join("compact.toml")).unwrap());
@@ -614,12 +612,15 @@ fn public_allowlist_remains_exact_and_account_families_stay_private() {
         ))]),
     );
     fixture.write("config.toml", &root);
-    assert!(fixture.load().unwrap_err().ends_with("codex_not_public"));
+    assert!(fixture.load().unwrap_err().ends_with("chatgpt_not_public"));
 }
 
 #[test]
 fn plan_reports_field_changes_publication_restart_and_dangling_grants_without_credentials() {
-    let mut root = parse(include_str!("../config/container.public.example.toml"));
+    // The private ChatGPT routes keep the candidate valid once the public route is removed.
+    let mut root = parse(&scratch::with_chatgpt(include_str!(
+        "../config/container.public.example.toml"
+    )));
     let fixture = Fixture::new(&toml::to_string(&root).unwrap());
     let alias = root["routes"][0]["model_alias"]
         .as_str()

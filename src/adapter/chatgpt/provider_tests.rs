@@ -194,7 +194,7 @@ fn inference(config: &ValidatedConfig, streaming: bool) -> Inference {
 fn inference_for(config: &ValidatedConfig, chat: crate::core::ChatRequest) -> Inference {
     let streaming = chat.stream;
     let encrypted_reasoning =
-        crate::adapter::codex::protocol::requests_encrypted_reasoning(&chat, ProviderKind::Chatgpt);
+        crate::adapter::responses::requests_encrypted_reasoning(&chat, ProviderKind::Chatgpt);
     let routed = tests::routed(config, chat);
     let payload = request::encode(
         &routed,

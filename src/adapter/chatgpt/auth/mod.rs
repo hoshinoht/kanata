@@ -1,4 +1,5 @@
 mod error;
+mod files;
 mod jwt;
 mod login;
 mod net;

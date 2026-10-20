@@ -97,10 +97,8 @@ upstream_id = "claude-opus-5-5"
 requires_streaming_chat = false
 requires_function_tools = false
 allows_input_images = true
-[[application_keys]]
-id = "fixture-client"
-secret_ref = "env:KANATA_TEST_CLIENT_KEY"
-permissions = [{{ model_alias = "claude", operation = "chat" }}]
+[keys]
+file = "kanata-unit-missing-keys.toml"
 [limits]
 max_queue = 2
 max_in_flight = 2

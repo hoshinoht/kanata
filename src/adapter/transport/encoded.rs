@@ -36,21 +36,6 @@ impl EncodedBody {
     }
 
     pub(crate) fn json<T: Serialize>(value: &T, budget: usize) -> Result<Self, GatewayError> {
-        Self::json_with_sensitivity(value, budget, false)
-    }
-
-    pub(crate) fn sensitive_json<T: Serialize>(
-        value: &T,
-        budget: usize,
-    ) -> Result<Self, GatewayError> {
-        Self::json_with_sensitivity(value, budget, true)
-    }
-
-    fn json_with_sensitivity<T: Serialize>(
-        value: &T,
-        budget: usize,
-        sensitive: bool,
-    ) -> Result<Self, GatewayError> {
         if budget == 0 {
             return Err(types::internal_error());
         }
@@ -59,7 +44,7 @@ impl EncodedBody {
         Self::from_chunks(
             "application/json".to_owned(),
             vec![Bytes::from(writer.into_inner())],
-            sensitive,
+            false,
             budget,
         )
     }

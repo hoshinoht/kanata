@@ -19,19 +19,10 @@ use axum::{
 };
 use futures_util::stream;
 use kanata::adapter::{Adapter, AdapterFuture};
-use kanata::auth::{SecretResolutionError, SecretResolver};
-use kanata::config::{self, SecretReference};
+use kanata::config;
 use kanata::core::{Capabilities, ErrorKind, GatewayError, RoutedRequest};
 use kanata::server::{Readiness, ServerPlan, TwoPlaneServer};
 use tokio::sync::{Notify, Semaphore};
-
-struct MemoryResolver;
-
-impl SecretResolver for MemoryResolver {
-    fn resolve(&self, _: &SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
-        Ok(b"test-key".to_vec())
-    }
-}
 
 struct NoopAdapter {
     id: String,
@@ -104,13 +95,8 @@ fn server_from_config(config: config::ValidatedConfig) -> (TwoPlaneServer, Readi
             }) as Arc<dyn Adapter>
         })
         .collect();
-    let server = TwoPlaneServer::from_validated_with_adapters(
-        &config,
-        &MemoryResolver,
-        readiness.clone(),
-        adapters,
-    )
-    .expect("server builds");
+    let server = TwoPlaneServer::from_validated_with_adapters(&config, readiness.clone(), adapters)
+        .expect("server builds");
     (server, readiness)
 }
 
@@ -220,13 +206,13 @@ fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
 }
 
 fn restricted_server() -> (TwoPlaneServer, Readiness) {
-    let contents =
-        fs::read_to_string("tests/fixtures/config/example.toml").expect("example config reads");
-    let contents = contents.replace(
-        "permissions = [\n  { model_alias = \"local-chat\", operation = \"chat\" },\n  { model_alias = \"private-chat\", operation = \"chat\" },\n  { model_alias = \"private-transcribe\", operation = \"transcription\" },\n  { model_alias = \"remote-chat\", operation = \"chat\" },\n  { model_alias = \"codex-chat\", operation = \"chat\" },\n]",
+    let contents = scratch::example_with_keys_text();
+    let restricted = contents.replace(
+        "permissions = [\n  { model_alias = \"local-chat\", operation = \"chat\" },\n  { model_alias = \"private-chat\", operation = \"chat\" },\n  { model_alias = \"private-transcribe\", operation = \"transcription\" },\n  { model_alias = \"remote-chat\", operation = \"chat\" },\n  { model_alias = \"chatgpt-chat\", operation = \"chat\" },\n]",
         "permissions = [{ model_alias = \"local-chat\", operation = \"chat\" }]",
     );
-    let config = scratch::load_text(&contents).expect("restricted config validates");
+    assert_ne!(restricted, contents);
+    let config = scratch::load_text(&restricted).expect("restricted config validates");
     server_from_config(config)
 }
 
@@ -342,7 +328,7 @@ async fn client_models_are_authenticated_and_permission_filtered() {
                 .to_vec()
         )
         .expect("utf8"),
-        "{\"data\":[{\"created\":0,\"id\":\"codex-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"messages\":{\"endpoint\":\"/v1/messages\",\"function_tools\":true,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"external\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"local-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"messages\":{\"endpoint\":\"/v1/messages\",\"function_tools\":true,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"local\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"private-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"messages\":{\"endpoint\":\"/v1/messages\",\"function_tools\":true,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"private_network\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"private-transcribe\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":false,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"operations\":[\"transcription\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"sampling_controls\":false,\"streaming\":false,\"structured_output\":false,\"trust_zone\":\"private_network\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"remote-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":false,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"messages\":{\"endpoint\":\"/v1/messages\",\"function_tools\":false,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":false,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"external\"},\"object\":\"model\",\"owned_by\":\"kanata\"}],\"object\":\"list\"}"
+        "{\"data\":[{\"created\":0,\"id\":\"chatgpt-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"messages\":{\"endpoint\":\"/v1/messages\",\"function_tools\":true,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"external\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"local-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"messages\":{\"endpoint\":\"/v1/messages\",\"function_tools\":true,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"local\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"private-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"messages\":{\"endpoint\":\"/v1/messages\",\"function_tools\":true,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"private_network\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"private-transcribe\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":false,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"operations\":[\"transcription\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"sampling_controls\":false,\"streaming\":false,\"structured_output\":false,\"trust_zone\":\"private_network\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"remote-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":false,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"messages\":{\"endpoint\":\"/v1/messages\",\"function_tools\":false,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":false,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"external\"},\"object\":\"model\",\"owned_by\":\"kanata\"}],\"object\":\"list\"}"
     );
 
     let (restricted, _) = restricted_server();
@@ -545,13 +531,8 @@ async fn public_and_private_routers_share_route_admission_capacity() {
         release: release.clone(),
     });
     let server = Arc::new(
-        TwoPlaneServer::from_validated_with_adapters(
-            &config,
-            &MemoryResolver,
-            Readiness::new(true),
-            vec![adapter],
-        )
-        .expect("shared-capacity server"),
+        TwoPlaneServer::from_validated_with_adapters(&config, Readiness::new(true), vec![adapter])
+            .expect("shared-capacity server"),
     );
 
     let first_server = server.clone();

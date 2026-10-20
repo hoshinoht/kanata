@@ -12,38 +12,23 @@ use crate::{
     core::{ChatResponse, ErrorKind, GatewayError, ModelAlias, TimeoutPhase},
 };
 
-use super::protocol::ResponsesStreamParser;
+use super::parser::ResponsesStreamParser;
 
-/// `encrypted_reasoning` is set only when the client asked for reasoning items.
+/// Function calls must carry `namespace`; `encrypted_reasoning` is set only when the
+/// client asked for reasoning items.
 pub(crate) fn event_stream(
     body: ResponseBody,
     public_model: ModelAlias,
     deadline: tokio::time::Instant,
     label: UpstreamLabel,
-    encrypted_reasoning: bool,
-) -> EventStream {
-    event_stream_with_parser(
-        body,
-        public_model,
-        deadline,
-        label,
-        None,
-        encrypted_reasoning,
-    )
-}
-
-pub(crate) fn event_stream_with_parser(
-    body: ResponseBody,
-    public_model: ModelAlias,
-    deadline: tokio::time::Instant,
-    label: UpstreamLabel,
-    namespace: Option<&'static str>,
+    namespace: &'static str,
     encrypted_reasoning: bool,
 ) -> EventStream {
     let state = StreamState {
         label,
         body: Some(body),
-        parser: parser(public_model, namespace).with_encrypted_reasoning(encrypted_reasoning),
+        parser: ResponsesStreamParser::namespaced(public_model, namespace)
+            .with_encrypted_reasoning(encrypted_reasoning),
         pending: VecDeque::new(),
         deadline,
         finished: false,
@@ -113,32 +98,15 @@ pub(crate) fn event_stream_with_parser(
 }
 
 pub(crate) async fn collect_response(
-    body: ResponseBody,
-    public_model: ModelAlias,
-    deadline: tokio::time::Instant,
-    label: &UpstreamLabel,
-    encrypted_reasoning: bool,
-) -> Result<ChatResponse, GatewayError> {
-    collect_response_with_parser(
-        body,
-        public_model,
-        deadline,
-        label,
-        None,
-        encrypted_reasoning,
-    )
-    .await
-}
-
-pub(crate) async fn collect_response_with_parser(
     mut body: ResponseBody,
     public_model: ModelAlias,
     deadline: tokio::time::Instant,
     label: &UpstreamLabel,
-    namespace: Option<&'static str>,
+    namespace: &'static str,
     encrypted_reasoning: bool,
 ) -> Result<ChatResponse, GatewayError> {
-    let mut parser = parser(public_model, namespace).with_encrypted_reasoning(encrypted_reasoning);
+    let mut parser = ResponsesStreamParser::namespaced(public_model, namespace)
+        .with_encrypted_reasoning(encrypted_reasoning);
     let mut received = 0usize;
 
     loop {
@@ -197,11 +165,4 @@ fn overall_timeout() -> GatewayError {
     GatewayError::from(ErrorKind::Timeout {
         phase: TimeoutPhase::Overall,
     })
-}
-
-fn parser(model: ModelAlias, namespace: Option<&'static str>) -> ResponsesStreamParser {
-    match namespace {
-        Some(namespace) => ResponsesStreamParser::namespaced(model, namespace),
-        None => ResponsesStreamParser::new(model),
-    }
 }

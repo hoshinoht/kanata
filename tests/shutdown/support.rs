@@ -15,8 +15,7 @@ use std::{
 
 use kanata::{
     adapter::{Adapter, AdapterFuture},
-    auth::{SecretResolutionError, SecretResolver},
-    config::{SecretReference, ValidatedConfig},
+    config::ValidatedConfig,
     core::{Capabilities, NormalizedEvent, RoutedRequest},
     server::{Readiness, TwoPlaneServer},
 };
@@ -29,14 +28,6 @@ use tokio::{
 
 use admission::{CancellationGuard, ok_chat};
 pub use admission::{Event, StreamProbe};
-
-pub struct Resolver;
-
-impl SecretResolver for Resolver {
-    fn resolve(&self, _: &SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
-        Ok(b"test-key".to_vec())
-    }
-}
 
 pub struct Running {
     pub client_addr: std::net::SocketAddr,
@@ -112,13 +103,9 @@ pub async fn parts(
     let admin_addr = admin_listener.local_addr().expect("admin address");
     let config = config(client_addr.port(), admin_addr.port());
     let readiness = Readiness::new(true);
-    let server = TwoPlaneServer::from_validated_with_adapters(
-        &config,
-        &Resolver,
-        readiness.clone(),
-        vec![adapter],
-    )
-    .expect("server builds");
+    let server =
+        TwoPlaneServer::from_validated_with_adapters(&config, readiness.clone(), vec![adapter])
+            .expect("server builds");
     (server, client_listener, admin_listener, readiness)
 }
 

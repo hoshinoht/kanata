@@ -1,9 +1,5 @@
 use super::*;
 
-pub(super) fn toml_string(value: &str) -> String {
-    serde_json::to_string(value).expect("string serializes")
-}
-
 // ---- list / show ----
 
 pub(super) fn format_date(at: u64) -> String {

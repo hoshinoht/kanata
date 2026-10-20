@@ -19,8 +19,7 @@ use axum::{
 use futures_core::Stream;
 use kanata::{
     adapter::{Adapter, AdapterFuture, AdapterOutput},
-    auth::{SecretResolutionError, SecretResolver},
-    config::{SecretReference, ValidatedConfig},
+    config::ValidatedConfig,
     core::{
         Capabilities, ChatContent, ChatMessage, ChatResponse, ChatRole, FinishReason, GatewayError,
         ModelAlias, NormalizedEvent, Response as CoreResponse, RoutedRequest,
@@ -88,13 +87,6 @@ fn config_contents(
 
 fn load_config(contents: String) -> ValidatedConfig {
     scratch::load_valid(&contents)
-}
-
-struct Resolver;
-impl SecretResolver for Resolver {
-    fn resolve(&self, _: &SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
-        Ok(b"test-key".to_vec())
-    }
 }
 
 #[derive(Clone)]
@@ -296,13 +288,8 @@ pub fn server_with_modes(config: &ValidatedConfig, modes: Vec<Mode>) -> (TwoPlan
         probe: probe.clone(),
     });
     (
-        TwoPlaneServer::from_validated_with_adapters(
-            config,
-            &Resolver,
-            Readiness::new(true),
-            vec![adapter],
-        )
-        .expect("server"),
+        TwoPlaneServer::from_validated_with_adapters(config, Readiness::new(true), vec![adapter])
+            .expect("server"),
         probe,
     )
 }

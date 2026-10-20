@@ -28,7 +28,6 @@ impl SecretResolver for EnvironmentSecretResolver {
                 .map(String::into_bytes)
                 .map_err(|_| SecretResolutionError),
             SecretReference::File(path) => read_bounded_file(path),
-            SecretReference::Sha256(_) => Err(SecretResolutionError),
         }
     }
 }
@@ -59,7 +58,6 @@ impl std::error::Error for SecretResolutionError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthBuildError {
-    SecretResolution,
     InvalidSecret,
     DuplicateSecret,
 }
@@ -67,7 +65,6 @@ pub enum AuthBuildError {
 impl fmt::Display for AuthBuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::SecretResolution => "application key resolution failed",
             Self::InvalidSecret => "application key is invalid",
             Self::DuplicateSecret => "application keys contain duplicate material",
         })
@@ -96,39 +93,24 @@ impl ApplicationAuth {
     pub(crate) fn key_ids(&self) -> std::collections::BTreeSet<String> {
         self.keys.iter().map(|key| key.identity.clone()).collect()
     }
-    pub fn from_validated(
-        config: &ValidatedConfig,
-        resolver: &impl SecretResolver,
-    ) -> Result<Self, AuthBuildError> {
-        Self::build(config, resolver, None)
+    pub fn from_validated(config: &ValidatedConfig) -> Result<Self, AuthBuildError> {
+        Self::build(config, None)
     }
 
     /// Rebuilds the key set, keeping a key's limiter when its limits are unchanged
     /// so in-flight counts and token buckets survive a reload.
     pub(crate) fn rebuild(
         config: &ValidatedConfig,
-        resolver: &impl SecretResolver,
         previous: &Self,
     ) -> Result<Self, AuthBuildError> {
-        Self::build(config, resolver, Some(previous))
+        Self::build(config, Some(previous))
     }
 
-    fn build(
-        config: &ValidatedConfig,
-        resolver: &impl SecretResolver,
-        previous: Option<&Self>,
-    ) -> Result<Self, AuthBuildError> {
+    fn build(config: &ValidatedConfig, previous: Option<&Self>) -> Result<Self, AuthBuildError> {
         let mut digests = BTreeSet::new();
-        let mut keys = Vec::with_capacity(config.application_keys().len());
-        for key in config.application_keys() {
-            let digest = if let Some(digest) = key.secret_ref().sha256_digest() {
-                *digest
-            } else {
-                let secret = resolver
-                    .resolve(key.secret_ref())
-                    .map_err(|_| AuthBuildError::SecretResolution)?;
-                hash(canonical_token(key.secret_ref(), secret)?.as_bytes())
-            };
+        let mut keys = Vec::with_capacity(config.keys().len());
+        for key in config.keys() {
+            let digest = *key.digest();
             if !digests.insert(digest) {
                 return Err(AuthBuildError::DuplicateSecret);
             }
@@ -282,7 +264,7 @@ impl KeyHandle {
     }
 }
 
-fn canonical_token(
+pub(crate) fn canonical_bearer_token(
     reference: &SecretReference,
     mut secret: Vec<u8>,
 ) -> Result<String, AuthBuildError> {
@@ -294,13 +276,6 @@ fn canonical_token(
         return Err(AuthBuildError::InvalidSecret);
     }
     Ok(token.into())
-}
-
-pub(crate) fn canonical_bearer_token(
-    reference: &SecretReference,
-    secret: Vec<u8>,
-) -> Result<String, AuthBuildError> {
-    canonical_token(reference, secret)
 }
 
 fn strip_one_terminal_newline(secret: &mut Vec<u8>) {

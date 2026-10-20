@@ -39,11 +39,12 @@ streaming_chat = false
 function_tools = true
 [models.chat.agent]
 adapter_id = "upstream"
-upstream_id = "gpt-oss-120b"
-[[application_keys]]
-id = "agent"
-secret_ref = "env:AGENT_KEY"
-permissions = [{{ model_alias = "agent", operation = "chat" }}]"#
+upstream_id = "gpt-oss-120b""#
+        ),
+        &scratch::key_record(
+            "agent",
+            scratch::TEST_KEY,
+            "permissions = [{ model_alias = \"agent\", operation = \"chat\" }]",
         ),
     );
     support::load_text(&text).unwrap_or_else(|error| panic!("{kind} config: {error}"))
@@ -54,13 +55,8 @@ fn server(config: &ValidatedConfig) -> TwoPlaneServer {
         VllmAdapter::from_config_with_secrets(config, "upstream", "agent", &support::Resolver)
             .expect("adapter");
     let adapters: Vec<Arc<dyn Adapter>> = vec![Arc::new(adapter)];
-    TwoPlaneServer::from_validated_with_adapters(
-        config,
-        &support::Resolver,
-        Readiness::new(true),
-        adapters,
-    )
-    .expect("server")
+    TwoPlaneServer::from_validated_with_adapters(config, Readiness::new(true), adapters)
+        .expect("server")
 }
 
 /// OMP's second turn after a gpt-oss tool call, replayed over `openai-completions`.

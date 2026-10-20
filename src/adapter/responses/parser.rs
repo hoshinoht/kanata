@@ -12,10 +12,10 @@ use crate::{
     },
 };
 
-/// Codex repeats instructions, tools and output in single events.
-const MAX_CODEX_EVENT_BYTES: usize = 4 * 1024 * 1024;
+/// The upstream repeats instructions, tools and output in single events.
+const MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
 /// Assembled text and tool-argument bytes per response.
-const MAX_CODEX_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 /// Encrypted reasoning kept per response; later items are dropped, which only costs
 /// the upstream some reasoning context on the next turn.
 const MAX_ENCRYPTED_REASONING_BYTES: usize = 4 * 1024 * 1024;
@@ -116,7 +116,7 @@ impl ResponsesStreamParser {
     pub(crate) fn new(public_model: ModelAlias) -> Self {
         Self {
             framer: SseFramer::new_with_named_events()
-                .with_limits(MAX_CODEX_EVENT_BYTES, MAX_CODEX_EVENT_BYTES),
+                .with_limits(MAX_EVENT_BYTES, MAX_EVENT_BYTES),
             public_model,
             namespace: None,
             response_id: None,
@@ -687,7 +687,7 @@ impl ResponsesStreamParser {
 
     fn add_output_bytes(&mut self, bytes: usize) -> Result<(), ()> {
         self.output_bytes = self.output_bytes.checked_add(bytes).ok_or(())?;
-        if self.output_bytes > MAX_CODEX_OUTPUT_BYTES {
+        if self.output_bytes > MAX_OUTPUT_BYTES {
             return Err(());
         }
         Ok(())

@@ -11,10 +11,9 @@ port = 9090
 [publication]
 tailnet_addresses = ["100.64.0.10", "fd7a:115c:a1e0::10"]
 
-# Offline schema fixture only; check does not access the selected store.
-[codex_auth]
-store = "keyring"
-state_dir = "/replace/with/owner-writable/absolute/path/kanata-codex"
+# Offline schema fixture only; check does not access the sign-in store.
+[chatgpt_auth]
+state_dir = "/replace/with/owner-writable/absolute/path/kanata-chatgpt"
 
 [[adapters]]
 id = "ollama-local"
@@ -49,9 +48,9 @@ streaming_chat = true
 function_tools = false
 
 [[adapters]]
-id = "codex-private"
-kind = "codex"
-base_url = "https://chatgpt.invalid/backend-api/codex"
+id = "chatgpt-private"
+kind = "chatgpt"
+base_url = "https://api.openai.com/v1"
 trust_zone = "external"
 [adapters.capabilities]
 operations = ["chat"]
@@ -95,25 +94,16 @@ requires_streaming_chat = true
 requires_function_tools = false
 
 [[routes]]
-id = "codex-chat"
-model_alias = "codex-chat"
+id = "chatgpt-chat"
+model_alias = "chatgpt-chat"
 operation = "chat"
-adapter_id = "codex-private"
-upstream_id = "gpt-5-codex"
+adapter_id = "chatgpt-private"
+upstream_id = "gpt-5"
 requires_streaming_chat = true
 requires_function_tools = true
 
-[[application_keys]]
-id = "personal-client"
-secret_ref = "env:KANATA_CLIENT_KEY"
-owner = true
-permissions = [
-  { model_alias = "local-chat", operation = "chat" },
-  { model_alias = "private-chat", operation = "chat" },
-  { model_alias = "private-transcribe", operation = "transcription" },
-  { model_alias = "remote-chat", operation = "chat" },
-  { model_alias = "codex-chat", operation = "chat" },
-]
+[keys]
+file = "example-keys.toml"
 
 [limits]
 max_uploads = 64

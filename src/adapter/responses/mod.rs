@@ -1,39 +1,25 @@
+//! Provider-neutral OpenAI Responses mapping: chat IR to a `/responses` request body,
+//! and the upstream event stream back to normalized events.
 use crate::adapter::{invalid_request, unsupported_operation};
 use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 
-use crate::config::{CodexReasoningEffort, CodexReasoningSummary, ProviderKind};
+use crate::config::ProviderKind;
 use crate::core::{
     ChatContent, ChatMessage, ChatRequest, ChatRole, GatewayError, ReasoningItem, Request,
     RoutedRequest, ToolChoice, TrustZone,
 };
 
+mod parser;
 #[cfg(test)]
-mod stream_tests;
+mod parser_tests;
+pub(crate) mod stream;
 #[cfg(test)]
 mod tests;
 
-mod stream;
-
-#[allow(unused_imports)]
-pub(crate) use stream::{ResponsesStreamError, ResponsesStreamParser};
-
 const MAX_TOOL_CALL_ID_BYTES: usize = 128;
 const MAX_TOOL_NAME_BYTES: usize = 64;
-
-pub(super) fn to_responses_request(
-    routed: &RoutedRequest,
-    reasoning_effort: CodexReasoningEffort,
-    reasoning_summary: Option<CodexReasoningSummary>,
-) -> Result<Value, GatewayError> {
-    let mut payload = to_text_request(routed, ProviderKind::Codex)?;
-    payload["reasoning"] = json!({ "effort": reasoning_effort.as_str() });
-    if let Some(summary) = reasoning_summary {
-        payload["reasoning"]["summary"] = json!(summary.as_str());
-    }
-    Ok(payload)
-}
 
 /// Whether the upstream is asked for encrypted reasoning, so its parser should keep it.
 pub(crate) fn requests_encrypted_reasoning(chat: &ChatRequest, kind: ProviderKind) -> bool {
@@ -173,7 +159,7 @@ fn validate_chat(chat: &ChatRequest) -> Result<(), GatewayError> {
                     return Err(unsupported_operation());
                 }
                 ChatContent::Reasoning { .. } => reasoning += 1,
-                // Codex replays only encrypted reasoning; plaintext replay is dropped.
+                // Only encrypted reasoning is replayed; plaintext replay is dropped.
                 ChatContent::ReasoningText { .. } => {}
             }
         }

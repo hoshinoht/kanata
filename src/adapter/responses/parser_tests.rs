@@ -3,31 +3,31 @@ use crate::core::{
     Usage,
 };
 
-use super::{ResponsesStreamError, ResponsesStreamParser};
+use super::parser::{ResponsesStreamError, ResponsesStreamParser};
 
 const RESPONSES_EVENTS: &str =
-    include_str!("../../../../tests/fixtures/codex/responses-events.sse");
+    include_str!("../../../tests/fixtures/responses/responses-events.sse");
 const FAILED_EVENTS: &str =
-    include_str!("../../../../tests/fixtures/codex/responses-events-failed.sse");
+    include_str!("../../../tests/fixtures/responses/responses-events-failed.sse");
 const INCOMPLETE_EVENTS: &str =
-    include_str!("../../../../tests/fixtures/codex/responses-events-incomplete.sse");
+    include_str!("../../../tests/fixtures/responses/responses-events-incomplete.sse");
 const TEXT_LIFECYCLE_EVENTS: &str =
-    include_str!("../../../../tests/fixtures/codex/responses-events-text-lifecycle.sse");
+    include_str!("../../../tests/fixtures/responses/responses-events-text-lifecycle.sse");
 const NAMED_RESPONSES_EVENTS: &str =
-    include_str!("../../../../tests/fixtures/codex/responses-events-named.sse");
+    include_str!("../../../tests/fixtures/responses/responses-events-named.sse");
 const IN_PROGRESS_NAMED: &str =
-    include_str!("../../../../tests/fixtures/codex/responses-events-in-progress-named.sse");
+    include_str!("../../../tests/fixtures/responses/responses-events-in-progress-named.sse");
 const IN_PROGRESS_UNNAMED: &str =
-    include_str!("../../../../tests/fixtures/codex/responses-events-in-progress-unnamed.sse");
+    include_str!("../../../tests/fixtures/responses/responses-events-in-progress-unnamed.sse");
 const LIVE_SHAPE_EVENTS: &str =
-    include_str!("../../../../tests/fixtures/codex/responses-events-live-shape.sse");
+    include_str!("../../../tests/fixtures/responses/responses-events-live-shape.sse");
 const EMPTY_ANSWER_EVENTS: &str =
-    include_str!("../../../../tests/fixtures/codex/responses-events-empty-answer.sse");
+    include_str!("../../../tests/fixtures/responses/responses-events-empty-answer.sse");
 const ENCRYPTED_REASONING_EVENTS: &str =
-    include_str!("../../../../tests/fixtures/codex/responses-events-encrypted-reasoning.sse");
+    include_str!("../../../tests/fixtures/responses/responses-events-encrypted-reasoning.sse");
 
 fn new_parser() -> ResponsesStreamParser {
-    ResponsesStreamParser::new(ModelAlias("codex-chat".into()))
+    ResponsesStreamParser::new(ModelAlias("responses-chat".into()))
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn fixture_translates_fragmented_multiline_text_tools_and_collection() {
         events,
         vec![
             NormalizedEvent::ChatStarted {
-                model: ModelAlias("codex-chat".into()),
+                model: ModelAlias("responses-chat".into()),
             },
             NormalizedEvent::ChatTextDelta {
                 text: "TEST_ONLY_TEXT_NOT_SECRET_0001".into(),
@@ -104,7 +104,7 @@ fn fixture_translates_fragmented_multiline_text_tools_and_collection() {
     );
 
     let response = parser.take_chat_response().expect("completed response");
-    assert_eq!(response.model, ModelAlias("codex-chat".into()));
+    assert_eq!(response.model, ModelAlias("responses-chat".into()));
     assert_eq!(response.message.role, ChatRole::Assistant);
     assert_eq!(
         response.message.content,
@@ -370,7 +370,7 @@ fn full_text_item_lifecycle_translates_and_collects_fragmented_multiline_sse() {
         events,
         vec![
             NormalizedEvent::ChatStarted {
-                model: ModelAlias("codex-chat".into()),
+                model: ModelAlias("responses-chat".into()),
             },
             NormalizedEvent::ChatTextDelta {
                 text: "TEST_ONLY_LIFECYCLE_TEXT_NOT_SECRET_0001".into(),
@@ -404,7 +404,7 @@ fn full_text_item_lifecycle_translates_and_collects_fragmented_multiline_sse() {
     let response = parser
         .take_chat_response()
         .expect("collected text response");
-    assert_eq!(response.model, ModelAlias("codex-chat".into()));
+    assert_eq!(response.model, ModelAlias("responses-chat".into()));
     assert_eq!(response.message.role, ChatRole::Assistant);
     assert_eq!(
         response.message.content,
@@ -583,7 +583,7 @@ fn live_shape_stream_skips_extra_fields_and_events_and_tolerates_snapshot_model(
         events,
         vec![
             NormalizedEvent::ChatStarted {
-                model: ModelAlias("codex-chat".into()),
+                model: ModelAlias("responses-chat".into()),
             },
             NormalizedEvent::ChatReasoningDelta {
                 text: "TEST_ONLY_SUMMARY_NOT_SECRET_0001".into(),
@@ -618,7 +618,7 @@ fn live_shape_stream_skips_extra_fields_and_events_and_tolerates_snapshot_model(
     assert!(!format!("{events:?}").contains("ENCRYPTED"));
 
     let response = parser.take_chat_response().expect("collected response");
-    assert_eq!(response.model, ModelAlias("codex-chat".into()));
+    assert_eq!(response.model, ModelAlias("responses-chat".into()));
     assert_eq!(response.finish_reason, FinishReason::ToolCalls);
     assert_eq!(response.usage, usage);
     assert_eq!(
@@ -661,7 +661,7 @@ fn output_items_without_deltas_are_emitted_from_done_items() {
         events,
         vec![
             NormalizedEvent::ChatStarted {
-                model: ModelAlias("codex-chat".into()),
+                model: ModelAlias("responses-chat".into()),
             },
             NormalizedEvent::ChatReasoningDelta {
                 text: "TEST_ONLY_SUMMARY_NOT_SECRET_0001".into(),
@@ -761,7 +761,7 @@ fn encrypted_reasoning_is_captured_only_when_requested() {
         events[..3],
         [
             NormalizedEvent::ChatStarted {
-                model: ModelAlias("codex-chat".into()),
+                model: ModelAlias("responses-chat".into()),
             },
             NormalizedEvent::ChatReasoningDelta {
                 text: "TEST_ONLY_SUMMARY_NOT_SECRET_0002".into(),
@@ -818,7 +818,7 @@ fn completed_message_with_empty_text_is_an_empty_answer() {
         events,
         [
             NormalizedEvent::ChatStarted {
-                model: ModelAlias("codex-chat".into()),
+                model: ModelAlias("responses-chat".into()),
             },
             NormalizedEvent::ChatCompleted {
                 finish_reason: FinishReason::Stop,

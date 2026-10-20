@@ -13,8 +13,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{Readiness, TwoPlaneServer};
 use crate::adapter::{Adapter, AdapterFuture, AdapterOutput};
-use crate::auth::{SecretResolutionError, SecretResolver};
-use crate::config::{self, KeyRateLimit, SecretReference, ValidatedConfig};
+use crate::config::{self, KeyRateLimit, ValidatedConfig};
 use crate::core::{
     Capabilities, FinishReason, ModelAlias, NormalizedEvent, Operation, RouteSelector,
     RoutedRequest,
@@ -109,12 +108,6 @@ impl Drop for Fixture {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
-struct Resolver;
-impl SecretResolver for Resolver {
-    fn resolve(&self, _: &SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
-        Err(SecretResolutionError)
-    }
-}
 struct StreamAdapter {
     id: String,
     capabilities: Capabilities,
@@ -156,13 +149,8 @@ fn adapters(config: &ValidatedConfig) -> Vec<Arc<dyn Adapter>> {
         .collect()
 }
 fn server(config: &ValidatedConfig) -> TwoPlaneServer {
-    TwoPlaneServer::from_validated_with_adapters(
-        config,
-        &Resolver,
-        Readiness::new(true),
-        adapters(config),
-    )
-    .unwrap()
+    TwoPlaneServer::from_validated_with_adapters(config, Readiness::new(true), adapters(config))
+        .unwrap()
 }
 fn request(model: &str) -> Request<Body> {
     Request::builder()
@@ -211,7 +199,7 @@ async fn generation_replaces_routes_scopes_and_publication_while_old_stream_fini
     before.check_reload_compatible(&next).unwrap();
     server
         .configuration_handle()
-        .apply(&next, &Resolver, adapters(&next))
+        .apply(&next, adapters(&next))
         .unwrap();
     assert!(
         models(&server, false).await["data"]
@@ -254,12 +242,12 @@ async fn route_and_adapter_capacity_survive_removal_and_readdition() {
     let removed = fixture.load("first", false, false, None, None);
     server
         .configuration_handle()
-        .apply(&removed, &Resolver, adapters(&removed))
+        .apply(&removed, adapters(&removed))
         .unwrap();
     let restored = fixture.load("first", true, true, None, None);
     server
         .configuration_handle()
-        .apply(&restored, &Resolver, adapters(&restored))
+        .apply(&restored, adapters(&restored))
         .unwrap();
     let busy = server.client_oneshot(request("first")).await.unwrap();
     assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -294,12 +282,7 @@ async fn key_rate_bucket_is_preserved_and_rejected_preparation_keeps_prior_gener
     let next = fixture.load("second", true, true, None, rate);
     let mut invalid = adapters(&next);
     invalid.push(invalid[0].clone());
-    assert!(
-        server
-            .configuration_handle()
-            .apply(&next, &Resolver, invalid)
-            .is_err()
-    );
+    assert!(server.configuration_handle().apply(&next, invalid).is_err());
     assert!(
         models(&server, false).await["data"]
             .as_array()
@@ -309,7 +292,7 @@ async fn key_rate_bucket_is_preserved_and_rejected_preparation_keeps_prior_gener
     );
     server
         .configuration_handle()
-        .apply(&next, &Resolver, adapters(&next))
+        .apply(&next, adapters(&next))
         .unwrap();
     let limited = server.client_oneshot(request("second")).await.unwrap();
     assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);

@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use sha2::{Digest as _, Sha256};
 
-use crate::auth::{ApplicationAuth, KeyHandle, SecretResolutionError, SecretResolver};
-use crate::config::{ConfigError, KeySource, Plane, SecretReference, ValidatedConfig};
+use crate::auth::{ApplicationAuth, KeyHandle};
+use crate::config::{ConfigError, KeySource, Plane, ValidatedConfig};
 use crate::keys::{file, time};
 
 pub const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -33,30 +33,26 @@ pub struct KeyReloader {
 }
 
 impl KeyReloader {
-    /// `None` for inline keys, which never reload.
-    pub fn new(config: ValidatedConfig, plane: Plane, handle: KeyHandle) -> Option<Self> {
-        let KeySource::File {
+    pub fn new(config: ValidatedConfig, plane: Plane, handle: KeyHandle) -> Self {
+        let KeySource {
             path,
             missing,
             sha256,
             ..
-        } = config.key_source()
-        else {
-            return None;
-        };
+        } = config.key_source();
         let path = path.clone();
         let applied = *sha256;
         // Startup already warned about a missing file.
         let last_warning = missing.then(|| (None, not_found().to_string()));
         handle.record_reload(!missing);
-        Some(Self {
+        Self {
             config,
             plane,
             handle,
             path,
             applied,
             last_warning,
-        })
+        }
     }
 
     pub fn poll_once(&mut self) -> ReloadOutcome {
@@ -89,18 +85,11 @@ impl KeyReloader {
 
     fn apply(&self, bytes: &[u8]) -> Result<(), ConfigError> {
         let keys = file::parse(bytes, self.config.routes())?;
-        let config = self
-            .config
-            .with_application_keys(&keys)?
-            .for_plane(self.plane)?;
-        let auth = ApplicationAuth::rebuild(&config, &DigestOnly, &self.handle.current())
+        let config = self.config.with_keys(&keys)?.for_plane(self.plane)?;
+        let auth = ApplicationAuth::rebuild(&config, &self.handle.current())
             .map_err(|_| ConfigError::new("keys_file", "build_error"))?;
         self.handle.replace(auth);
-        let ids: Vec<&str> = config
-            .application_keys()
-            .iter()
-            .map(|key| key.id())
-            .collect();
+        let ids: Vec<&str> = config.keys().iter().map(|key| key.id()).collect();
         tracing::info!(
             target: "kanata::keys",
             keys = ids.len(),
@@ -129,13 +118,4 @@ impl KeyReloader {
 
 fn not_found() -> ConfigError {
     ConfigError::new("keys.file", "not_found")
-}
-
-/// Keys-file records are digests; nothing is resolved.
-struct DigestOnly;
-
-impl SecretResolver for DigestOnly {
-    fn resolve(&self, _: &SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
-        Err(SecretResolutionError)
-    }
 }

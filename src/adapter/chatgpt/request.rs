@@ -55,10 +55,8 @@ pub(super) fn encode(
     {
         return Err(invalid());
     }
-    let mut payload = crate::adapter::codex::protocol::to_text_request(
-        routed,
-        crate::config::ProviderKind::Chatgpt,
-    )?;
+    let mut payload =
+        crate::adapter::responses::to_text_request(routed, crate::config::ProviderKind::Chatgpt)?;
     if let Some(effort) = binding.effort {
         if !capabilities.reasoning_control {
             return Err(invalid());

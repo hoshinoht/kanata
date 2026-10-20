@@ -110,10 +110,8 @@ requires_function_tools = false
 allows_input_audio = false
 allows_input_images = {allows_input_images}
 
-[[application_keys]]
-id = "fixture-client"
-secret_ref = "env:KANATA_TEST_CLIENT_KEY"
-permissions = [{{ model_alias = "{PUBLIC_MODEL}", operation = "chat" }}]
+[keys]
+file = "kanata-unit-missing-keys.toml"
 
 [limits]
 max_queue = 2

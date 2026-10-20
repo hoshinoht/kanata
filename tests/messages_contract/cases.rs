@@ -267,7 +267,7 @@ async fn api_key_header_authenticates_on_both_listeners() {
 #[tokio::test]
 async fn public_listener_refuses_unpublished_aliases_like_chat() {
     let (server, recorded) = support::server();
-    for model in ["codex-chat", "local-chat"] {
+    for model in ["chatgpt-chat", "local-chat"] {
         let chat = json!({"model":model,"messages":[{"role":"user","content":"hi"}]});
         let chat = server
             .public_oneshot(post("/v1/chat/completions", &chat))
@@ -406,9 +406,9 @@ async fn effort_applies_only_with_reasoning_control_and_max_tokens_clamps_to_the
 #[tokio::test]
 async fn max_output_tokens_are_dropped_on_a_route_without_sampling_controls() {
     let (server, recorded) = support::server();
-    let messages = json!({"model":"codex-chat","max_tokens":32000,
+    let messages = json!({"model":"chatgpt-chat","max_tokens":32000,
         "messages":[{"role":"user","content":"hi"}]});
-    let responses = json!({"model":"codex-chat","input":"hi","max_output_tokens":64});
+    let responses = json!({"model":"chatgpt-chat","input":"hi","max_output_tokens":64});
     for (path, body) in [(MESSAGES, messages), ("/v1/responses", responses)] {
         let response = send(&server, post(path, &body)).await;
         assert_eq!(response.status(), StatusCode::OK, "{path}");
@@ -455,7 +455,6 @@ async fn midstream_failure_is_an_error_event() {
     let config = support::config_with(&[]);
     let server = TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &crate::gateway::Resolver,
         Readiness::new(true),
         vec![std::sync::Arc::new(Failing(crate::gateway::capabilities(
             &config,
@@ -529,7 +528,6 @@ async fn empty_stop_reply_is_an_empty_answer_on_every_endpoint() {
     let config = support::config_with(&[]);
     let server = TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &crate::gateway::Resolver,
         Readiness::new(true),
         vec![std::sync::Arc::new(Empty(crate::gateway::capabilities(
             &config,

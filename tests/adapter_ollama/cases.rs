@@ -338,7 +338,6 @@ async fn stream_completion_wires_through_two_plane_server_with_public_model_and_
     let adapter = adapter(&config);
     let server = TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &crate::support::Resolver,
         Readiness::new(true),
         vec![std::sync::Arc::new(adapter)],
     )
@@ -405,7 +404,6 @@ async fn partial_provider_record_times_out_before_api_stream_headers() {
     let adapter = adapter(&config);
     let server = TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &crate::support::Resolver,
         Readiness::new(true),
         vec![std::sync::Arc::new(adapter)],
     )
@@ -874,7 +872,6 @@ async fn real_adapter_wires_through_both_planes_without_provider_types() {
     let adapter = adapter(&config);
     let server = TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &crate::support::Resolver,
         Readiness::new(true),
         vec![std::sync::Arc::new(adapter)],
     )

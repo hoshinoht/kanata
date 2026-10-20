@@ -1,4 +1,4 @@
-//! Owner-only credential record storage shared by the Codex and ChatGPT auth stores.
+//! Owner-only storage of the ChatGPT sign-in record: state directory, lock and atomic writes.
 
 use std::ffi::{CStr, CString};
 use std::fs::{File, TryLockError};
@@ -13,11 +13,18 @@ use rustix::fs::{AtFlags, FileType, Mode, OFlags, open, openat, renameat, statat
 use rustix::io::Errno;
 use rustix::process::geteuid;
 
+use super::record::MAX_RECORD_BYTES;
+
 const OWNER_DIR_MODE: u32 = 0o700;
 const OWNER_FILE_MODE: u32 = 0o600;
+const RECORD: &CStr = c"chatgpt-v1.json";
+const LOCK: &CStr = c"chatgpt.lock";
+const TEMP_PREFIX: &str = ".chatgpt-tmp-";
+const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(10);
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Storage failure categories; each provider maps them onto its own error enum.
+/// Storage failure categories, mapped onto `AuthError`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FileError {
     InvalidPath,
@@ -26,14 +33,6 @@ pub(super) enum FileError {
     TooLarge,
     LockTimeout,
     LockFailure,
-}
-
-/// A provider's record, lock and temp-file names inside its state directory.
-pub(super) struct AuthFiles {
-    pub record: &'static CStr,
-    pub lock: &'static CStr,
-    pub temp_prefix: &'static str,
-    pub max_record_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -88,161 +87,148 @@ pub(super) fn open_state_directory(path: &Path) -> Result<File, FileError> {
     Ok(current)
 }
 
-impl AuthFiles {
-    /// Open the lock file and poll its exclusive lock until `timeout` elapses.
-    pub(super) async fn lock(
-        &self,
-        directory: &File,
-        timeout: Duration,
-        poll_interval: Duration,
-    ) -> Result<File, FileError> {
-        let lock = self.open_lock_file(directory)?;
-        let started = tokio::time::Instant::now();
-        loop {
-            match lock.try_lock() {
-                Ok(()) => return Ok(lock),
-                Err(TryLockError::WouldBlock) => {
-                    let remaining = timeout.saturating_sub(started.elapsed());
-                    if remaining.is_zero() {
-                        return Err(FileError::LockTimeout);
-                    }
-                    tokio::time::sleep(poll_interval.min(remaining)).await;
+/// Open the lock file and poll its exclusive lock until the lock timeout elapses.
+pub(super) async fn lock(directory: &File) -> Result<File, FileError> {
+    let lock = open_lock_file(directory)?;
+    let started = tokio::time::Instant::now();
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(TryLockError::WouldBlock) => {
+                let remaining = LOCK_TIMEOUT.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    return Err(FileError::LockTimeout);
                 }
-                Err(TryLockError::Error(_)) => return Err(FileError::LockFailure),
+                tokio::time::sleep(LOCK_POLL_INTERVAL.min(remaining)).await;
             }
+            Err(TryLockError::Error(_)) => return Err(FileError::LockFailure),
         }
     }
+}
 
-    fn open_lock_file(&self, directory: &File) -> Result<File, FileError> {
+fn open_lock_file(directory: &File) -> Result<File, FileError> {
+    match openat(
+        directory,
+        LOCK,
+        OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(OWNER_FILE_MODE as _),
+    ) {
+        Ok(descriptor) => {
+            let file = File::from(descriptor);
+            secure_new_file(&file)?;
+            Ok(file)
+        }
+        Err(error) if error == Errno::EXIST => {
+            open_existing(directory, LOCK, OFlags::RDWR)?.ok_or(FileError::Unsafe)
+        }
+        Err(_) => Err(FileError::Io),
+    }
+}
+
+/// Read and decode the record; `None` when it does not exist.
+pub(super) fn read_record<T, E: From<FileError>>(
+    directory: &File,
+    decode: impl FnOnce(&[u8]) -> Result<T, E>,
+) -> Result<Option<T>, E> {
+    let Some(file) = open_record_file(directory)? else {
+        return Ok(None);
+    };
+    decode(&read_bounded(file)?).map(Some)
+}
+
+fn read_bounded(mut file: File) -> Result<Vec<u8>, FileError> {
+    let mut bytes = Vec::with_capacity(MAX_RECORD_BYTES + 1);
+    Read::by_ref(&mut file)
+        .take((MAX_RECORD_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| FileError::Io)?;
+    if bytes.len() > MAX_RECORD_BYTES {
+        return Err(FileError::TooLarge);
+    }
+    Ok(bytes)
+}
+
+/// Atomically replace the record: owner-only temp file, fsync, rename, directory fsync.
+pub(super) fn write_record(directory: &File, record: &[u8]) -> Result<(), FileError> {
+    commit_file_record(directory, record, &mut |_| Ok(()))
+}
+
+fn commit_file_record(
+    directory: &File,
+    record: &[u8],
+    failpoint: &mut impl FnMut(CommitStage) -> std::io::Result<()>,
+) -> Result<(), FileError> {
+    if record.len() > MAX_RECORD_BYTES {
+        return Err(FileError::TooLarge);
+    }
+    validate_directory(directory)?;
+    let (temporary_name, mut temporary_file) = create_temp_file(directory)?;
+    let temporary_cstr = CString::new(temporary_name.as_str()).map_err(|_| FileError::Io)?;
+    let mut renamed = false;
+    let result = (|| {
+        failpoint(CommitStage::Created)?;
+        temporary_file.write_all(record)?;
+        failpoint(CommitStage::Written)?;
+        temporary_file.sync_all()?;
+        failpoint(CommitStage::FileSynced)?;
+        renameat(directory, temporary_cstr.as_c_str(), directory, RECORD)
+            .map_err(std::io::Error::from)?;
+        renamed = true;
+        drop(temporary_file);
+        failpoint(CommitStage::Renamed)?;
+        directory.sync_all()?;
+        failpoint(CommitStage::DirectorySynced)?;
+        Ok::<(), std::io::Error>(())
+    })();
+
+    if result.is_err() && !renamed {
+        let _ = unlinkat(directory, temporary_cstr.as_c_str(), AtFlags::empty());
+    }
+    result.map_err(|_| FileError::Io)
+}
+
+fn create_temp_file(directory: &File) -> Result<(String, File), FileError> {
+    for _ in 0..32 {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let name = format!("{TEMP_PREFIX}{}-{stamp}-{counter}", std::process::id());
+        let c_name = CString::new(name.as_str()).map_err(|_| FileError::Io)?;
         match openat(
             directory,
-            self.lock,
-            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            c_name.as_c_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::from_raw_mode(OWNER_FILE_MODE as _),
         ) {
             Ok(descriptor) => {
                 let file = File::from(descriptor);
-                secure_new_file(&file)?;
-                Ok(file)
-            }
-            Err(error) if error == Errno::EXIST => {
-                open_existing(directory, self.lock, OFlags::RDWR)?.ok_or(FileError::Unsafe)
-            }
-            Err(_) => Err(FileError::Io),
-        }
-    }
-
-    /// Read and decode the record; `None` when it does not exist.
-    pub(super) fn read_record<T, E: From<FileError>>(
-        &self,
-        directory: &File,
-        decode: impl FnOnce(&[u8]) -> Result<T, E>,
-    ) -> Result<Option<T>, E> {
-        let Some(file) = self.open_record_file(directory)? else {
-            return Ok(None);
-        };
-        decode(&self.read_bounded(file)?).map(Some)
-    }
-
-    fn read_bounded(&self, mut file: File) -> Result<Vec<u8>, FileError> {
-        let mut bytes = Vec::with_capacity(self.max_record_bytes + 1);
-        Read::by_ref(&mut file)
-            .take((self.max_record_bytes + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|_| FileError::Io)?;
-        if bytes.len() > self.max_record_bytes {
-            return Err(FileError::TooLarge);
-        }
-        Ok(bytes)
-    }
-
-    /// Atomically replace the record: owner-only temp file, fsync, rename, directory fsync.
-    pub(super) fn write_record(&self, directory: &File, record: &[u8]) -> Result<(), FileError> {
-        self.commit_file_record(directory, record, &mut |_| Ok(()))
-    }
-
-    fn commit_file_record(
-        &self,
-        directory: &File,
-        record: &[u8],
-        failpoint: &mut impl FnMut(CommitStage) -> std::io::Result<()>,
-    ) -> Result<(), FileError> {
-        if record.len() > self.max_record_bytes {
-            return Err(FileError::TooLarge);
-        }
-        validate_directory(directory)?;
-        let (temporary_name, mut temporary_file) = self.create_temp_file(directory)?;
-        let temporary_cstr = CString::new(temporary_name.as_str()).map_err(|_| FileError::Io)?;
-        let mut renamed = false;
-        let result = (|| {
-            failpoint(CommitStage::Created)?;
-            temporary_file.write_all(record)?;
-            failpoint(CommitStage::Written)?;
-            temporary_file.sync_all()?;
-            failpoint(CommitStage::FileSynced)?;
-            renameat(directory, temporary_cstr.as_c_str(), directory, self.record)
-                .map_err(std::io::Error::from)?;
-            renamed = true;
-            drop(temporary_file);
-            failpoint(CommitStage::Renamed)?;
-            directory.sync_all()?;
-            failpoint(CommitStage::DirectorySynced)?;
-            Ok::<(), std::io::Error>(())
-        })();
-
-        if result.is_err() && !renamed {
-            let _ = unlinkat(directory, temporary_cstr.as_c_str(), AtFlags::empty());
-        }
-        result.map_err(|_| FileError::Io)
-    }
-
-    fn create_temp_file(&self, directory: &File) -> Result<(String, File), FileError> {
-        for _ in 0..32 {
-            let stamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let name = format!(
-                "{}{}-{stamp}-{counter}",
-                self.temp_prefix,
-                std::process::id()
-            );
-            let c_name = CString::new(name.as_str()).map_err(|_| FileError::Io)?;
-            match openat(
-                directory,
-                c_name.as_c_str(),
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::from_raw_mode(OWNER_FILE_MODE as _),
-            ) {
-                Ok(descriptor) => {
-                    let file = File::from(descriptor);
-                    if let Err(error) = secure_new_file(&file) {
-                        drop(file);
-                        let _ = unlinkat(directory, c_name.as_c_str(), AtFlags::empty());
-                        return Err(error);
-                    }
-                    return Ok((name, file));
+                if let Err(error) = secure_new_file(&file) {
+                    drop(file);
+                    let _ = unlinkat(directory, c_name.as_c_str(), AtFlags::empty());
+                    return Err(error);
                 }
-                Err(error) if error == Errno::EXIST => continue,
-                Err(_) => return Err(FileError::Io),
+                return Ok((name, file));
             }
+            Err(error) if error == Errno::EXIST => continue,
+            Err(_) => return Err(FileError::Io),
         }
-        Err(FileError::Io)
     }
+    Err(FileError::Io)
+}
 
-    /// Open the validated record read-only; `None` when it does not exist.
-    pub(super) fn open_record_file(&self, directory: &File) -> Result<Option<File>, FileError> {
-        validate_directory(directory)?;
-        let Some(file) = open_existing(directory, self.record, OFlags::RDONLY)? else {
-            return Ok(None);
-        };
-        let metadata = file.metadata().map_err(|_| FileError::Io)?;
-        if metadata.len() > self.max_record_bytes as u64 {
-            return Err(FileError::TooLarge);
-        }
-        Ok(Some(file))
+/// Open the validated record read-only; `None` when it does not exist.
+fn open_record_file(directory: &File) -> Result<Option<File>, FileError> {
+    validate_directory(directory)?;
+    let Some(file) = open_existing(directory, RECORD, OFlags::RDONLY)? else {
+        return Ok(None);
+    };
+    let metadata = file.metadata().map_err(|_| FileError::Io)?;
+    if metadata.len() > MAX_RECORD_BYTES as u64 {
+        return Err(FileError::TooLarge);
     }
+    Ok(Some(file))
 }
 
 /// Open an existing owner-only regular file without following symlinks; `None` when absent.
@@ -342,13 +328,9 @@ mod tests {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
 
-    use super::{AuthFiles, CommitStage, FileError, TestDir, open_state_directory};
-
-    const FILES: AuthFiles = AuthFiles {
-        record: c"test-v1.json",
-        lock: c"test.lock",
-        temp_prefix: ".test-tmp-",
-        max_record_bytes: 1024,
+    use super::{
+        CommitStage, FileError, MAX_RECORD_BYTES, TestDir, commit_file_record, open_record_file,
+        open_state_directory, read_bounded,
     };
 
     #[test]
@@ -360,7 +342,7 @@ mod tests {
         ] {
             let temp = TestDir::new();
             let directory = open_state_directory(&temp.0).expect("open secure directory");
-            let result = FILES.commit_file_record(&directory, b"synthetic", &mut |stage| {
+            let result = commit_file_record(&directory, b"synthetic", &mut |stage| {
                 if stage == failed_stage {
                     Err(std::io::Error::other("injected failure"))
                 } else {
@@ -376,7 +358,7 @@ mod tests {
     fn failure_after_rename_is_not_acknowledged_and_keeps_no_temp() {
         let temp = TestDir::new();
         let directory = open_state_directory(&temp.0).expect("open secure directory");
-        let result = FILES.commit_file_record(&directory, b"synthetic", &mut |stage| {
+        let result = commit_file_record(&directory, b"synthetic", &mut |stage| {
             if stage == CommitStage::Renamed {
                 Err(std::io::Error::other("injected failure"))
             } else {
@@ -388,20 +370,19 @@ mod tests {
             .expect("list directory")
             .map(|entry| entry.expect("directory entry").file_name())
             .collect::<Vec<_>>();
-        assert_eq!(names, [std::ffi::OsString::from("test-v1.json")]);
+        assert_eq!(names, [std::ffi::OsString::from("chatgpt-v1.json")]);
     }
 
     #[test]
     fn record_read_is_bounded_if_file_grows_after_open() {
         let temp = TestDir::new();
         let directory = open_state_directory(&temp.0).expect("open secure directory");
-        let path = temp.0.join("test-v1.json");
+        let path = temp.0.join("chatgpt-v1.json");
         fs::write(&path, b"synthetic").expect("create synthetic record");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
             .expect("secure synthetic record");
 
-        let opened = FILES
-            .open_record_file(&directory)
+        let opened = open_record_file(&directory)
             .expect("open record")
             .expect("record exists");
         let mut writer = fs::OpenOptions::new()
@@ -409,9 +390,9 @@ mod tests {
             .open(&path)
             .expect("open synthetic append handle");
         writer
-            .write_all(&vec![b'x'; FILES.max_record_bytes + 1])
+            .write_all(&vec![b'x'; MAX_RECORD_BYTES + 1])
             .expect("grow record after open");
 
-        assert_eq!(FILES.read_bounded(opened), Err(FileError::TooLarge));
+        assert_eq!(read_bounded(opened), Err(FileError::TooLarge));
     }
 }

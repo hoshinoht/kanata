@@ -21,15 +21,11 @@ pub(super) fn validate(
         }
         let base_url = validate_url(&adapter, &path)?;
         let ca_bundle = validate_ca_file(&adapter, &base_url, &path, index)?;
-        let secret_ref = if matches!(adapter.kind, ProviderKind::Codex | ProviderKind::Chatgpt) {
+        let secret_ref = if adapter.kind == ProviderKind::Chatgpt {
             if adapter.secret_ref.is_some() {
                 return Err(ConfigError::new(
                     format!("{path}.secret_ref"),
-                    if adapter.kind == ProviderKind::Codex {
-                        "codex_secret_ref_unsupported"
-                    } else {
-                        "chatgpt_secret_ref_unsupported"
-                    },
+                    "chatgpt_secret_ref_unsupported",
                 ));
             }
             None
@@ -37,7 +33,6 @@ pub(super) fn validate(
             Some(validate_secret_ref(
                 secret_ref,
                 &format!("{path}.secret_ref"),
-                false,
             )?)
         } else if matches!(
             adapter.kind,
@@ -142,12 +137,6 @@ pub(super) fn validate(
                     ));
                 }
             }
-        }
-        if adapter.kind == ProviderKind::Codex && operations.contains(&Operation::Transcription) {
-            return Err(ConfigError::new(
-                format!("{path}.capabilities.operations"),
-                "codex_chat_only",
-            ));
         }
         if adapter.kind == ProviderKind::Cliproxy {
             if operations != BTreeSet::from([Operation::Chat]) {
@@ -320,16 +309,6 @@ pub(super) fn validate(
     if adapters.is_empty() {
         return Err(ConfigError::new("adapters", "empty"));
     }
-    let has_codex_adapter = adapters
-        .iter()
-        .any(|adapter| adapter.kind == ProviderKind::Codex);
-    let codex_auth = match (has_codex_adapter, raw.codex_auth) {
-        (true, Some(auth)) => Some(validate_codex_auth(auth)?),
-        (true, None) => return Err(ConfigError::new("codex_auth", "required")),
-        (false, Some(_)) => return Err(ConfigError::new("codex_auth", "without_codex_adapter")),
-        (false, None) => None,
-    };
-
     let has_chatgpt_adapter = adapters
         .iter()
         .any(|adapter| adapter.kind == ProviderKind::Chatgpt);
@@ -393,80 +372,19 @@ pub(super) fn validate(
             .iter()
             .find(|adapter| adapter.id == route.adapter_id)
             .ok_or_else(|| ConfigError::new(format!("{path}.adapter_id"), "missing_adapter"))?;
-        let codex_reasoning_effort = match adapter.kind {
-            ProviderKind::Codex if route.operation == Operation::Chat => {
-                match (alias_effort, route.codex_reasoning_effort) {
-                    (Some(alias), Some(field))
-                        if CodexReasoningEffort::from_request(alias) != Some(field) =>
-                    {
-                        return Err(ConfigError::new(
-                            format!("{path}.codex_reasoning_effort"),
-                            "does_not_match_alias",
-                        ));
-                    }
-                    (Some(_), None) => {
-                        return Err(ConfigError::new(
-                            format!("{path}.codex_reasoning_effort"),
-                            "required_for_effort_alias",
-                        ));
-                    }
-                    (None, Some(_)) => {
-                        return Err(ConfigError::new(
-                            format!("{path}.codex_reasoning_effort"),
-                            "effort_requires_alias",
-                        ));
-                    }
-                    (Some(_), Some(field)) => Some(field),
-                    (None, None) => Some(CodexReasoningEffort::Medium),
-                }
-            }
-            ProviderKind::Codex => {
-                if route.codex_reasoning_effort.is_some() {
-                    return Err(ConfigError::new(
-                        format!("{path}.codex_reasoning_effort"),
-                        "codex_chat_only",
-                    ));
-                }
-                if alias_effort.is_some() {
-                    return Err(ConfigError::new(
-                        format!("{path}.model_alias"),
-                        "codex_chat_only",
-                    ));
-                }
-                None
-            }
-            ProviderKind::Chatgpt => {
-                if route.codex_reasoning_effort.is_some() {
-                    return Err(ConfigError::new(
-                        format!("{path}.codex_reasoning_effort"),
-                        "codex_only",
-                    ));
-                }
-                None
-            }
-            _ => {
-                if route.codex_reasoning_effort.is_some() {
-                    return Err(ConfigError::new(
-                        format!("{path}.codex_reasoning_effort"),
-                        "codex_only",
-                    ));
-                }
-                if alias_effort.is_some() && route.reasoning_effort.is_none() {
-                    return Err(ConfigError::new(
-                        format!("{path}.model_alias"),
-                        "codex_effort_alias_only",
-                    ));
-                }
-                None
-            }
-        };
+        if adapter.kind != ProviderKind::Chatgpt
+            && alias_effort.is_some()
+            && route.reasoning_effort.is_none()
+        {
+            return Err(ConfigError::new(
+                format!("{path}.model_alias"),
+                "effort_alias_requires_reasoning_effort",
+            ));
+        }
         // ChatGPT always runs at a pinned effort; other reasoning-control adapters pin
         // optionally (effort families) and otherwise forward the client's effort.
         if let Some(effort) = route.reasoning_effort {
-            if adapter.kind == ProviderKind::Codex
-                || route.operation != Operation::Chat
-                || !adapter.capabilities.reasoning_control
-            {
+            if route.operation != Operation::Chat || !adapter.capabilities.reasoning_control {
                 return Err(ConfigError::new(
                     format!("{path}.reasoning_effort"),
                     "unsupported_by_adapter",
@@ -492,35 +410,13 @@ pub(super) fn validate(
                 "required",
             ));
         }
-        if route.reasoning_summary.is_some() {
-            if !matches!(adapter.kind, ProviderKind::Chatgpt | ProviderKind::Codex)
-                || route.operation != Operation::Chat
-            {
-                return Err(ConfigError::new(
-                    format!("{path}.reasoning_summary"),
-                    "unsupported_by_adapter",
-                ));
-            }
-            if route.codex_reasoning_summary.is_some() {
-                return Err(ConfigError::new(
-                    format!("{path}.reasoning_summary"),
-                    "conflicting_summary_options",
-                ));
-            }
-        }
-        if route.codex_reasoning_summary.is_some() {
-            if adapter.kind != ProviderKind::Codex {
-                return Err(ConfigError::new(
-                    format!("{path}.codex_reasoning_summary"),
-                    "codex_only",
-                ));
-            }
-            if route.operation != Operation::Chat {
-                return Err(ConfigError::new(
-                    format!("{path}.codex_reasoning_summary"),
-                    "codex_chat_only",
-                ));
-            }
+        if route.reasoning_summary.is_some()
+            && (adapter.kind != ProviderKind::Chatgpt || route.operation != Operation::Chat)
+        {
+            return Err(ConfigError::new(
+                format!("{path}.reasoning_summary"),
+                "unsupported_by_adapter",
+            ));
         }
         if !adapter.capabilities.operations.contains(&route.operation) {
             return Err(ConfigError::new(
@@ -599,7 +495,7 @@ pub(super) fn validate(
             if route.operation != Operation::Chat {
                 return Err(ConfigError::new(path, "chat_only"));
             }
-            if !adapter.capabilities.sampling_controls || adapter.kind == ProviderKind::Codex {
+            if !adapter.capabilities.sampling_controls {
                 return Err(ConfigError::new(path, "unsupported_output_cap"));
             }
             if !(1..=crate::core::MAX_OUTPUT_TOKENS).contains(&tokens) {
@@ -675,10 +571,8 @@ pub(super) fn validate(
                 selector,
             },
             adapter_id: route.adapter_id,
-            codex_reasoning_effort,
             reasoning_effort: route.reasoning_effort,
             reasoning_summary: route.reasoning_summary,
-            codex_reasoning_summary: route.codex_reasoning_summary,
             extension_allowlist,
             requires_streaming_chat: route.requires_streaming_chat,
             requires_function_tools: route.requires_function_tools,
@@ -735,24 +629,17 @@ pub(super) fn validate(
         &routes,
         &adapters,
     )?;
-    let (application_keys, key_source) = match raw.keys {
-        Some(_) if !raw.application_keys.is_empty() => {
-            return Err(ConfigError::new("keys", "conflicting_key_sources"));
-        }
-        Some(keys) => load_key_file(&keys, config_dir, &routes, read_files)?,
-        None => (
-            validate_application_keys(raw.application_keys, &routes)?,
-            KeySource::Inline,
-        ),
-    };
+    let keys = raw
+        .keys
+        .ok_or_else(|| ConfigError::new("keys", "required"))?;
+    let (keys, key_source) = load_key_file(&keys, config_dir, &routes, read_files)?;
     Ok(ValidatedConfig {
         listeners,
         publication,
-        codex_auth,
         chatgpt_auth,
         adapters,
         routes,
-        application_keys,
+        keys,
         key_source,
         limits,
         timeouts,
@@ -761,46 +648,6 @@ pub(super) fn validate(
             level: raw.logging.level,
             format: raw.logging.format,
         },
-    })
-}
-
-pub(super) fn validate_codex_auth(auth: RawCodexAuth) -> Result<ValidatedCodexAuth, ConfigError> {
-    let store = auth.store.unwrap_or(CodexAuthStore::Keyring);
-    let state_dir = auth
-        .state_dir
-        .as_deref()
-        .ok_or_else(|| ConfigError::new("codex_auth.state_dir", "required"))?;
-    if state_dir.is_empty() {
-        return Err(ConfigError::new("codex_auth.state_dir", "empty"));
-    }
-    if state_dir.chars().any(char::is_control) {
-        return Err(ConfigError::new("codex_auth.state_dir", "invalid_path"));
-    }
-    let state_dir_path = Path::new(state_dir);
-    if !state_dir_path.is_absolute() {
-        return Err(ConfigError::new(
-            "codex_auth.state_dir",
-            "absolute_path_required",
-        ));
-    }
-    if state_dir_path
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(ConfigError::new(
-            "codex_auth.state_dir",
-            "parent_traversal_forbidden",
-        ));
-    }
-    if !state_dir_path
-        .components()
-        .any(|component| matches!(component, std::path::Component::Normal(_)))
-    {
-        return Err(ConfigError::new("codex_auth.state_dir", "root_not_allowed"));
-    }
-    Ok(ValidatedCodexAuth {
-        store,
-        state_dir: state_dir_path.to_path_buf(),
     })
 }
 
@@ -1003,7 +850,6 @@ pub(super) fn validate_public_routes(
             return Err(ConfigError::new(
                 path,
                 match adapter.kind {
-                    ProviderKind::Codex => "codex_not_public",
                     ProviderKind::Cliproxy => "cliproxy_not_public",
                     ProviderKind::Anthropic => "anthropic_not_public",
                     _ => "chatgpt_not_public",
@@ -1070,7 +916,7 @@ pub(super) fn validate_ca_file(
         return Ok(None);
     };
     let field = format!("{path}.ca_file");
-    // Only kinds that dial their configured base_url: ChatGPT and Codex pin public origins,
+    // Only kinds that dial their configured base_url: ChatGPT pins a public origin,
     // and `fm serve` speaks plain HTTP.
     if !matches!(
         adapter.kind,
@@ -1157,7 +1003,6 @@ fn read_ca_file(
 pub(super) fn validate_provider_zone(adapter: &RawAdapter, path: &str) -> Result<(), ConfigError> {
     let valid = match adapter.kind {
         ProviderKind::Openrouter
-        | ProviderKind::Codex
         | ProviderKind::Chatgpt
         | ProviderKind::Cliproxy
         | ProviderKind::Anthropic => adapter.trust_zone == TrustZone::External,
@@ -1244,58 +1089,7 @@ pub(super) fn validate_anthropic(
     }))
 }
 
-pub(super) fn validate_application_keys(
-    keys: Vec<RawApplicationKey>,
-    routes: &[ValidatedRoute],
-) -> Result<Vec<ValidatedApplicationKey>, ConfigError> {
-    let mut ids = BTreeSet::new();
-    let mut digests = BTreeSet::new();
-    let mut owner_seen = false;
-    let mut validated = Vec::with_capacity(keys.len());
-    for (index, key) in keys.into_iter().enumerate() {
-        let path = format!("application_keys[{index}]");
-        if key.owner {
-            if owner_seen {
-                return Err(ConfigError::new(format!("{path}.owner"), "multiple_owners"));
-            }
-            owner_seen = true;
-        }
-        if !valid_identifier(&key.id) || !ids.insert(key.id.clone()) {
-            return Err(ConfigError::new(
-                format!("{path}.id"),
-                "invalid_or_duplicate_id",
-            ));
-        }
-        let secret_ref = validate_secret_ref(&key.secret_ref, &format!("{path}.secret_ref"), true)?;
-        if let SecretReference::Sha256(digest) = &secret_ref
-            && !digests.insert(*digest)
-        {
-            return Err(ConfigError::new(
-                format!("{path}.secret_ref"),
-                "duplicate_secret",
-            ));
-        }
-        let permissions = validate_permissions(&key.permissions, &path, Some(routes))?;
-        let (max_in_flight, rate_limit) =
-            validate_key_limits(key.max_in_flight, key.rate_limit, &path)?;
-        validated.push(ValidatedApplicationKey {
-            id: key.id,
-            owner: key.owner,
-            max_in_flight,
-            rate_limit,
-            secret_ref,
-            permissions,
-            expires_at: None,
-            daily_quota: None,
-        });
-    }
-    if ids.is_empty() {
-        return Err(ConfigError::new("application_keys", "empty"));
-    }
-    Ok(validated)
-}
-
-/// Key permission rules shared by inline keys and the keys file. `routes = None`
+/// Key permission rules for the keys file. `routes = None`
 /// (revoked records) checks syntax only.
 pub(crate) fn validate_permissions(
     raw: &[RawPermission],
@@ -1365,7 +1159,7 @@ pub(super) fn load_key_file(
     if !read_file {
         return Ok((
             Vec::new(),
-            KeySource::File {
+            KeySource {
                 path,
                 usage_dir,
                 missing: false,
@@ -1376,7 +1170,7 @@ pub(super) fn load_key_file(
     let Some(bytes) = keys::file::read(&path)? else {
         return Ok((
             Vec::new(),
-            KeySource::File {
+            KeySource {
                 path,
                 usage_dir,
                 missing: true,
@@ -1392,8 +1186,8 @@ pub(super) fn load_key_file(
         ));
     }
     Ok((
-        application_keys_from_file(&file, routes)?,
-        KeySource::File {
+        keys_from_file(&file, routes)?,
+        KeySource {
             path,
             usage_dir,
             missing: false,
@@ -1414,7 +1208,7 @@ pub(super) fn validate_key_path<'a>(value: &'a str, path: &str) -> Result<&'a Pa
 
 /// Active records only; re-checks scopes so a file parsed elsewhere cannot
 /// grant a selector this config does not route.
-pub(super) fn application_keys_from_file(
+pub(super) fn keys_from_file(
     file: &KeysFile,
     routes: &[ValidatedRoute],
 ) -> Result<Vec<ValidatedApplicationKey>, ConfigError> {
@@ -1437,7 +1231,7 @@ pub(super) fn application_keys_from_file(
         keys.push(ValidatedApplicationKey {
             id: record.id().to_owned(),
             owner: record.is_owner(),
-            secret_ref: SecretReference::Sha256(*record.digest()),
+            digest: *record.digest(),
             permissions: record.permissions().to_vec(),
             max_in_flight: record.max_in_flight(),
             rate_limit: record.rate_limit(),
@@ -1448,18 +1242,9 @@ pub(super) fn application_keys_from_file(
     Ok(keys)
 }
 
-pub(super) fn validate_secret_ref(
-    value: &str,
-    path: &str,
-    allow_digest: bool,
-) -> Result<SecretReference, ConfigError> {
-    if let Some(hex) = value.strip_prefix("sha256:") {
-        if !allow_digest {
-            return Err(ConfigError::new(path, "digest_reference_unsupported"));
-        }
-        return parse_sha256_hex(hex)
-            .map(SecretReference::Sha256)
-            .ok_or_else(|| ConfigError::new(path, "invalid_secret_reference"));
+pub(super) fn validate_secret_ref(value: &str, path: &str) -> Result<SecretReference, ConfigError> {
+    if value.starts_with("sha256:") {
+        return Err(ConfigError::new(path, "digest_reference_unsupported"));
     }
     if let Some(name) = value.strip_prefix("env:").filter(valid_env_name) {
         return Ok(SecretReference::Env(name.into()));

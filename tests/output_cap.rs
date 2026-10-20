@@ -32,16 +32,9 @@ async fn default_output_cap_reaches_upstream_for_complete_and_streaming_requests
                 "upstream_id = \"llama3.2:latest\"\nmax_output_tokens = 64",
             );
         assert_ne!(original, contents);
-        let path = std::env::temp_dir().join(format!(
-            "kanata-cap-{:016x}.toml",
-            getrandom::u64().expect("random")
-        ));
-        std::fs::write(&path, contents).expect("config");
-        let config = kanata::config::load(&path).expect("valid config");
-        std::fs::remove_file(path).expect("remove fixture");
+        let config = scratch::load_valid(&contents);
         let server = kanata::server::TwoPlaneServer::from_validated_with_adapters(
             &config,
-            &gateway::Resolver,
             kanata::server::Readiness::new(true),
             vec![Arc::new(upstream::adapter(&config))],
         )
