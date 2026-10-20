@@ -1,3 +1,4 @@
+use crate::adapter::upstream_failure;
 use std::{
     collections::VecDeque,
     pin::Pin,
@@ -15,7 +16,7 @@ use crate::{
             sse::{SseFramer, SseRecord},
         },
     },
-    core::{ErrorKind, GatewayError, MAX_ENCRYPTED_REASONING_BYTES, ModelAlias, NormalizedEvent},
+    core::{GatewayError, MAX_ENCRYPTED_REASONING_BYTES, ModelAlias, NormalizedEvent},
 };
 
 use super::stream_state::StreamState;
@@ -96,12 +97,6 @@ impl Stream for AnthropicStream {
                 Poll::Pending => return Poll::Pending,
             }
         }
-    }
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
     }
 }
 

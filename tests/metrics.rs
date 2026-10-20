@@ -6,6 +6,8 @@ mod admission_support;
 mod cases;
 #[path = "support/gateway.rs"]
 mod gateway;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "metrics/socket.rs"]
 mod socket;
 #[path = "sse/support.rs"]

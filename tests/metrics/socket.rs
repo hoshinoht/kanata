@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
-use std::{fs, io, sync::Arc, time::Duration};
+use std::{io, sync::Arc, time::Duration};
 
 use axum::http::StatusCode;
 use kanata::{
     adapter::{Adapter, AdapterFuture, AdapterOutput},
-    config::{ValidatedConfig, load},
+    config::ValidatedConfig,
     core::{
         Capabilities, ChatContent, ChatMessage, ChatResponse, ChatRole, FinishReason,
         Response as CoreResponse, RoutedRequest, Usage,
@@ -19,9 +19,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::gateway::Resolver;
-
-static CONFIG_SEQUENCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+use crate::gateway::{Resolver, load_valid};
 
 struct Running {
     client_addr: std::net::SocketAddr,
@@ -150,15 +148,7 @@ fn config(client_port: u16, admin_port: u16) -> ValidatedConfig {
         .replace("bind = \"0.0.0.0\"", "bind = \"127.0.0.1\"")
         .replace("port = 8080", &format!("port = {client_port}"))
         .replace("port = 9090", &format!("port = {admin_port}"));
-    let path = std::env::temp_dir().join(format!(
-        "kanata-telemetry-socket-{}-{}.toml",
-        std::process::id(),
-        CONFIG_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("telemetry config writes");
-    let config = load(&path).expect("telemetry config validates");
-    let _ = fs::remove_file(path);
-    config
+    load_valid(&contents)
 }
 
 async fn request(address: std::net::SocketAddr, request: impl AsRef<[u8]>) -> RawResponse {

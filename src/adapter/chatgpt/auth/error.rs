@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::adapter::auth_files::FileError;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthError {
     Storage,
@@ -49,3 +51,11 @@ impl fmt::Display for AuthError {
     }
 }
 impl std::error::Error for AuthError {}
+impl From<FileError> for AuthError {
+    fn from(error: FileError) -> Self {
+        match error {
+            FileError::LockTimeout => Self::LockTimeout,
+            _ => Self::Storage,
+        }
+    }
+}

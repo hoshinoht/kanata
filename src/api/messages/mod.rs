@@ -13,7 +13,7 @@ use axum::{
 use crate::server::{Authenticated, ClientState};
 
 pub(super) use output::complete;
-pub(super) use streaming::stream_response;
+pub(super) use streaming::stream_start;
 pub(super) use wire::parse;
 
 pub(super) async fn create(

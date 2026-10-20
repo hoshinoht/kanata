@@ -1,10 +1,11 @@
+use crate::adapter::upstream_failure;
 use std::collections::BTreeSet;
 
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::{
-    ChatContent, ChatMessage, ChatResponse, ChatRole, ErrorKind, FinishReason, GatewayError,
+    ChatContent, ChatMessage, ChatResponse, ChatRole, FinishReason, GatewayError,
     MAX_ENCRYPTED_REASONING_BYTES, MAX_REASONING_BYTES, ModelAlias, ReasoningItem, ToolCall, Usage,
 };
 
@@ -252,10 +253,4 @@ pub(super) fn valid_tool_name(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
 }

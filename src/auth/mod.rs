@@ -342,16 +342,11 @@ pub struct AuthContext {
 }
 
 impl AuthContext {
-    pub(crate) fn daily_quota(&self) -> Option<crate::keys::quota::DailyQuota> {
-        self.daily_quota
-    }
-    pub fn key_identity(&self) -> &str {
-        &self.key_identity
-    }
-
-    /// Limits from the same key set that authenticated this request.
-    pub(crate) fn key_limits(&self) -> Option<&KeyLimits> {
-        self.limits.as_deref()
+    getters! {
+        pub(crate) daily_quota: Option<crate::keys::quota::DailyQuota>,
+        pub key_identity: &str,
+        /// Limits from the same key set that authenticated this request.
+        pub(crate) key_limits(limits): Option<&KeyLimits> = as_deref,
     }
 
     pub fn authorize(&self, selector: &RouteSelector) -> Result<(), ForbiddenError> {

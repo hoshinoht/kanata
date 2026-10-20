@@ -1,3 +1,4 @@
+use crate::adapter::upstream_failure;
 use std::collections::VecDeque;
 
 use futures_util::{StreamExt, stream};
@@ -193,17 +194,9 @@ struct StreamState {
 }
 
 fn overall_timeout() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Timeout {
-            phase: TimeoutPhase::Overall,
-        },
-    }
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
+    GatewayError::from(ErrorKind::Timeout {
+        phase: TimeoutPhase::Overall,
+    })
 }
 
 fn parser(model: ModelAlias, namespace: Option<&'static str>) -> ResponsesStreamParser {

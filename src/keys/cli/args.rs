@@ -55,7 +55,7 @@ impl Args {
 }
 
 /// `Some(days)`, or `None` for `unlimited`.
-pub(super) fn parse_expires(value: &str) -> Result<Option<u64>, String> {
+pub(crate) fn parse_expires(value: &str) -> Result<Option<u64>, String> {
     match value {
         "1" | "3" | "7" | "13" | "30" | "60" => Ok(Some(value.parse().expect("digits"))),
         "unlimited" => Ok(None),
@@ -63,7 +63,7 @@ pub(super) fn parse_expires(value: &str) -> Result<Option<u64>, String> {
     }
 }
 
-pub(super) fn expires_at(now: u64, days: Option<u64>) -> Option<u64> {
+pub(crate) fn expires_at(now: u64, days: Option<u64>) -> Option<u64> {
     days.map(|days| now + days * SECONDS_PER_DAY)
 }
 

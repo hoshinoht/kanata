@@ -1,10 +1,10 @@
+use crate::adapter::upstream_failure;
 use std::collections::BTreeSet;
 
 use crate::{
     adapter::diagnostics::{ProviderError, UpstreamLabel},
     core::{
-        ErrorKind, FinishReason, GatewayError, MAX_ENCRYPTED_REASONING_BYTES, ModelAlias,
-        NormalizedEvent,
+        FinishReason, GatewayError, MAX_ENCRYPTED_REASONING_BYTES, ModelAlias, NormalizedEvent,
     },
 };
 
@@ -245,11 +245,5 @@ impl StreamState {
         .map(|item| NormalizedEvent::ChatReasoningItem { item })
         .into_iter()
         .collect())
-    }
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
     }
 }

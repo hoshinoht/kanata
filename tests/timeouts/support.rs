@@ -1,7 +1,8 @@
+use crate::scratch;
+
 use std::{
     collections::VecDeque,
     convert::Infallible,
-    future::Future,
     pin::Pin,
     sync::{
         Arc,
@@ -19,7 +20,7 @@ use futures_core::Stream;
 use kanata::{
     adapter::{Adapter, AdapterFuture, AdapterOutput},
     auth::{SecretResolutionError, SecretResolver},
-    config::{SecretReference, ValidatedConfig, load},
+    config::{SecretReference, ValidatedConfig},
     core::{
         Capabilities, ChatContent, ChatMessage, ChatResponse, ChatRole, FinishReason, GatewayError,
         ModelAlias, NormalizedEvent, Response as CoreResponse, RoutedRequest,
@@ -86,18 +87,8 @@ fn config_contents(
 }
 
 fn load_config(contents: String) -> ValidatedConfig {
-    let path = std::env::temp_dir().join(format!(
-        "kanata-timeouts-{}-{}.toml",
-        std::process::id(),
-        CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, contents).expect("config write");
-    let config = load(&path).expect("config");
-    let _ = std::fs::remove_file(path);
-    config
+    scratch::load_valid(&contents)
 }
-
-static CONFIG_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 struct Resolver;
 impl SecretResolver for Resolver {

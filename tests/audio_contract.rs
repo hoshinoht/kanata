@@ -1,3 +1,5 @@
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/template.rs"]
 mod template;
 

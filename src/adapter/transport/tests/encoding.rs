@@ -2,7 +2,6 @@ use std::{
     convert::Infallible,
     pin::Pin,
     sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
 };
 
 use bytes::Bytes;
@@ -444,18 +443,10 @@ async fn captured_local_multipart_request_has_exact_length_and_parses() {
             }
         }
     });
-    let mut response = fixture::transport(
-        address,
-        fixture::timeouts(
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        ),
-    )
-    .execute(request)
-    .await
-    .unwrap_or_else(|_| panic!("response"));
+    let mut response = fixture::transport(address, fixture::uniform_timeouts())
+        .execute(request)
+        .await
+        .unwrap_or_else(|_| panic!("response"));
     assert!(response.body.next().await.is_none());
     let (headers, body) = captured_rx.await.unwrap_or_else(|_| panic!("capture"));
     assert!(headers.contains(&format!("content-length: {expected_length}")));

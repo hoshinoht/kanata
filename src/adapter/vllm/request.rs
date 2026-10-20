@@ -1,13 +1,15 @@
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use crate::adapter::{
+    chat_completions::request::{
+        ContentPart, MessagePayload, MessageRules, SamplingPayload, StreamOptions,
+        ToolChoicePayload, ToolPayload, encode_messages, encode_tools, optional_tool_choice,
+    },
+    invalid_request,
+};
 use serde::Serialize;
-
 use serde_json::Number;
 
-use serde_json::Value;
-
 use crate::core::{
-    ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, FunctionTool, GatewayError,
-    InputAudioFormat, ResponseFormat, ToolChoice, TranscriptionRequest, ValidatedAudio,
+    ChatRequest, GatewayError, InputAudioFormat, ResponseFormat, TranscriptionRequest,
 };
 
 const MAX_LANGUAGE_HINT_BYTES: usize = 80;
@@ -27,19 +29,8 @@ pub(super) struct ChatPayload {
     stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
-    // Number keeps the transcription path's integer `0` byte-identical.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<Number>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    top_p: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    seed: Option<i64>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    stop: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    presence_penalty: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    frequency_penalty: Option<f64>,
+    #[serde(flatten)]
+    sampling: SamplingPayload,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<ResponseFormat>,
     // OpenAI chat wire; vLLM honours it for gpt-oss-class models.
@@ -54,119 +45,6 @@ struct ChatTemplateKwargs {
     enable_thinking: bool,
 }
 
-#[derive(Serialize)]
-struct StreamOptions {
-    include_usage: bool,
-}
-
-#[derive(Serialize)]
-struct MessagePayload {
-    role: &'static str,
-    // Absent only on an assistant turn that carries just tool calls.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<MessageContent>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<Vec<ToolCallPayload>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_call_id: Option<String>,
-    // Replayed assistant reasoning; vLLM's canonical input field (`reasoning_content` is
-    // only a late-added alias).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning: Option<String>,
-}
-
-#[derive(Serialize)]
-struct ToolPayload {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    function: FunctionPayload,
-}
-
-#[derive(Serialize)]
-struct FunctionPayload {
-    name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    parameters: Value,
-}
-
-#[derive(Serialize)]
-struct ToolCallPayload {
-    id: String,
-    #[serde(rename = "type")]
-    kind: &'static str,
-    function: CallFunctionPayload,
-}
-
-#[derive(Serialize)]
-struct CallFunctionPayload {
-    name: String,
-    arguments: String,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum ToolChoicePayload {
-    Simple(&'static str),
-    Named {
-        #[serde(rename = "type")]
-        kind: &'static str,
-        function: NamedFunctionPayload,
-    },
-}
-
-#[derive(Serialize)]
-struct NamedFunctionPayload {
-    name: String,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum MessageContent {
-    Text(String),
-    Parts(Vec<ContentPart>),
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum ContentPart {
-    Text(TextPart),
-    InputAudio(InputAudioPart),
-    Image(ImagePart),
-}
-
-#[derive(Serialize)]
-struct ImagePart {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    image_url: ImageUrl,
-}
-
-#[derive(Serialize)]
-struct ImageUrl {
-    url: String,
-}
-
-#[derive(Serialize)]
-struct TextPart {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    text: String,
-}
-
-#[derive(Serialize)]
-struct InputAudioPart {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    input_audio: InputAudioPayload,
-}
-
-#[derive(Serialize)]
-struct InputAudioPayload {
-    data: String,
-    format: &'static str,
-}
-
 /// `route_thinking` is the route default; a request value overrides it. `replay_reasoning`
 /// forwards assistant reasoning text; otherwise it is dropped.
 pub(super) fn encode(
@@ -178,42 +56,22 @@ pub(super) fn encode(
     if upstream_model.trim().is_empty() {
         return Err(invalid_request());
     }
-    let messages = chat
-        .messages_without_reasoning()
-        .map(|message| encode_message(message, replay_reasoning))
-        .collect::<Result<Vec<_>, _>>()?;
-    let tools = (!chat.tools.is_empty()).then(|| chat.tools.iter().map(encode_tool).collect());
-    // Omitted for the default so tool-free payloads stay unchanged.
-    let tool_choice = (tools.is_some() || !matches!(chat.tool_choice, ToolChoice::Auto))
-        .then(|| encode_tool_choice(&chat.tool_choice));
+    let messages = encode_messages(
+        chat,
+        MessageRules {
+            replay_reasoning,
+            reject_empty_text_segments: false,
+        },
+    )?;
     Ok(ChatPayload {
         model: upstream_model.to_owned(),
         messages,
-        tools,
-        tool_choice,
+        tools: encode_tools(&chat.tools),
+        tool_choice: optional_tool_choice(chat),
         stream: chat.stream,
-        stream_options: chat.stream.then_some(StreamOptions {
-            include_usage: true,
-        }),
+        stream_options: StreamOptions::for_stream(chat.stream),
         max_tokens: chat.options.max_output_tokens,
-        temperature: chat
-            .options
-            .sampling
-            .temperature
-            .and_then(|value| Number::from_f64(value.get())),
-        top_p: chat.options.sampling.top_p.map(|value| value.get()),
-        seed: chat.options.sampling.seed,
-        stop: chat.options.sampling.stop.clone(),
-        presence_penalty: chat
-            .options
-            .sampling
-            .presence_penalty
-            .map(|value| value.get()),
-        frequency_penalty: chat
-            .options
-            .sampling
-            .frequency_penalty
-            .map(|value| value.get()),
+        sampling: SamplingPayload::new(&chat.options.sampling),
         response_format: chat
             .options
             .response_format
@@ -222,29 +80,6 @@ pub(super) fn encode(
         reasoning_effort: chat.options.reasoning_effort.map(|effort| effort.as_str()),
         chat_template_kwargs: template_kwargs(chat.options.enable_thinking.or(route_thinking)),
     })
-}
-
-fn encode_tool(tool: &FunctionTool) -> ToolPayload {
-    ToolPayload {
-        kind: "function",
-        function: FunctionPayload {
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            parameters: tool.parameters.clone(),
-        },
-    }
-}
-
-fn encode_tool_choice(choice: &ToolChoice) -> ToolChoicePayload {
-    match choice {
-        ToolChoice::None => ToolChoicePayload::Simple("none"),
-        ToolChoice::Auto => ToolChoicePayload::Simple("auto"),
-        ToolChoice::Required => ToolChoicePayload::Simple("required"),
-        ToolChoice::Function { name } => ToolChoicePayload::Named {
-            kind: "function",
-            function: NamedFunctionPayload { name: name.clone() },
-        },
-    }
 }
 
 fn template_kwargs(enable_thinking: Option<bool>) -> Option<ChatTemplateKwargs> {
@@ -271,30 +106,16 @@ pub(super) fn encode_transcription(
     )?;
     Ok(ChatPayload {
         model: upstream_model.to_owned(),
-        messages: vec![MessagePayload {
-            role: "user",
-            content: Some(MessageContent::Parts(vec![
-                audio_part_bytes(transcription.file.bytes(), format),
-                ContentPart::Text(TextPart {
-                    kind: "text",
-                    text: content,
-                }),
-            ])),
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning: None,
-        }],
+        messages: vec![MessagePayload::user_parts(vec![
+            ContentPart::audio(transcription.file.bytes(), format),
+            ContentPart::Text { text: content },
+        ])],
         tools: None,
         tool_choice: None,
         stream: false,
         stream_options: None,
         max_tokens: Some(512),
-        temperature: Some(Number::from(0)),
-        top_p: None,
-        seed: None,
-        stop: Vec::new(),
-        presence_penalty: None,
-        frequency_penalty: None,
+        sampling: SamplingPayload::temperature(Number::from(0)),
         response_format: None,
         reasoning_effort: None,
         chat_template_kwargs: template_kwargs(enable_thinking),
@@ -320,157 +141,6 @@ pub(super) fn native_asr_accepts_media_type(media_type: &str) -> bool {
             | "audio/webm"
             | "audio/x-wav"
     )
-}
-
-fn encode_message(
-    message: &ChatMessage,
-    replay_reasoning: bool,
-) -> Result<MessagePayload, GatewayError> {
-    let role = match message.role {
-        ChatRole::System => "system",
-        ChatRole::Developer => "developer",
-        ChatRole::User => "user",
-        ChatRole::Assistant => "assistant",
-        ChatRole::Tool => return encode_tool_result(message),
-    };
-    if message.role == ChatRole::Assistant {
-        return encode_assistant(message, replay_reasoning);
-    }
-
-    if message.content.iter().any(|content| {
-        matches!(
-            content,
-            ChatContent::InputAudio { .. } | ChatContent::InputImage { .. }
-        )
-    }) {
-        if message.role != ChatRole::User {
-            return Err(unsupported_operation());
-        }
-        let parts = message
-            .content
-            .iter()
-            .map(|content| match content {
-                ChatContent::Text { text } if !text.is_empty() => Ok(ContentPart::Text(TextPart {
-                    kind: "text",
-                    text: text.clone(),
-                })),
-                ChatContent::InputAudio { audio } => Ok(audio_part(audio)),
-                ChatContent::InputImage { image } => Ok(ContentPart::Image(ImagePart {
-                    kind: "image_url",
-                    image_url: ImageUrl {
-                        url: image.data_url().to_owned(),
-                    },
-                })),
-                ChatContent::Text { .. } => Err(invalid_request()),
-                // Media messages are user turns, which never carry reasoning.
-                ChatContent::ToolCall { .. }
-                | ChatContent::ToolResult { .. }
-                | ChatContent::Reasoning { .. }
-                | ChatContent::ReasoningText { .. } => Err(unsupported_operation()),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        return Ok(MessagePayload {
-            role,
-            content: Some(MessageContent::Parts(parts)),
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning: None,
-        });
-    }
-
-    let mut text = String::new();
-    for content in &message.content {
-        let ChatContent::Text { text: segment } = content else {
-            return Err(unsupported_operation());
-        };
-        text.push_str(segment);
-    }
-    if text.is_empty() {
-        return Err(invalid_request());
-    }
-
-    Ok(MessagePayload {
-        role,
-        content: Some(MessageContent::Text(text)),
-        tool_calls: None,
-        tool_call_id: None,
-        reasoning: None,
-    })
-}
-
-/// Assistant history: text (empty segments skipped), any tool calls, and replayed reasoning
-/// text when `replay_reasoning` is set.
-fn encode_assistant(
-    message: &ChatMessage,
-    replay_reasoning: bool,
-) -> Result<MessagePayload, GatewayError> {
-    let mut text = String::new();
-    let mut calls = Vec::new();
-    let mut reasoning = String::new();
-    for content in &message.content {
-        match content {
-            ChatContent::Text { text: segment } => text.push_str(segment),
-            ChatContent::ToolCall { call } => calls.push(ToolCallPayload {
-                id: call.id.clone(),
-                kind: "function",
-                function: CallFunctionPayload {
-                    name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                },
-            }),
-            ChatContent::InputAudio { .. }
-            | ChatContent::InputImage { .. }
-            | ChatContent::ToolResult { .. } => {
-                return Err(unsupported_operation());
-            }
-            ChatContent::ReasoningText { text: segment } if replay_reasoning => {
-                reasoning.push_str(segment);
-            }
-            // Encrypted reasoning never replays here; reasoning text only where accepted.
-            ChatContent::Reasoning { .. } | ChatContent::ReasoningText { .. } => {}
-        }
-    }
-    if text.is_empty() && calls.is_empty() {
-        return Err(invalid_request());
-    }
-    Ok(MessagePayload {
-        role: "assistant",
-        content: (!text.is_empty()).then_some(MessageContent::Text(text)),
-        tool_calls: (!calls.is_empty()).then_some(calls),
-        tool_call_id: None,
-        reasoning: (!reasoning.is_empty()).then_some(reasoning),
-    })
-}
-
-fn encode_tool_result(message: &ChatMessage) -> Result<MessagePayload, GatewayError> {
-    let [ChatContent::ToolResult { call_id, content }] = message.content.as_slice() else {
-        return Err(invalid_request());
-    };
-    Ok(MessagePayload {
-        role: "tool",
-        content: Some(MessageContent::Text(content.clone())),
-        tool_calls: None,
-        tool_call_id: Some(call_id.clone()),
-        reasoning: None,
-    })
-}
-
-fn audio_part(audio: &ValidatedAudio) -> ContentPart {
-    audio_part_bytes(audio.bytes(), audio.format())
-}
-
-fn audio_part_bytes(bytes: &[u8], format: InputAudioFormat) -> ContentPart {
-    let format = match format {
-        InputAudioFormat::Wav => "wav",
-        InputAudioFormat::Mp3 => "mp3",
-    };
-    ContentPart::InputAudio(InputAudioPart {
-        kind: "input_audio",
-        input_audio: InputAudioPayload {
-            data: STANDARD.encode(bytes),
-            format,
-        },
-    })
 }
 
 fn transcription_instruction(
@@ -509,18 +179,6 @@ fn escape_hint(value: &str, output: &mut String) {
             '\'' => output.push_str("&#39;"),
             _ => output.push(character),
         }
-    }
-}
-
-fn invalid_request() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
     }
 }
 

@@ -1,10 +1,10 @@
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/gateway.rs"]
 mod support;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use axum::http::StatusCode;
-use kanata::config::{ValidatedConfig, load};
+use kanata::config::ValidatedConfig;
 use kanata::core::{
     JsonSchemaFormat, MAX_RESPONSE_SCHEMA_BYTES, MAX_RESPONSE_SCHEMA_DEPTH, Penalty,
     ReasoningEffort, ResponseFormat, Temperature, TopP,
@@ -12,11 +12,10 @@ use kanata::core::{
 use serde_json::{Value, json};
 
 use support::{
-    adapter_spec, capabilities, chat_outcome, chat_request, config, core_chat, recorded_len,
-    response_json, server_with, take_request,
+    adapter_spec, capabilities, chat_outcome, chat_request, config, core_chat, load_text,
+    recorded_len, response_json, server_with, take_request,
 };
 
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
 const OLLAMA_CAPABILITIES: &str = "id = \"ollama-local\"\nkind = \"ollama\"\nbase_url = \"http://ollama.invalid:11434\"\ntrust_zone = \"local\"\n[adapters.capabilities]\noperations = [\"chat\"]\nstreaming_chat = true\nfunction_tools = true\n";
 const CODEX_CAPABILITIES_END: &str = "function_tools = true\n\n[[routes]]";
 
@@ -39,15 +38,7 @@ fn option_config() -> ValidatedConfig {
             "upstream_id = \"llama3.2:latest\"\nmax_output_tokens = 4096\n",
             1,
         );
-    let path = std::env::temp_dir().join(format!(
-        "kanata-chat-options-{}-{}.toml",
-        std::process::id(),
-        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, contents).expect("fixture writes");
-    let result = load(&path);
-    std::fs::remove_file(path).expect("fixture removes");
-    let config = result.expect("option config validates");
+    let config = load_text(&contents).expect("option config validates");
     assert!(capabilities(&config, "ollama-local").structured_output);
     config
 }
@@ -68,15 +59,7 @@ fn apple_fm_config() -> ValidatedConfig {
             "requires_function_tools = false",
             1,
         );
-    let path = std::env::temp_dir().join(format!(
-        "kanata-chat-options-apple-{}-{}.toml",
-        std::process::id(),
-        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, contents).expect("fixture writes");
-    let result = load(&path);
-    std::fs::remove_file(path).expect("fixture removes");
-    result.expect("apple_fm config validates")
+    load_text(&contents).expect("apple_fm config validates")
 }
 
 fn vllm_config(reasoning_control: bool) -> ValidatedConfig {
@@ -89,15 +72,7 @@ fn vllm_config(reasoning_control: bool) -> ValidatedConfig {
             1,
         );
     }
-    let path = std::env::temp_dir().join(format!(
-        "kanata-chat-options-vllm-{}-{}.toml",
-        std::process::id(),
-        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, contents).expect("fixture writes");
-    let result = load(&path);
-    std::fs::remove_file(path).expect("fixture removes");
-    let config = result.expect("vllm config validates");
+    let config = load_text(&contents).expect("vllm config validates");
     assert_eq!(
         capabilities(&config, "vllm-private").reasoning_control,
         reasoning_control

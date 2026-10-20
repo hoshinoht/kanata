@@ -1,76 +1,43 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use bytes::Bytes;
-use rcgen::generate_simple_self_signed;
-use tokio::io::AsyncReadExt;
-use tokio_rustls::{
-    TlsAcceptor,
-    rustls::{
-        ServerConfig,
-        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
-    },
-};
+use tokio::{io::AsyncReadExt, sync::oneshot, task::JoinHandle};
 
-use crate::core::{ErrorKind, TimeoutPhase};
+use crate::core::{ErrorKind, GatewayError, TimeoutPhase};
 
-use super::fixture;
+use super::super::{Transport, TransportResponse};
+use super::fixture::{self, SECOND};
 
-fn ephemeral_acceptor() -> TlsAcceptor {
-    let certified = generate_simple_self_signed(vec!["localhost".to_owned()])
-        .unwrap_or_else(|_| panic!("certificate"));
-    let certificate = CertificateDer::from(certified.cert.der().to_vec());
-    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-        certified.signing_key.serialize_der(),
-    ));
-    let config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![certificate], key)
-        .unwrap_or_else(|_| panic!("server config"));
-    TlsAcceptor::from(Arc::new(config))
+type Execution = Pin<Box<dyn Future<Output = Result<TransportResponse, GatewayError>>>>;
+
+fn https(address: String) -> Arc<Transport> {
+    Arc::new(fixture::https_transport(
+        address,
+        fixture::timeouts(Duration::from_secs(5), SECOND, SECOND, SECOND),
+    ))
 }
 
-fn error_of(
-    result: Result<super::super::TransportResponse, crate::core::GatewayError>,
-) -> crate::core::GatewayError {
-    match result {
-        Err(error) => error,
-        Ok(_) => panic!("unexpected transport success"),
-    }
+fn execution(transport: &Arc<Transport>) -> Execution {
+    let transport = transport.clone();
+    Box::pin(async move {
+        transport
+            .execute(fixture::request(Bytes::from_static(b"{}"), 1024))
+            .await
+    })
 }
 
-#[tokio::test]
-async fn native_verifier_rejects_an_ephemeral_self_signed_certificate() {
-    let (listener, address) = fixture::listener().await;
-    let acceptor = ephemeral_acceptor();
-    let server = tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.unwrap_or_else(|_| panic!("accept"));
-        let _ = acceptor.accept(socket).await;
-    });
-    let error = error_of(
-        fixture::https_transport(
-            address,
-            fixture::timeouts(
-                Duration::from_secs(5),
-                Duration::from_secs(1),
-                Duration::from_secs(1),
-                Duration::from_secs(1),
-            ),
-        )
-        .execute(fixture::request(Bytes::from_static(b"{}"), 1024))
-        .await,
-    );
-    assert_eq!(error.kind, ErrorKind::UpstreamUnavailable);
-    server.await.unwrap_or_else(|_| panic!("server"));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn stalled_tls_handshake_times_out_as_connect_and_closes_socket() {
+/// Starts an HTTPS request against a server that reads the client hello and never answers.
+/// Returns once the hello arrived; the transport is returned so it outlives the request.
+async fn stalled_handshake() -> (
+    Arc<Transport>,
+    Execution,
+    oneshot::Receiver<()>,
+    JoinHandle<()>,
+) {
     let (listener, address) = fixture::listener().await;
     let (accepted_tx, accepted_rx) = fixture::signal_pair();
     let (closed_tx, closed_rx) = fixture::signal_pair();
-    let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap_or_else(|_| panic!("accept"));
+    let server = fixture::server_task(listener, |mut socket| async move {
         let mut byte = [0_u8; 1];
         socket
             .read_exact(&mut byte)
@@ -79,25 +46,11 @@ async fn stalled_tls_handshake_times_out_as_connect_and_closes_socket() {
         accepted_tx
             .send(())
             .unwrap_or_else(|_| panic!("accepted signal"));
-        fixture::wait_for_close(socket)
-            .await
-            .unwrap_or_else(|_| panic!("close"));
-        closed_tx
-            .send(())
-            .unwrap_or_else(|_| panic!("close signal"));
+        fixture::signal_close(socket, closed_tx).await;
     });
 
-    let transport = fixture::https_transport(
-        address,
-        fixture::timeouts(
-            Duration::from_secs(5),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        ),
-    );
-    let mut execute =
-        Box::pin(transport.execute(fixture::request(Bytes::from_static(b"{}"), 1024)));
+    let transport = https(address);
+    let mut execute = execution(&transport);
     tokio::select! {
         result = &mut execute => match result {
             Err(error) => panic!("handshake unexpectedly failed: {:?}", error.kind),
@@ -105,6 +58,27 @@ async fn stalled_tls_handshake_times_out_as_connect_and_closes_socket() {
         },
         result = accepted_rx => result.unwrap_or_else(|_| panic!("accepted signal")),
     }
+    (transport, execute, closed_rx, server)
+}
+
+#[tokio::test]
+async fn native_verifier_rejects_an_ephemeral_self_signed_certificate() {
+    let (listener, address) = fixture::listener().await;
+    let (_, acceptor) = crate::test_support::tls_fixture("localhost");
+    let server = fixture::server_task(listener, |socket| async move {
+        let _ = acceptor.accept(socket).await;
+    });
+    let error = match execution(&https(address)).await {
+        Err(error) => error,
+        Ok(_) => panic!("unexpected transport success"),
+    };
+    assert_eq!(error.kind, ErrorKind::UpstreamUnavailable);
+    server.await.unwrap_or_else(|_| panic!("server"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn stalled_tls_handshake_times_out_as_connect_and_closes_socket() {
+    let (_transport, execute, closed_rx, server) = stalled_handshake().await;
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(5)).await;
     let error = match execute.await {
@@ -124,42 +98,7 @@ async fn stalled_tls_handshake_times_out_as_connect_and_closes_socket() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_a_stalled_tls_handshake_closes_socket() {
-    let (listener, address) = fixture::listener().await;
-    let (accepted_tx, accepted_rx) = fixture::signal_pair();
-    let (closed_tx, closed_rx) = fixture::signal_pair();
-    let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap_or_else(|_| panic!("accept"));
-        let mut byte = [0_u8; 1];
-        socket
-            .read_exact(&mut byte)
-            .await
-            .unwrap_or_else(|_| panic!("client hello"));
-        accepted_tx
-            .send(())
-            .unwrap_or_else(|_| panic!("accepted signal"));
-        fixture::wait_for_close(socket)
-            .await
-            .unwrap_or_else(|_| panic!("close"));
-        closed_tx
-            .send(())
-            .unwrap_or_else(|_| panic!("close signal"));
-    });
-
-    let transport = fixture::https_transport(
-        address,
-        fixture::timeouts(
-            Duration::from_secs(5),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        ),
-    );
-    let mut execute =
-        Box::pin(transport.execute(fixture::request(Bytes::from_static(b"{}"), 1024)));
-    tokio::select! {
-        _result = &mut execute => panic!("handshake unexpectedly completed"),
-        result = accepted_rx => result.unwrap_or_else(|_| panic!("accepted signal")),
-    }
+    let (_transport, execute, closed_rx, server) = stalled_handshake().await;
     drop(execute);
     fixture::bounded_wait(closed_rx).await;
     server.await.unwrap_or_else(|_| panic!("server"));

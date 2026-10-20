@@ -1,5 +1,6 @@
 mod encoding;
 pub(super) mod state;
+pub(super) mod typed;
 
 use std::time::Duration;
 

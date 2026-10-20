@@ -1,3 +1,5 @@
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/gateway.rs"]
 mod support;
 #[path = "adapter_ollama/support.rs"]
@@ -8,13 +10,10 @@ use axum::{
     http::{Request, StatusCode},
 };
 use serde_json::{Value, json};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use support::{
-    adapter_spec, capabilities, chat_outcome, chat_request, models_request, response_json,
-    server_with,
+    adapter_spec, capabilities, chat_outcome, chat_request, load_text as load, models_request,
+    response_json, server_with,
 };
-
-static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 fn source(permissions: &[&str]) -> String {
     let mut text = std::fs::read_to_string("tests/fixtures/config/example.toml").unwrap();
@@ -55,18 +54,6 @@ requires_function_tools = true
         "[listeners.public]\nbind = \"172.30.0.3\"\nport = 8081\n\n[listeners.admin]",
     );
     text
-}
-
-fn load(text: &str) -> Result<kanata::config::ValidatedConfig, kanata::config::ConfigError> {
-    let path = std::env::temp_dir().join(format!(
-        "kanata-reasoning-{}-{}.toml",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, text).unwrap();
-    let result = kanata::config::load(&path);
-    std::fs::remove_file(path).unwrap();
-    result
 }
 
 fn server(permissions: &[&str]) -> support::ServerWithRequests {

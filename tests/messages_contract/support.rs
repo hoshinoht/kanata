@@ -2,10 +2,9 @@
 //! transcript does not end in a tool result, text otherwise; usage always reports a
 //! cached prefix.
 
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
-};
+use crate::scratch;
+
+use std::sync::{Arc, Mutex};
 
 use axum::{
     body::Body,
@@ -14,7 +13,7 @@ use axum::{
 use futures_util::stream;
 use kanata::{
     adapter::{Adapter, AdapterFuture, AdapterOutput},
-    config::{ValidatedConfig, load},
+    config::ValidatedConfig,
     core::{
         Capabilities, ChatContent, ChatMessage, ChatRequest, ChatResponse, ChatRole, FinishReason,
         NormalizedEvent, ReasoningItem, Request as CoreRequest, Response as CoreResponse,
@@ -30,8 +29,6 @@ pub const CALL_ID: &str = "call_fixture_1";
 pub const NEXT_ENCRYPTED: &str = "NEXT_ENCRYPTED_FIXTURE";
 
 pub type Recorded = Arc<Mutex<Vec<ChatRequest>>>;
-
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
 
 struct FixtureAdapter {
     id: &'static str,
@@ -165,15 +162,7 @@ pub fn config_with(edits: &[(&str, &str)]) -> ValidatedConfig {
         assert!(contents.contains(from), "fixture contains {from}");
         contents = contents.replacen(from, to, 1);
     }
-    let path = std::env::temp_dir().join(format!(
-        "kanata-messages-{}-{}.toml",
-        std::process::id(),
-        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, contents).expect("fixture writes");
-    let result = load(&path);
-    std::fs::remove_file(path).expect("fixture removes");
-    result.expect("config validates")
+    scratch::load_text(&contents).expect("config validates")
 }
 
 /// `private-chat` (public and private), `local-chat` and `codex-chat` (private only).

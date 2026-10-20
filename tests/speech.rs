@@ -1,3 +1,5 @@
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/gateway.rs"]
 mod support;
 #[path = "adapter_ollama/support.rs"]
@@ -18,27 +20,15 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use support::{
-    adapter_spec, capabilities, chat_outcome, models_request, recorded_len, response_json,
-    server_with,
+    adapter_spec, capabilities, chat_outcome, load_text as load, models_request, recorded_len,
+    response_json, server_with,
 };
 
-static NEXT: AtomicUsize = AtomicUsize::new(0);
 fn config_text(address: &str) -> String {
-    format!(
-        r#"
-[listeners.client]
-bind = "127.0.0.1"
-port = 18080
-[listeners.public]
-bind = "172.30.0.3"
-port = 18081
-[listeners.admin]
-bind = "127.0.0.1"
-port = 19090
-[publication]
-tailnet_addresses = ["100.64.0.10"]
-public_routes = [{{ model_alias = "speaker", operation = "speech" }}]
-[[adapters]]
+    support::compact_config(
+        r#"[{ model_alias = "speaker", operation = "speech" }]"#,
+        &format!(
+            r#"[[adapters]]
 id = "speaker-adapter"
 kind = "speech"
 base_url = "http://{address}/v1"
@@ -60,34 +50,9 @@ speech_formats = ["mp3", "wav"]
 [[application_keys]]
 id = "speaker-client"
 secret_ref = "env:SPEECH_CLIENT_KEY"
-permissions = [{{ model_alias = "speaker", operation = "speech" }}]
-[limits]
-max_queue = 4
-max_in_flight = 2
-max_body_bytes = 1048576
-max_audio_bytes = 1048576
-max_extension_bytes = 1024
-[timeouts]
-queue_ms = 1000
-connect_ms = 1000
-headers_ms = 1000
-first_byte_ms = 1000
-idle_ms = 1000
-overall_ms = 5000
-"#
+permissions = [{{ model_alias = "speaker", operation = "speech" }}]"#
+        ),
     )
-}
-
-fn load(text: &str) -> Result<config::ValidatedConfig, config::ConfigError> {
-    let path = std::env::temp_dir().join(format!(
-        "kanata-speech-{}-{}.toml",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, text).unwrap();
-    let result = config::load(&path);
-    std::fs::remove_file(path).unwrap();
-    result
 }
 
 fn request(body: Value) -> Request<Body> {
@@ -223,29 +188,14 @@ async fn speech_admission_stays_with_the_output_body_and_releases_on_drop() {
 
 #[tokio::test]
 async fn speech_usage_retains_estimates_when_no_token_metadata_is_returned() {
-    use sha2::{Digest, Sha256};
-    use std::os::unix::fs::PermissionsExt;
-    let dir = std::env::temp_dir().join(format!(
-        "kanata-speech-usage-{:016x}",
-        getrandom::u64().unwrap()
-    ));
-    std::fs::create_dir(&dir).unwrap();
-    std::fs::create_dir(dir.join("keys")).unwrap();
-    std::fs::create_dir(dir.join("state")).unwrap();
-    let hex: String = Sha256::digest(b"test-key")
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    let key = format!(
-        "version = 1\n[[keys]]\nid = \"reader\"\ndigest = \"sha256:{hex}\"\ncreated_at = \"2026-01-01T00:00:00Z\"\ndaily_quota = {{ requests = 2, tokens = 100, reservation_tokens = 40 }}\npermissions = [{{ model_alias = \"local-speech\", operation = \"speech\" }}]\n"
-    );
-    let path = dir.join("keys/keys.toml");
-    std::fs::write(&path, key).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     let text =
         include_str!("../config/speech.example.toml").replace("speech-local", "speaker-adapter");
-    std::fs::write(dir.join("config.toml"), text).unwrap();
-    let config = config::load(dir.join("config.toml")).unwrap();
+    let (dir, config) = support::test_key_dir(
+        "speech-usage",
+        "reader",
+        "daily_quota = { requests = 2, tokens = 100, reservation_tokens = 40 }\npermissions = [{ model_alias = \"local-speech\", operation = \"speech\" }]",
+        &text,
+    );
     let (server, calls) = synthetic(&config);
     let usage = server.open_usage(config::Plane::Private).unwrap();
     let mut body = body("wav");
@@ -272,7 +222,6 @@ async fn speech_usage_retains_estimates_when_no_token_metadata_is_returned() {
     assert_eq!(daily[0].requests, 2);
     assert_eq!(daily[0].charged_tokens, 80);
     assert_eq!(daily[0].retained_reservation_tokens, 80);
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[tokio::test]

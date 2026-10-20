@@ -1,15 +1,13 @@
-use std::collections::BTreeSet;
+use crate::adapter::{
+    chat_completions::response::{
+        self as wire, CompletionTokensDetails, FunctionCallPayload, PromptTokensDetails,
+    },
+    upstream_failure,
+};
 
 use serde::{Deserialize, de::IgnoredAny};
 
-use crate::core::{
-    ChatContent, ChatMessage, ChatResponse, ChatRole, ErrorKind, FinishReason, GatewayError,
-    ModelAlias, ToolCall, TranscriptionResponse, Usage,
-};
-
-pub(super) const MAX_TOOL_CALLS: usize = 64;
-const MAX_TOOL_CALL_ID_BYTES: usize = 128;
-const MAX_TOOL_NAME_BYTES: usize = 64;
+use crate::core::{ChatResponse, GatewayError, ModelAlias, TranscriptionResponse, Usage};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,13 +72,6 @@ struct ToolCallPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FunctionCallPayload {
-    name: String,
-    arguments: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct UsagePayload {
     prompt_tokens: u64,
     completion_tokens: u64,
@@ -101,82 +92,50 @@ pub(super) struct UsagePayload {
     _server_tool_use: Option<IgnoredAny>,
 }
 
+impl UsagePayload {
+    pub(super) fn normalize(self) -> Result<Usage, GatewayError> {
+        wire::checked_usage(
+            self.prompt_tokens,
+            self.completion_tokens,
+            self.total_tokens,
+            self.prompt_tokens_details,
+            self.completion_tokens_details,
+        )
+    }
+}
+
 pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatResponse, GatewayError> {
     let payload: CompletionPayload =
         serde_json::from_slice(bytes).map_err(|_| upstream_failure())?;
-    if payload.id.is_empty()
-        || payload.object != "chat.completion"
-        || payload.model.trim().is_empty()
-        || payload
-            .system_fingerprint
-            .as_ref()
-            .is_some_and(String::is_empty)
-        || payload.choices.len() != 1
-    {
+    let choice = wire::only_choice(
+        &payload.id,
+        &payload.object,
+        &payload.model,
+        payload.system_fingerprint.as_deref(),
+        payload.choices,
+    )?;
+    let message = choice.message;
+    if choice.index != 0 || message.role != "assistant" {
         return Err(upstream_failure());
     }
-
-    let choice = payload
-        .choices
+    let finish_reason = wire::parse_finish_reason(&choice.finish_reason)?;
+    let reasoning = message.reasoning.filter(|text| !text.is_empty());
+    let calls = message
+        .tool_calls
+        .unwrap_or_default()
         .into_iter()
-        .next()
-        .ok_or_else(upstream_failure)?;
-    if choice.index != 0 || choice.message.role != "assistant" {
-        return Err(upstream_failure());
-    }
-    let finish_reason = parse_finish_reason(&choice.finish_reason)?;
-    let reasoning = choice.message.reasoning.filter(|text| !text.is_empty());
-    let mut content = Vec::new();
-    if let Some(text) = choice.message.content.filter(|text| !text.is_empty()) {
-        content.push(ChatContent::Text { text });
-    }
-    let calls = choice.message.tool_calls.unwrap_or_default();
-    if calls.len() > MAX_TOOL_CALLS {
-        return Err(upstream_failure());
-    }
-    let mut ids = BTreeSet::new();
-    for call in calls {
-        if call.kind != "function"
-            || !valid_call_id(&call.id)
-            || !ids.insert(call.id.clone())
-            || !valid_tool_name(&call.function.name)
-        {
-            return Err(upstream_failure());
-        }
-        content.push(ChatContent::ToolCall {
-            call: ToolCall {
-                id: call.id,
-                name: call.function.name,
-                arguments: call.function.arguments,
-            },
-        });
-    }
-    // A stop or length stop may carry no visible output, but a stop holding only a refusal
-    // is not an empty answer.
-    let refused = choice.message.refusal.is_some_and(|text| !text.is_empty());
-    if (content.is_empty()
-        && match finish_reason {
-            FinishReason::Stop => refused,
-            FinishReason::Length => false,
-            _ => true,
-        })
-        || (finish_reason == FinishReason::ToolCalls) != !ids.is_empty()
-    {
-        return Err(upstream_failure());
-    }
-    let usage = payload.usage.map(normalize_usage).transpose()?;
-
-    Ok(ChatResponse {
-        model: public_model,
-        message: ChatMessage {
-            role: ChatRole::Assistant,
-            content,
-        },
+        .map(|call| call.function.into_call(call.kind, call.id));
+    let (content, has_tool_calls) = wire::assistant_content(message.content, calls)?;
+    let refused = message.refusal.is_some_and(|text| !text.is_empty());
+    wire::check_finish(finish_reason, &content, has_tool_calls, refused)?;
+    let usage = payload.usage.map(UsagePayload::normalize).transpose()?;
+    Ok(wire::chat_response(
+        public_model,
+        content,
         finish_reason,
         usage,
         reasoning,
-        reasoning_items: Vec::new(),
-    })
+    ))
 }
 
 #[derive(Deserialize)]
@@ -197,69 +156,4 @@ pub(super) fn decode_transcription(bytes: &[u8]) -> Result<TranscriptionResponse
     Ok(TranscriptionResponse {
         text: text.to_owned(),
     })
-}
-
-pub(super) fn normalize_usage(usage: UsagePayload) -> Result<Usage, GatewayError> {
-    if usage.prompt_tokens.checked_add(usage.completion_tokens) != Some(usage.total_tokens) {
-        return Err(upstream_failure());
-    }
-    let cached = usage
-        .prompt_tokens_details
-        .and_then(|details| details.cached_tokens);
-    let normalized = Usage {
-        input_tokens: usage.prompt_tokens,
-        output_tokens: usage.completion_tokens,
-        total_tokens: usage.total_tokens,
-        reasoning_tokens: usage
-            .completion_tokens_details
-            .and_then(|details| details.reasoning_tokens),
-        cached_input_tokens: None,
-    };
-    Ok(match cached {
-        Some(cached) => normalized.with_cached_input_tokens(cached),
-        None => normalized,
-    })
-}
-
-/// Other members (audio, cache writes) carry nothing Kanata reports.
-#[derive(Deserialize)]
-pub(super) struct PromptTokensDetails {
-    #[serde(default)]
-    cached_tokens: Option<u64>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct CompletionTokensDetails {
-    #[serde(default)]
-    reasoning_tokens: Option<u64>,
-}
-
-pub(super) fn parse_finish_reason(value: &str) -> Result<FinishReason, GatewayError> {
-    match value {
-        "stop" => Ok(FinishReason::Stop),
-        "length" => Ok(FinishReason::Length),
-        "tool_calls" => Ok(FinishReason::ToolCalls),
-        "content_filter" => Ok(FinishReason::ContentFilter),
-        _ => Err(upstream_failure()),
-    }
-}
-
-pub(super) fn valid_call_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_TOOL_CALL_ID_BYTES
-        && value.bytes().all(|byte| byte.is_ascii_graphic())
-}
-
-pub(super) fn valid_tool_name(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_TOOL_NAME_BYTES
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
 }

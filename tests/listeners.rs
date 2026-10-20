@@ -1,7 +1,9 @@
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use std::{
     convert::Infallible,
     fs,
-    future::Future,
     pin::Pin,
     sync::{
         Arc,
@@ -22,8 +24,6 @@ use kanata::config::{self, SecretReference};
 use kanata::core::{Capabilities, ErrorKind, GatewayError, RoutedRequest};
 use kanata::server::{Readiness, ServerPlan, TwoPlaneServer};
 use tokio::sync::{Notify, Semaphore};
-
-static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
 struct MemoryResolver;
 
@@ -145,15 +145,7 @@ fn public_config_with_client_bind(
             &format!("max_in_flight = {max_in_flight}"),
         )
         .replace("queue_ms = 1000", &format!("queue_ms = {queue_ms}"));
-    let path = std::env::temp_dir().join(format!(
-        "kanata-listeners-public-{}-{}.toml",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture writes");
-    let result = config::load(&path);
-    fs::remove_file(path).expect("fixture removes");
-    result.expect("public config validates")
+    scratch::load_text(&contents).expect("public config validates")
 }
 
 async fn reserved_listener_pair() -> (tokio::net::TcpListener, tokio::net::TcpListener) {
@@ -177,15 +169,7 @@ fn wildcard_client_config(client_port: u16, admin_port: u16) -> config::Validate
         .expect("example config reads")
         .replace("port = 8080", &format!("port = {client_port}"))
         .replace("port = 9090", &format!("port = {admin_port}"));
-    let path = std::env::temp_dir().join(format!(
-        "kanata-listeners-wildcard-{}-{}.toml",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("wildcard config fixture writes");
-    let result = config::load(&path);
-    fs::remove_file(path).expect("wildcard config fixture removes");
-    result.expect("wildcard config remains schema-valid")
+    scratch::load_text(&contents).expect("wildcard config remains schema-valid")
 }
 
 fn assert_wildcard_bind_rejected(error: std::io::Error) {
@@ -242,14 +226,7 @@ fn restricted_server() -> (TwoPlaneServer, Readiness) {
         "permissions = [\n  { model_alias = \"local-chat\", operation = \"chat\" },\n  { model_alias = \"private-chat\", operation = \"chat\" },\n  { model_alias = \"private-transcribe\", operation = \"transcription\" },\n  { model_alias = \"remote-chat\", operation = \"chat\" },\n  { model_alias = \"codex-chat\", operation = \"chat\" },\n]",
         "permissions = [{ model_alias = \"local-chat\", operation = \"chat\" }]",
     );
-    let path = std::env::temp_dir().join(format!(
-        "kanata-listeners-{}-{}.toml",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture writes");
-    let config = config::load(&path).expect("restricted config validates");
-    fs::remove_file(path).expect("fixture removes");
+    let config = scratch::load_text(&contents).expect("restricted config validates");
     server_from_config(config)
 }
 

@@ -1,11 +1,12 @@
+use crate::adapter::{invalid_request, unsupported_operation};
 use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 
 use crate::config::{CodexReasoningEffort, CodexReasoningSummary, ProviderKind};
 use crate::core::{
-    ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, GatewayError, ReasoningItem,
-    Request, RoutedRequest, ToolChoice, TrustZone,
+    ChatContent, ChatMessage, ChatRequest, ChatRole, GatewayError, ReasoningItem, Request,
+    RoutedRequest, ToolChoice, TrustZone,
 };
 
 #[cfg(test)]
@@ -312,16 +313,4 @@ fn valid_tool_name(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-}
-
-fn invalid_request() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
-    }
 }

@@ -8,34 +8,17 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Operation {
-    Chat,
-    Transcription,
-    Embeddings,
-    Speech,
-}
-
-impl Operation {
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "chat" => Some(Self::Chat),
-            "transcription" => Some(Self::Transcription),
-            "embeddings" => Some(Self::Embeddings),
-            "speech" => Some(Self::Speech),
-            _ => None,
-        }
+str_enum! {
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Operation {
+        Chat => "chat",
+        Transcription => "transcription",
+        Embeddings => "embeddings",
+        Speech => "speech",
     }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Chat => "chat",
-            Self::Transcription => "transcription",
-            Self::Embeddings => "embeddings",
-            Self::Speech => "speech",
-        }
-    }
+    pub const fn as_str;
+    pub fn parse;
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -319,12 +302,9 @@ impl RoutedRequest {
         Ok(Self { context, request })
     }
 
-    pub fn context(&self) -> &RequestContext {
-        &self.context
-    }
-
-    pub fn request(&self) -> &Request {
-        &self.request
+    getters! {
+        pub context: &RequestContext,
+        pub request: &Request,
     }
 
     pub fn into_parts(self) -> (RequestContext, Request) {
@@ -471,40 +451,27 @@ pub struct ChatOptions {
     pub enable_thinking: Option<bool>,
 }
 
-/// Wire field name used for the output token limit.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum MaxTokensParam {
-    #[default]
-    MaxTokens,
-    MaxCompletionTokens,
-    MaxOutputTokens,
-}
-
-impl MaxTokensParam {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::MaxTokens => "max_tokens",
-            Self::MaxCompletionTokens => "max_completion_tokens",
-            Self::MaxOutputTokens => "max_output_tokens",
-        }
+str_enum! {
+    /// Wire field name used for the output token limit.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum MaxTokensParam {
+        #[default]
+        MaxTokens => "max_tokens",
+        MaxCompletionTokens => "max_completion_tokens",
+        MaxOutputTokens => "max_output_tokens",
     }
+    pub const fn as_str;
 }
 
-/// Wire field name used for stop sequences.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum StopParam {
-    #[default]
-    Stop,
-    StopSequences,
-}
-
-impl StopParam {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Stop => "stop",
-            Self::StopSequences => "stop_sequences",
-        }
+str_enum! {
+    /// Wire field name used for stop sequences.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum StopParam {
+        #[default]
+        Stop => "stop",
+        StopSequences => "stop_sequences",
     }
+    pub const fn as_str;
 }
 
 impl ChatOptions {
@@ -722,43 +689,20 @@ impl<'de> Deserialize<'de> for Penalty {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ReasoningEffort {
-    None,
-    Minimal,
-    Low,
-    Medium,
-    High,
-    Xhigh,
-    Max,
-}
-
-impl ReasoningEffort {
-    pub fn parse(value: &str) -> Option<Self> {
-        Some(match value {
-            "none" => Self::None,
-            "minimal" => Self::Minimal,
-            "low" => Self::Low,
-            "medium" => Self::Medium,
-            "high" => Self::High,
-            "xhigh" => Self::Xhigh,
-            "max" => Self::Max,
-            _ => return None,
-        })
+str_enum! {
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum ReasoningEffort {
+        None => "none",
+        Minimal => "minimal",
+        Low => "low",
+        Medium => "medium",
+        High => "high",
+        Xhigh => "xhigh",
+        Max => "max",
     }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Minimal => "minimal",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Xhigh => "xhigh",
-            Self::Max => "max",
-        }
-    }
+    pub const fn as_str;
+    pub fn parse;
 }
 
 /// Serializes in the public wire `response_format` shape.
@@ -1000,12 +944,9 @@ impl ReasoningItem {
         })
     }
 
-    pub fn id(&self) -> Option<&str> {
-        self.id.as_deref()
-    }
-
-    pub fn encrypted_content(&self) -> &str {
-        &self.encrypted_content
+    getters! {
+        pub id: Option<&str> = as_deref,
+        pub encrypted_content: &str,
     }
 }
 
@@ -1087,12 +1028,9 @@ impl ValidatedAudio {
         Ok(Self { format, bytes })
     }
 
-    pub fn format(&self) -> InputAudioFormat {
-        self.format
-    }
-
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+    getters! {
+        pub format: InputAudioFormat,
+        pub bytes: &[u8],
     }
 }
 
@@ -1181,16 +1119,10 @@ impl ValidatedFile {
         })
     }
 
-    pub fn file_name(&self) -> &str {
-        &self.file_name
-    }
-
-    pub fn media_type(&self) -> &str {
-        &self.media_type
-    }
-
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+    getters! {
+        pub file_name: &str,
+        pub media_type: &str,
+        pub bytes: &[u8],
     }
 }
 
@@ -1359,16 +1291,6 @@ impl ChatRequest {
             Ok(())
         }
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ModelDescriptor {
-    pub alias: ModelAlias,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ModelsResponse {
-    pub models: Vec<ModelDescriptor>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1708,6 +1630,12 @@ impl ErrorKind {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct GatewayError {
     pub kind: ErrorKind,
+}
+
+impl From<ErrorKind> for GatewayError {
+    fn from(kind: ErrorKind) -> Self {
+        Self { kind }
+    }
 }
 
 #[cfg(test)]

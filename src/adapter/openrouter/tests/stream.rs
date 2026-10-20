@@ -1,18 +1,11 @@
-use std::{
-    io,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
-};
+use std::{io, time::Duration};
 
 use futures_util::StreamExt;
 use serde_json::{Value, json};
-use tokio::{io::AsyncWriteExt, net::TcpListener, sync::oneshot};
+use tokio::{io::AsyncWriteExt, net::TcpListener};
 
 use crate::{
-    adapter::{Adapter, AdapterOutput},
+    adapter::AdapterOutput,
     core::{ErrorKind, FinishReason, ModelAlias, NormalizedEvent, Usage},
 };
 
@@ -49,23 +42,12 @@ async fn run_stream_with(
     Option<crate::core::GatewayError>,
     RequestRecord,
 ) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap_or_else(|_| panic!("fixture listener"));
-    let address = listener
-        .local_addr()
-        .unwrap_or_else(|_| panic!("fixture address"));
-    let (certificate, acceptor) = tls_fixture();
-    let config = config_with_streaming(FIXTURE_HOST, address.port(), true);
-    let adapter = adapter_for(&config, certificate, address);
+    let (client, listener, acceptor) = Client::new(FIXTURE_HOST, STREAMING).await;
     let server = tokio::spawn(serve_chunked_response(listener, acceptor, chunks));
-    let output = tokio::time::timeout(
-        Duration::from_secs(3),
-        adapter.execute(routed(&config, request)),
-    )
-    .await
-    .unwrap_or_else(|_| panic!("OpenRouter stream setup timeout"))
-    .unwrap_or_else(|error| panic!("OpenRouter stream setup: {error:?}"));
+    let output = tokio::time::timeout(Duration::from_secs(3), client.execute(request))
+        .await
+        .unwrap_or_else(|_| panic!("OpenRouter stream setup timeout"))
+        .unwrap_or_else(|error| panic!("OpenRouter stream setup: {error:?}"));
     let AdapterOutput::Events(mut stream) = output else {
         panic!("expected normalized event stream")
     };
@@ -81,11 +63,7 @@ async fn run_stream_with(
         }
     }
     drop(stream);
-    let record = server
-        .await
-        .unwrap_or_else(|_| panic!("fixture server task"))
-        .unwrap_or_else(|_| panic!("fixture request"));
-    (events, error, record)
+    (events, error, recorded(server).await)
 }
 
 async fn serve_chunked_response(
@@ -95,7 +73,7 @@ async fn serve_chunked_response(
 ) -> io::Result<RequestRecord> {
     let (socket, _) = listener.accept().await?;
     let mut socket = acceptor.accept(socket).await.map_err(io::Error::other)?;
-    let record = read_request_inner(&mut socket).await?;
+    let record = read_request(&mut socket).await?;
     socket
         .write_all(
             b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
@@ -283,54 +261,16 @@ async fn top_level_stream_errors_fail_redacted_before_and_after_output() {
 
 #[tokio::test]
 async fn dropping_stream_closes_verified_https_upstream_without_replay() {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap_or_else(|_| panic!("fixture listener"));
-    let address = listener
-        .local_addr()
-        .unwrap_or_else(|_| panic!("fixture address"));
-    let (certificate, acceptor) = tls_fixture();
-    let config = config_with_streaming(FIXTURE_HOST, address.port(), true);
-    let adapter = adapter_for(&config, certificate, address);
-    let accepted = Arc::new(AtomicUsize::new(0));
-    let accepted_for_server = accepted.clone();
-    let (request_tx, request_rx) = oneshot::channel();
-    let (closed_tx, closed_rx) = oneshot::channel();
-    let server = tokio::spawn(async move {
-        let (socket, _) = listener
-            .accept()
-            .await
-            .unwrap_or_else(|_| panic!("fixture accept"));
-        accepted_for_server.fetch_add(1, Ordering::SeqCst);
-        let mut socket = acceptor
-            .accept(socket)
-            .await
-            .unwrap_or_else(|_| panic!("fixture TLS accept"));
-        let record = read_request_inner(&mut socket)
-            .await
-            .unwrap_or_else(|_| panic!("fixture request"));
-        socket
-            .write_all(
-                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 4096\r\nconnection: close\r\n\r\n",
-            )
-            .await
-            .unwrap_or_else(|_| panic!("fixture headers"));
-        request_tx
-            .send(record)
-            .unwrap_or_else(|_| panic!("request signal"));
-        wait_for_close(&mut socket).await;
-        let _ = closed_tx.send(());
-        if let Ok(Ok((socket, _))) =
-            tokio::time::timeout(Duration::from_millis(100), listener.accept()).await
-        {
-            accepted_for_server.fetch_add(1, Ordering::SeqCst);
-            drop(socket);
-        }
-    });
+    let (client, listener, acceptor) = Client::new(FIXTURE_HOST, STREAMING).await;
+    let mut upstream = Stalled::serve(
+        listener,
+        acceptor,
+        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 4096\r\nconnection: close\r\n\r\n",
+    );
 
     let output = tokio::time::timeout(
         Duration::from_secs(3),
-        adapter.execute(routed(&config, text_request_with_stream(true))),
+        client.execute(text_request_with_stream(true)),
     )
     .await
     .unwrap_or_else(|_| panic!("stream setup timeout"))
@@ -338,20 +278,9 @@ async fn dropping_stream_closes_verified_https_upstream_without_replay() {
     let AdapterOutput::Events(events) = output else {
         panic!("expected stream")
     };
-    let record = tokio::time::timeout(Duration::from_secs(2), request_rx)
-        .await
-        .unwrap_or_else(|_| panic!("request record timeout"))
-        .unwrap_or_else(|_| panic!("request record"));
-    assert_eq!(record.path, "/api/v1/chat/completions");
+    assert_eq!(upstream.request().await.path, "/api/v1/chat/completions");
     drop(events);
-    tokio::time::timeout(Duration::from_secs(2), closed_rx)
-        .await
-        .unwrap_or_else(|_| panic!("upstream remained open after stream drop"))
-        .unwrap_or_else(|_| panic!("upstream close signal"));
-    server
-        .await
-        .unwrap_or_else(|_| panic!("fixture server task"));
-    assert_eq!(accepted.load(Ordering::SeqCst), 1);
+    upstream.assert_closed_without_replay().await;
 }
 
 #[test]

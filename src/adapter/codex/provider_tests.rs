@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     fs, io,
     os::unix::fs::PermissionsExt,
     path::PathBuf,
@@ -14,26 +13,22 @@ use futures_util::StreamExt;
 use http::Method;
 use serde_json::{Value, json};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
     sync::oneshot,
+    task::JoinHandle,
 };
-use tokio_rustls::{
-    TlsAcceptor,
-    rustls::{
-        ServerConfig,
-        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
-    },
-};
+use tokio_rustls::TlsAcceptor;
 
 use crate::{
-    adapter::{Adapter, AdapterOutput},
-    config::{self, CodexAuthStore, ValidatedConfig},
+    adapter::{Adapter, AdapterFuture, AdapterOutput, EventStream},
+    config::{CodexAuthStore, ValidatedConfig},
     core::{
         ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, Extensions, FinishReason,
-        FunctionTool, ModelAlias, NormalizedEvent, Request as CoreRequest, RequestContext,
-        RoutedRequest, ToolCall, ToolChoice, TrustZone, Usage,
+        FunctionTool, GatewayError, ModelAlias, NormalizedEvent, Request as CoreRequest,
+        RequestContext, RoutedRequest, ToolCall, ToolChoice, TrustZone, Usage,
     },
+    test_support::{RequestRecord, load_config, loopback_listener, read_request, tls_fixture},
 };
 
 use super::{CodexAdapter, ExchangeFuture, RefreshExchange};
@@ -73,19 +68,18 @@ impl TempState {
             std::process::id(),
             TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir(&root).expect("create fixture directory");
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
-            .expect("secure fixture directory");
         let state = root.join("state");
-        fs::create_dir(&state).expect("create fixture state directory");
-        fs::set_permissions(&state, fs::Permissions::from_mode(0o700))
-            .expect("secure fixture state directory");
+        for directory in [&root, &state] {
+            fs::create_dir(directory).expect("create fixture directory");
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+                .expect("secure fixture directory");
+        }
         Self { root, state }
     }
 
     fn config(&self) -> ValidatedConfig {
         let state = self.state.to_string_lossy().replace('"', "\\\"");
-        let contents = format!(
+        load_config(&format!(
             r#"
 [listeners.client]
 bind = "127.0.0.1"
@@ -152,12 +146,7 @@ first_byte_ms = 1000
 idle_ms = 1000
 overall_ms = 5000
 "#
-        );
-        let path = self.root.join("fixture.toml");
-        fs::write(&path, contents).expect("write fixture config");
-        let config = config::load(&path).expect("load fixture config");
-        let _ = fs::remove_file(path);
-        config
+        ))
     }
 
     async fn coordinator(&self) -> Arc<RefreshCoordinator> {
@@ -198,11 +187,59 @@ impl Drop for TempState {
     }
 }
 
-struct RequestRecord {
-    method: String,
-    path: String,
-    headers: BTreeMap<String, String>,
-    body: Vec<u8>,
+/// A Codex adapter pinned to a loopback TLS fixture, with its seeded state directory.
+struct Harness {
+    config: ValidatedConfig,
+    adapter: CodexAdapter,
+    _temp: TempState,
+}
+
+type Served = JoinHandle<(Vec<RequestRecord>, bool)>;
+
+impl Harness {
+    async fn new(hostname: &str, exchange: RefreshExchange) -> (Self, TcpListener, TlsAcceptor) {
+        let temp = TempState::new();
+        let config = temp.config();
+        let coordinator = temp.coordinator().await;
+        let (listener, address) = loopback_listener().await;
+        let (certificate, acceptor) = tls_fixture(hostname);
+        let adapter = CodexAdapter::with_test_root(
+            &config,
+            "codex-fixture",
+            coordinator,
+            exchange,
+            certificate,
+            address,
+        )
+        .expect("Codex fixture adapter");
+        let harness = Self {
+            config,
+            adapter,
+            _temp: temp,
+        };
+        (harness, listener, acceptor)
+    }
+
+    async fn serving(exchange: RefreshExchange, responses: Vec<FixtureResponse>) -> (Self, Served) {
+        let (harness, listener, acceptor) = Self::new(HOST, exchange).await;
+        let server = tokio::spawn(serve_responses(listener, acceptor, responses));
+        (harness, server)
+    }
+
+    fn execute(&self, route: &str, request: CoreRequest) -> AdapterFuture {
+        self.adapter.execute(routed(&self.config, route, request))
+    }
+
+    fn medium(&self, streaming: bool, with_tool: bool) -> AdapterFuture {
+        self.execute(MEDIUM_ROUTE, request(MEDIUM_MODEL, streaming, with_tool))
+    }
+}
+
+/// Awaits the fixture server and asserts the adapter opened no unexpected connection.
+async fn finish(server: Served) -> Vec<RequestRecord> {
+    let (records, extra) = server.await.expect("fixture server");
+    assert!(!extra);
+    records
 }
 
 struct FixtureResponse {
@@ -224,64 +261,45 @@ fn response(status: u16, content_type: &'static str, body: &[u8]) -> FixtureResp
     }
 }
 
-fn tls_fixture(hostname: &str) -> (CertificateDer<'static>, TlsAcceptor) {
-    let certified =
-        rcgen::generate_simple_self_signed(vec![hostname.to_owned()]).expect("fixture certificate");
-    let certificate = CertificateDer::from(certified.cert.der().to_vec());
-    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-        certified.signing_key.serialize_der(),
-    ));
-    let server_config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![certificate.clone()], key)
-        .expect("fixture TLS config");
-    (certificate, TlsAcceptor::from(Arc::new(server_config)))
+fn sse(body: &[u8]) -> FixtureResponse {
+    response(200, "text/event-stream", body)
 }
 
-async fn listener() -> (TcpListener, std::net::SocketAddr) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("fixture listener");
-    let address = listener.local_addr().expect("fixture address");
-    (listener, address)
-}
-
-fn adapter_for(
-    config: &ValidatedConfig,
-    coordinator: Arc<RefreshCoordinator>,
-    exchange: RefreshExchange,
-    certificate: CertificateDer<'static>,
-    address: std::net::SocketAddr,
-) -> CodexAdapter {
-    CodexAdapter::with_test_root(
-        config,
-        "codex-fixture",
-        coordinator,
-        exchange,
-        certificate,
-        address,
-    )
-    .expect("Codex fixture adapter")
-}
-
-fn exchange_with_token(calls: Arc<AtomicUsize>, token: &'static str) -> RefreshExchange {
-    Arc::new(move |credential| {
-        let calls = calls.clone();
+fn counting_exchange() -> (Arc<AtomicUsize>, RefreshExchange) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let exchange: RefreshExchange = Arc::new(move |credential| {
+        let calls = counter.clone();
         Box::pin(async move {
             calls.fetch_add(1, Ordering::SeqCst);
             RefreshResponse::new(
-                token,
+                REPLACEMENT_TOKEN,
                 SystemTime::now() + Duration::from_secs(3_600),
                 credential.account_id(),
                 None,
             )
             .map_err(|_| RefreshExchangeError)
         }) as ExchangeFuture
-    })
+    });
+    (calls, exchange)
 }
 
 fn no_refresh() -> RefreshExchange {
     Arc::new(|_credential| Box::pin(async { Err(RefreshExchangeError) }) as ExchangeFuture)
+}
+
+fn expect_err(result: Result<AdapterOutput, GatewayError>) -> GatewayError {
+    match result {
+        Err(error) => error,
+        Ok(_) => panic!("upstream failure accepted"),
+    }
+}
+
+fn expect_events(output: AdapterOutput) -> EventStream {
+    match output {
+        AdapterOutput::Events(events) => events,
+        AdapterOutput::Complete(_) => panic!("expected event stream"),
+    }
 }
 
 fn request(model: &str, streaming: bool, with_tool: bool) -> CoreRequest {
@@ -324,32 +342,36 @@ fn request(model: &str, streaming: bool, with_tool: bool) -> CoreRequest {
 }
 
 fn tool_history_request() -> CoreRequest {
+    let message = |role, content| ChatMessage {
+        role,
+        content: vec![content],
+    };
     CoreRequest::Chat(ChatRequest {
         model: ModelAlias(MEDIUM_MODEL.into()),
         messages: vec![
-            ChatMessage {
-                role: ChatRole::User,
-                content: vec![ChatContent::Text {
+            message(
+                ChatRole::User,
+                ChatContent::Text {
                     text: "lookup".into(),
-                }],
-            },
-            ChatMessage {
-                role: ChatRole::Assistant,
-                content: vec![ChatContent::ToolCall {
+                },
+            ),
+            message(
+                ChatRole::Assistant,
+                ChatContent::ToolCall {
                     call: ToolCall {
                         id: "TEST_ONLY_CALL_ID_NOT_SECRET_0001".into(),
                         name: "lookup".into(),
                         arguments: "{}".into(),
                     },
-                }],
-            },
-            ChatMessage {
-                role: ChatRole::Tool,
-                content: vec![ChatContent::ToolResult {
+                },
+            ),
+            message(
+                ChatRole::Tool,
+                ChatContent::ToolResult {
                     call_id: "TEST_ONLY_CALL_ID_NOT_SECRET_0001".into(),
                     content: "TEST_ONLY_TOOL_RESULT_NOT_SECRET_0001".into(),
-                }],
-            },
+                },
+            ),
         ],
         tools: Vec::new(),
         tool_choice: ToolChoice::Auto,
@@ -437,69 +459,6 @@ async fn serve_responses(
     (records, extra_connection)
 }
 
-async fn read_request<S: AsyncRead + Unpin>(socket: &mut S) -> io::Result<RequestRecord> {
-    let mut bytes = Vec::new();
-    let head_end = loop {
-        let mut chunk = [0_u8; 2048];
-        let count = socket.read(&mut chunk).await?;
-        if count == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "request head"));
-        }
-        bytes.extend_from_slice(&chunk[..count]);
-        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break index + 4;
-        }
-        if bytes.len() > 64 * 1024 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "request headers",
-            ));
-        }
-    };
-    let head = std::str::from_utf8(&bytes[..head_end - 4])
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "request headers"))?;
-    let mut lines = head.split("\r\n");
-    let mut parts = lines
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "request line"))?
-        .split_whitespace();
-    let method = parts
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "method"))?
-        .to_owned();
-    let path = parts
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "path"))?
-        .to_owned();
-    let mut headers = BTreeMap::new();
-    for line in lines {
-        let (name, value) = line
-            .split_once(':')
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "header"))?;
-        headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
-    }
-    let length = headers
-        .get("content-length")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "content length"))?
-        .parse::<usize>()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "content length"))?;
-    let mut body = bytes.split_off(head_end);
-    if body.len() > length {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "request body"));
-    }
-    let already_read = body.len();
-    body.resize(length, 0);
-    if already_read < length {
-        socket.read_exact(&mut body[already_read..]).await?;
-    }
-    Ok(RequestRecord {
-        method,
-        path,
-        headers,
-        body,
-    })
-}
-
 fn assert_codex_headers(record: &RequestRecord, token: &str) {
     assert_eq!(record.method, Method::POST.as_str());
     assert_eq!(record.path, "/backend-api/codex/responses");
@@ -519,31 +478,13 @@ async fn missing_content_type_is_parsed_as_sse_but_explicit_html_is_rejected() {
         ("text/html; charset=utf-8", false),
         ("text/x!weird", false),
     ] {
-        let temp = TempState::new();
-        let config = temp.config();
-        let coordinator = temp.coordinator().await;
-        let calls = Arc::new(AtomicUsize::new(0));
-        let (listener, address) = listener().await;
-        let (certificate, acceptor) = tls_fixture(HOST);
-        let adapter = adapter_for(
-            &config,
-            coordinator,
-            exchange_with_token(calls, REPLACEMENT_TOKEN),
-            certificate,
-            address,
-        );
-        let server = tokio::spawn(serve_responses(
-            listener,
-            acceptor,
+        let (_, exchange) = counting_exchange();
+        let (harness, server) = Harness::serving(
+            exchange,
             vec![response(200, content_type, RESPONSE_EVENTS.as_bytes())],
-        ));
-        let output = adapter
-            .execute(routed(
-                &config,
-                MEDIUM_ROUTE,
-                request(MEDIUM_MODEL, false, false),
-            ))
-            .await;
+        )
+        .await;
+        let output = harness.medium(false, false).await;
         assert_eq!(output.is_ok(), succeeds, "content type {content_type:?}");
         server.await.expect("fixture server");
     }
@@ -552,22 +493,12 @@ async fn missing_content_type_is_parsed_as_sse_but_explicit_html_is_rejected() {
 #[tokio::test]
 async fn live_shape_stream_without_content_type_collects_and_streams() {
     for streaming in [false, true] {
-        let temp = TempState::new();
-        let config = temp.config();
-        let coordinator = temp.coordinator().await;
-        let (listener, address) = listener().await;
-        let (certificate, acceptor) = tls_fixture(HOST);
-        let adapter = adapter_for(&config, coordinator, no_refresh(), certificate, address);
         let mut fixture = response(200, "", LIVE_SHAPE_EVENTS.as_bytes());
         fixture.fragment = true;
-        let server = tokio::spawn(serve_responses(listener, acceptor, vec![fixture]));
+        let (harness, server) = Harness::serving(no_refresh(), vec![fixture]).await;
 
-        let output = adapter
-            .execute(routed(
-                &config,
-                MEDIUM_ROUTE,
-                request(MEDIUM_MODEL, streaming, true),
-            ))
+        let output = harness
+            .medium(streaming, true)
             .await
             .expect("live-shape output");
         let (content, finish_reason, usage) = match output {
@@ -648,30 +579,18 @@ async fn live_shape_stream_without_content_type_collects_and_streams() {
                 },
             ]
         );
-        let (records, extra) = server.await.expect("fixture server");
-        assert!(!extra);
-        assert_eq!(records.len(), 1);
+        assert_eq!(finish(server).await.len(), 1);
     }
 }
 
 #[tokio::test]
 async fn collection_returns_at_completed_without_waiting_for_body_end() {
-    let temp = TempState::new();
-    let config = temp.config();
-    let coordinator = temp.coordinator().await;
-    let (listener, address) = listener().await;
-    let (certificate, acceptor) = tls_fixture(HOST);
-    let adapter = adapter_for(&config, coordinator, no_refresh(), certificate, address);
-    let mut fixture = response(200, "text/event-stream", NAMED_EVENTS.as_bytes());
+    let mut fixture = sse(NAMED_EVENTS.as_bytes());
     fixture.unterminated = true;
-    let server = tokio::spawn(serve_responses(listener, acceptor, vec![fixture]));
+    let (harness, server) = Harness::serving(no_refresh(), vec![fixture]).await;
 
-    let output = adapter
-        .execute(routed(
-            &config,
-            MEDIUM_ROUTE,
-            request(MEDIUM_MODEL, false, true),
-        ))
+    let output = harness
+        .medium(false, true)
         .await
         .expect("completed before truncated body end");
     assert!(matches!(output, AdapterOutput::Complete(_)));
@@ -680,37 +599,21 @@ async fn collection_returns_at_completed_without_waiting_for_body_end() {
 
 #[tokio::test]
 async fn verified_https_request_uses_exact_codex_wire_and_collects_tool_response() {
-    let temp = TempState::new();
-    let config = temp.config();
-    let coordinator = temp.coordinator().await;
-    let calls = Arc::new(AtomicUsize::new(0));
-    let (listener, address) = listener().await;
-    let (certificate, acceptor) = tls_fixture(HOST);
-    let adapter = adapter_for(
-        &config,
-        coordinator,
-        exchange_with_token(calls.clone(), REPLACEMENT_TOKEN),
-        certificate,
-        address,
-    );
-    assert!(!format!("{adapter:?}").contains(ACCESS_TOKEN));
-    assert!(!format!("{adapter:?}").contains(ACCOUNT_ID));
-    let server = tokio::spawn(serve_responses(
-        listener,
-        acceptor,
+    let (calls, exchange) = counting_exchange();
+    let (harness, server) = Harness::serving(
+        exchange,
         vec![response(
             200,
             "text/event-stream; charset=utf-8",
             RESPONSE_EVENTS.as_bytes(),
         )],
-    ));
+    )
+    .await;
+    assert!(!format!("{:?}", harness.adapter).contains(ACCESS_TOKEN));
+    assert!(!format!("{:?}", harness.adapter).contains(ACCOUNT_ID));
 
-    let output = adapter
-        .execute(routed(
-            &config,
-            MEDIUM_ROUTE,
-            request(MEDIUM_MODEL, false, true),
-        ))
+    let output = harness
+        .medium(false, true)
         .await
         .expect("Codex fixture output");
     let response = match output {
@@ -746,8 +649,7 @@ async fn verified_https_request_uses_exact_codex_wire_and_collects_tool_response
         })
     );
 
-    let (records, extra) = server.await.expect("fixture server");
-    assert!(!extra);
+    let records = finish(server).await;
     assert_eq!(records.len(), 1);
     let record = &records[0];
     assert_codex_headers(record, ACCESS_TOKEN);
@@ -763,35 +665,17 @@ async fn verified_https_request_uses_exact_codex_wire_and_collects_tool_response
 
 #[tokio::test]
 async fn named_fragmented_sse_stream_relays_text_tools_and_usage_without_execution() {
-    let temp = TempState::new();
-    let config = temp.config();
-    let coordinator = temp.coordinator().await;
-    let calls = Arc::new(AtomicUsize::new(0));
-    let (listener, address) = listener().await;
-    let (certificate, acceptor) = tls_fixture(HOST);
-    let adapter = adapter_for(
-        &config,
-        coordinator,
-        exchange_with_token(calls.clone(), REPLACEMENT_TOKEN),
-        certificate,
-        address,
-    );
-    let mut response = response(200, "text/event-stream", NAMED_EVENTS.as_bytes());
-    response.fragment = true;
-    let server = tokio::spawn(serve_responses(listener, acceptor, vec![response]));
+    let (calls, exchange) = counting_exchange();
+    let mut fixture = sse(NAMED_EVENTS.as_bytes());
+    fixture.fragment = true;
+    let (harness, server) = Harness::serving(exchange, vec![fixture]).await;
 
-    let output = adapter
-        .execute(routed(
-            &config,
-            MEDIUM_ROUTE,
-            request(MEDIUM_MODEL, true, true),
-        ))
-        .await
-        .expect("Codex stream output");
-    let mut events = match output {
-        AdapterOutput::Events(events) => events,
-        AdapterOutput::Complete(_) => panic!("expected event stream"),
-    };
+    let mut events = expect_events(
+        harness
+            .medium(true, true)
+            .await
+            .expect("Codex stream output"),
+    );
     let mut observed = Vec::new();
     while let Some(event) = events.next().await {
         observed.push(event.expect("normalized fixture event"));
@@ -818,8 +702,7 @@ async fn named_fragmented_sse_stream_relays_text_tools_and_usage_without_executi
             })
         }
     )));
-    let (records, extra) = server.await.expect("fixture server");
-    assert!(!extra);
+    let records = finish(server).await;
     assert_eq!(records.len(), 1);
     assert_codex_headers(&records[0], ACCESS_TOKEN);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -827,26 +710,15 @@ async fn named_fragmented_sse_stream_relays_text_tools_and_usage_without_executi
 
 #[tokio::test]
 async fn explicit_low_effort_route_preserves_alias_upstream_and_effort() {
-    let temp = TempState::new();
-    let config = temp.config();
-    let coordinator = temp.coordinator().await;
-    let (listener, address) = listener().await;
-    let (certificate, acceptor) = tls_fixture(HOST);
-    let adapter = adapter_for(&config, coordinator, no_refresh(), certificate, address);
     let body = RESPONSE_EVENTS.replace(UPSTREAM_MODEL, "fixture-low-model");
-    let server = tokio::spawn(serve_responses(
-        listener,
-        acceptor,
-        vec![response(200, "text/event-stream", body.as_bytes())],
-    ));
+    let (harness, server) = Harness::serving(no_refresh(), vec![sse(body.as_bytes())]).await;
 
-    let output = adapter
-        .execute(routed(&config, LOW_ROUTE, request(LOW_MODEL, false, false)))
+    let output = harness
+        .execute(LOW_ROUTE, request(LOW_MODEL, false, false))
         .await
         .expect("low-effort response");
     assert!(matches!(output, AdapterOutput::Complete(_)));
-    let (records, extra) = server.await.expect("fixture server");
-    assert!(!extra);
+    let records = finish(server).await;
     let payload: Value = serde_json::from_slice(&records[0].body).expect("request body");
     assert_eq!(payload["model"], "fixture-low-model");
     assert_eq!(payload["reasoning"]["effort"], "low");
@@ -856,18 +728,8 @@ async fn explicit_low_effort_route_preserves_alias_upstream_and_effort() {
 
 #[tokio::test]
 async fn request_reasoning_effort_must_match_the_route_effort() {
-    let temp = TempState::new();
-    let config = temp.config();
-    let coordinator = temp.coordinator().await;
-    let (listener, address) = listener().await;
-    let (certificate, acceptor) = tls_fixture(HOST);
-    let adapter = adapter_for(&config, coordinator, no_refresh(), certificate, address);
     let body = RESPONSE_EVENTS.replace(UPSTREAM_MODEL, "fixture-low-model");
-    let server = tokio::spawn(serve_responses(
-        listener,
-        acceptor,
-        vec![response(200, "text/event-stream", body.as_bytes())],
-    ));
+    let (harness, server) = Harness::serving(no_refresh(), vec![sse(body.as_bytes())]).await;
     let with_options = |configure: fn(&mut crate::core::ChatOptions)| {
         let CoreRequest::Chat(mut chat) = request(LOW_MODEL, false, false) else {
             unreachable!()
@@ -894,27 +756,20 @@ async fn request_reasoning_effort_must_match_the_route_effort() {
             ErrorKind::UnsupportedOperation,
         ),
     ] {
-        match adapter
-            .execute(routed(&config, LOW_ROUTE, with_options(configure)))
-            .await
-        {
-            Err(error) => assert_eq!(error.kind, kind),
-            Ok(_) => panic!("unsupported Codex option accepted"),
-        }
+        let error = expect_err(harness.execute(LOW_ROUTE, with_options(configure)).await);
+        assert_eq!(error.kind, kind);
     }
 
-    adapter
-        .execute(routed(
-            &config,
+    harness
+        .execute(
             LOW_ROUTE,
             with_options(|options| {
                 options.reasoning_effort = Some(crate::core::ReasoningEffort::Low);
             }),
-        ))
+        )
         .await
         .expect("matching effort response");
-    let (records, extra) = server.await.expect("fixture server");
-    assert!(!extra);
+    let records = finish(server).await;
     assert_eq!(records.len(), 1);
     let payload: Value = serde_json::from_slice(&records[0].body).expect("request body");
     assert_eq!(payload["reasoning"]["effort"], "low");
@@ -922,43 +777,26 @@ async fn request_reasoning_effort_must_match_the_route_effort() {
 
 #[tokio::test]
 async fn one_pre_output_401_refreshes_and_replays_exactly_once() {
-    let temp = TempState::new();
-    let config = temp.config();
-    let coordinator = temp.coordinator().await;
-    let calls = Arc::new(AtomicUsize::new(0));
-    let (listener, address) = listener().await;
-    let (certificate, acceptor) = tls_fixture(HOST);
-    let adapter = adapter_for(
-        &config,
-        coordinator,
-        exchange_with_token(calls.clone(), REPLACEMENT_TOKEN),
-        certificate,
-        address,
-    );
-    let server = tokio::spawn(serve_responses(
-        listener,
-        acceptor,
+    let (calls, exchange) = counting_exchange();
+    let (harness, server) = Harness::serving(
+        exchange,
         vec![
             response(
                 401,
                 "application/json",
                 br#"{"error":"TEST_ONLY_REJECTED"}"#,
             ),
-            response(200, "text/event-stream", RESPONSE_EVENTS.as_bytes()),
+            sse(RESPONSE_EVENTS.as_bytes()),
         ],
-    ));
+    )
+    .await;
 
-    let output = adapter
-        .execute(routed(
-            &config,
-            MEDIUM_ROUTE,
-            request(MEDIUM_MODEL, false, false),
-        ))
+    let output = harness
+        .medium(false, false)
         .await
         .expect("replayed Codex response");
     assert!(matches!(output, AdapterOutput::Complete(_)));
-    let (records, extra) = server.await.expect("fixture server");
-    assert!(!extra);
+    let records = finish(server).await;
     assert_eq!(records.len(), 2);
     assert_codex_headers(&records[0], ACCESS_TOKEN);
     assert_codex_headers(&records[1], REPLACEMENT_TOKEN);
@@ -967,130 +805,61 @@ async fn one_pre_output_401_refreshes_and_replays_exactly_once() {
 }
 
 #[tokio::test]
-async fn second_401_is_redacted_and_does_not_trigger_a_third_request() {
-    let temp = TempState::new();
-    let config = temp.config();
-    let coordinator = temp.coordinator().await;
-    let calls = Arc::new(AtomicUsize::new(0));
-    let (listener, address) = listener().await;
-    let (certificate, acceptor) = tls_fixture(HOST);
-    let adapter = adapter_for(
-        &config,
-        coordinator,
-        exchange_with_token(calls.clone(), REPLACEMENT_TOKEN),
-        certificate,
-        address,
-    );
-    let server = tokio::spawn(serve_responses(
-        listener,
-        acceptor,
-        vec![
-            response(401, "application/json", br#"{"error":"TEST_ONLY_FIRST"}"#),
-            response(401, "application/json", br#"{"error":"TEST_ONLY_SECOND"}"#),
-        ],
-    ));
+async fn upstream_rejections_are_redacted_and_bounded_in_refreshes_and_requests() {
+    // (responses, expected kind, redacted detail, upstream requests, refreshes)
+    let cases: [(Vec<FixtureResponse>, ErrorKind, &str, usize, usize); 2] = [
+        // A second 401 never triggers a third request.
+        (
+            vec![
+                response(401, "application/json", br#"{"error":"TEST_ONLY_FIRST"}"#),
+                response(401, "application/json", br#"{"error":"TEST_ONLY_SECOND"}"#),
+            ],
+            ErrorKind::UpstreamUnavailable,
+            "TEST_ONLY_SECOND",
+            2,
+            1,
+        ),
+        // Rate limits are static: no refresh and no retry.
+        (
+            vec![response(
+                429,
+                "application/json",
+                br#"{"error":"TEST_ONLY_UPSTREAM_DETAIL"}"#,
+            )],
+            ErrorKind::RateLimited,
+            "TEST_ONLY_UPSTREAM_DETAIL",
+            1,
+            0,
+        ),
+    ];
+    for (responses, kind, detail, requests, refreshes) in cases {
+        let (calls, exchange) = counting_exchange();
+        let (harness, server) = Harness::serving(exchange, responses).await;
 
-    let error = match adapter
-        .execute(routed(
-            &config,
-            MEDIUM_ROUTE,
-            request(MEDIUM_MODEL, false, false),
-        ))
-        .await
-    {
-        Err(error) => error,
-        Ok(_) => panic!("second 401 accepted"),
-    };
-    assert_eq!(error.kind, ErrorKind::UpstreamUnavailable);
-    assert!(!format!("{error:?}").contains("TEST_ONLY_SECOND"));
-    let (records, extra) = server.await.expect("fixture server");
-    assert!(!extra);
-    assert_eq!(records.len(), 2);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn rate_limit_status_is_static_and_never_refreshes_or_retries() {
-    let temp = TempState::new();
-    let config = temp.config();
-    let coordinator = temp.coordinator().await;
-    let calls = Arc::new(AtomicUsize::new(0));
-    let (listener, address) = listener().await;
-    let (certificate, acceptor) = tls_fixture(HOST);
-    let adapter = adapter_for(
-        &config,
-        coordinator,
-        exchange_with_token(calls.clone(), REPLACEMENT_TOKEN),
-        certificate,
-        address,
-    );
-    let server = tokio::spawn(serve_responses(
-        listener,
-        acceptor,
-        vec![response(
-            429,
-            "application/json",
-            br#"{"error":"TEST_ONLY_UPSTREAM_DETAIL"}"#,
-        )],
-    ));
-
-    let error = match adapter
-        .execute(routed(
-            &config,
-            MEDIUM_ROUTE,
-            request(MEDIUM_MODEL, false, false),
-        ))
-        .await
-    {
-        Err(error) => error,
-        Ok(_) => panic!("rate limit accepted"),
-    };
-    assert_eq!(error.kind, ErrorKind::RateLimited);
-    assert!(!format!("{error:?}").contains("TEST_ONLY_UPSTREAM_DETAIL"));
-    let (records, extra) = server.await.expect("fixture server");
-    assert!(!extra);
-    assert_eq!(records.len(), 1);
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let error = expect_err(harness.medium(false, false).await);
+        assert_eq!(error.kind, kind);
+        assert!(!format!("{error:?}").contains(detail));
+        assert_eq!(finish(server).await.len(), requests);
+        assert_eq!(calls.load(Ordering::SeqCst), refreshes);
+    }
 }
 
 #[tokio::test]
 async fn parser_failure_after_output_does_not_refresh_or_replay() {
-    let temp = TempState::new();
-    let config = temp.config();
-    let coordinator = temp.coordinator().await;
-    let calls = Arc::new(AtomicUsize::new(0));
-    let (listener, address) = listener().await;
-    let (certificate, acceptor) = tls_fixture(HOST);
-    let adapter = adapter_for(
-        &config,
-        coordinator,
-        exchange_with_token(calls.clone(), REPLACEMENT_TOKEN),
-        certificate,
-        address,
-    );
+    let (calls, exchange) = counting_exchange();
     let malformed = concat!(
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\",\"created_at\":1,\"model\":\"fixture-codex-model\"}}\n\n",
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"visible\"}\n\n",
         "data: {not-json}\n\n"
     );
-    let server = tokio::spawn(serve_responses(
-        listener,
-        acceptor,
-        vec![response(200, "text/event-stream", malformed.as_bytes())],
-    ));
+    let (harness, server) = Harness::serving(exchange, vec![sse(malformed.as_bytes())]).await;
 
-    let output = adapter
-        .execute(routed(
-            &config,
-            MEDIUM_ROUTE,
-            request(MEDIUM_MODEL, true, false),
-        ))
-        .await
-        .expect("stream response headers");
-    let mut events = match output {
-        AdapterOutput::Events(events) => events,
-        AdapterOutput::Complete(_) => panic!("expected stream"),
-    };
+    let mut events = expect_events(
+        harness
+            .medium(true, false)
+            .await
+            .expect("stream response headers"),
+    );
     let mut saw_error = false;
     while let Some(event) = events.next().await {
         if let Err(error) = event {
@@ -1100,27 +869,14 @@ async fn parser_failure_after_output_does_not_refresh_or_replay() {
         }
     }
     assert!(saw_error);
-    let (records, extra) = server.await.expect("fixture server");
-    assert!(!extra);
-    assert_eq!(records.len(), 1);
+    assert_eq!(finish(server).await.len(), 1);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
 async fn dropping_downstream_stream_aborts_tls_upstream_without_replay() {
-    let temp = TempState::new();
-    let config = temp.config();
-    let coordinator = temp.coordinator().await;
-    let calls = Arc::new(AtomicUsize::new(0));
-    let (listener, address) = listener().await;
-    let (certificate, acceptor) = tls_fixture(HOST);
-    let adapter = adapter_for(
-        &config,
-        coordinator,
-        exchange_with_token(calls.clone(), REPLACEMENT_TOKEN),
-        certificate,
-        address,
-    );
+    let (calls, exchange) = counting_exchange();
+    let (harness, listener, acceptor) = Harness::new(HOST, exchange).await;
     let prefix = RESPONSE_EVENTS
         .split("data: {\"type\":\"response.output_item.added\"")
         .next()
@@ -1157,18 +913,12 @@ async fn dropping_downstream_stream_aborts_tls_upstream_without_replay() {
         let _ = closed_tx.send((closed, extra));
     });
 
-    let output = adapter
-        .execute(routed(
-            &config,
-            MEDIUM_ROUTE,
-            request(MEDIUM_MODEL, true, false),
-        ))
-        .await
-        .expect("stream response headers");
-    let mut events = match output {
-        AdapterOutput::Events(events) => events,
-        AdapterOutput::Complete(_) => panic!("expected stream"),
-    };
+    let mut events = expect_events(
+        harness
+            .medium(true, false)
+            .await
+            .expect("stream response headers"),
+    );
     let record = tokio::time::timeout(Duration::from_secs(2), sent_rx)
         .await
         .expect("fixture request timeout")
@@ -1196,57 +946,28 @@ async fn dropping_downstream_stream_aborts_tls_upstream_without_replay() {
 
 #[tokio::test]
 async fn pinned_hostname_rejects_a_trusted_but_mismatched_tls_certificate() {
-    let temp = TempState::new();
-    let config = temp.config();
-    let coordinator = temp.coordinator().await;
-    let (listener, address) = listener().await;
-    let (certificate, acceptor) = tls_fixture("not-chatgpt.fixture");
-    let adapter = adapter_for(&config, coordinator, no_refresh(), certificate, address);
+    let (harness, listener, acceptor) = Harness::new("not-chatgpt.fixture", no_refresh()).await;
     let server = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.expect("accept TLS client");
         acceptor.accept(socket).await.is_err()
     });
 
-    let error = match adapter
-        .execute(routed(
-            &config,
-            MEDIUM_ROUTE,
-            request(MEDIUM_MODEL, false, false),
-        ))
-        .await
-    {
-        Err(error) => error,
-        Ok(_) => panic!("mismatched TLS certificate accepted"),
-    };
+    let error = expect_err(harness.medium(false, false).await);
     assert_eq!(error.kind, ErrorKind::UpstreamUnavailable);
     assert!(server.await.expect("TLS server result"));
 }
 
 #[tokio::test]
 async fn tool_history_is_relayed_but_never_executed_by_the_adapter() {
-    let temp = TempState::new();
-    let config = temp.config();
-    let coordinator = temp.coordinator().await;
-    let (listener, address) = listener().await;
-    let (certificate, acceptor) = tls_fixture(HOST);
-    let adapter = adapter_for(&config, coordinator, no_refresh(), certificate, address);
-    let server = tokio::spawn(serve_responses(
-        listener,
-        acceptor,
-        vec![response(
-            200,
-            "text/event-stream",
-            RESPONSE_EVENTS.as_bytes(),
-        )],
-    ));
+    let (harness, server) =
+        Harness::serving(no_refresh(), vec![sse(RESPONSE_EVENTS.as_bytes())]).await;
 
-    let output = adapter
-        .execute(routed(&config, MEDIUM_ROUTE, tool_history_request()))
+    let output = harness
+        .execute(MEDIUM_ROUTE, tool_history_request())
         .await
         .expect("tool history response");
     assert!(matches!(output, AdapterOutput::Complete(_)));
-    let (records, extra) = server.await.expect("fixture server");
-    assert!(!extra);
+    let records = finish(server).await;
     let payload: Value = serde_json::from_slice(&records[0].body).expect("request body");
     assert_eq!(payload["input"][1]["type"], "function_call");
     assert_eq!(payload["input"][2]["type"], "function_call_output");
@@ -1279,13 +1000,7 @@ impl io::Write for LogCapture {
 async fn captured_failure(fixture: FixtureResponse, streaming: bool) -> String {
     use tracing::instrument::WithSubscriber;
 
-    let temp = TempState::new();
-    let config = temp.config();
-    let coordinator = temp.coordinator().await;
-    let (listener, address) = listener().await;
-    let (certificate, acceptor) = tls_fixture(HOST);
-    let adapter = adapter_for(&config, coordinator, no_refresh(), certificate, address);
-    let server = tokio::spawn(serve_responses(listener, acceptor, vec![fixture]));
+    let (harness, server) = Harness::serving(no_refresh(), vec![fixture]).await;
     let capture = LogCapture::default();
     let writer = capture.clone();
     let subscriber = tracing_subscriber::fmt()
@@ -1293,12 +1008,7 @@ async fn captured_failure(fixture: FixtureResponse, streaming: bool) -> String {
         .with_writer(move || writer.clone())
         .finish();
     async {
-        let routed = routed(
-            &config,
-            MEDIUM_ROUTE,
-            request(MEDIUM_MODEL, streaming, false),
-        );
-        match adapter.execute(routed).await {
+        match harness.medium(streaming, false).await {
             Ok(AdapterOutput::Events(mut events)) => while events.next().await.is_some() {},
             Ok(AdapterOutput::Complete(_)) => panic!("failure fixture completed"),
             Err(_) => {}
@@ -1351,7 +1061,7 @@ async fn failed_response_event_logs_event_and_provider_code() {
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\",\"created_at\":1,\"model\":\"fixture-codex-model\"}}\n\n",
         "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"r1\",\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"TEST_ONLY_UPSTREAM_DETAIL\"}}}\n\n"
     );
-    let text = captured_failure(response(200, "text/event-stream", failed.as_bytes()), true).await;
+    let text = captured_failure(sse(failed.as_bytes()), true).await;
     let warn = text
         .lines()
         .find(|line| line.contains("upstream stream failed"))

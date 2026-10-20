@@ -1,16 +1,24 @@
-use std::fs::{File, TryLockError};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use rustix::fs::{AtFlags, unlinkat};
+
+use crate::adapter::auth_files::{self, AuthFiles};
 use crate::config::{CodexAuthStore, ValidatedCodexAuth};
 
-use super::file;
 use super::keyring::{KeyringBackend, KeyringErrorKind, SystemKeyring, state_dir_identity};
-use super::record::{decode, encode};
+use super::record::{MAX_RECORD_BYTES, decode, encode};
 use super::{Credential, StoreError};
 
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const FILES: AuthFiles = AuthFiles {
+    record: c"credential-v1.json",
+    lock: c"credential.lock",
+    temp_prefix: ".credential-tmp-",
+    max_record_bytes: MAX_RECORD_BYTES,
+};
 
 enum Backend {
     File,
@@ -55,40 +63,25 @@ impl CredentialStore {
 
     /// File mode is intended for local filesystems; network-filesystem crash guarantees are not claimed.
     pub async fn lock(&self, timeout: Duration) -> Result<LockedStore<'_>, StoreError> {
-        let directory = file::open_state_directory(&self.state_dir)?;
+        let directory = auth_files::open_state_directory(&self.state_dir)?;
         let keyring_identity = match self.backend {
             Backend::File => None,
             Backend::Keyring(_) => Some(state_dir_identity(&self.state_dir)?),
         };
-        let lock_file = file::open_lock_file(&directory)?;
-        let started = Instant::now();
-        loop {
-            match lock_file.try_lock() {
-                Ok(()) => {
-                    return Ok(LockedStore {
-                        backend: &self.backend,
-                        directory,
-                        _lock_file: lock_file,
-                        keyring_identity,
-                    });
-                }
-                Err(TryLockError::WouldBlock) if started.elapsed() < timeout => {
-                    tokio::time::sleep(
-                        LOCK_POLL_INTERVAL.min(timeout.saturating_sub(started.elapsed())),
-                    )
-                    .await;
-                }
-                Err(TryLockError::WouldBlock) => return Err(StoreError::LockTimeout),
-                Err(TryLockError::Error(_)) => return Err(StoreError::LockFailure),
-            }
-        }
+        let lock_file = FILES.lock(&directory, timeout, LOCK_POLL_INTERVAL).await?;
+        Ok(LockedStore {
+            backend: &self.backend,
+            directory,
+            _lock_file: lock_file,
+            keyring_identity,
+        })
     }
 }
 
 impl LockedStore<'_> {
     pub fn load(&self) -> Result<Option<Credential>, StoreError> {
         match self.backend {
-            Backend::File => file::read_record(&self.directory),
+            Backend::File => FILES.read_record(&self.directory, decode),
             Backend::Keyring(keyring) => {
                 let identity = self.identity()?;
                 let record = keyring
@@ -104,8 +97,8 @@ impl LockedStore<'_> {
         let encoded = encode(credential)?;
         match self.backend {
             Backend::File => {
-                let _ = file::read_record(&self.directory)?;
-                file::write_record(&self.directory, &encoded)
+                let _ = FILES.read_record(&self.directory, decode)?;
+                Ok(FILES.write_record(&self.directory, &encoded)?)
             }
             Backend::Keyring(keyring) => {
                 let _ = self.load()?;
@@ -128,7 +121,7 @@ impl LockedStore<'_> {
 
     pub fn logout(&self) -> Result<(), StoreError> {
         match self.backend {
-            Backend::File => file::remove_record(&self.directory),
+            Backend::File => remove_record(&self.directory),
             Backend::Keyring(keyring) => keyring
                 .delete_record(self.identity()?)
                 .map_err(|_| StoreError::KeyringFailure),
@@ -142,6 +135,15 @@ impl LockedStore<'_> {
     }
 }
 
+fn remove_record(directory: &File) -> Result<(), StoreError> {
+    let Some(file) = FILES.open_record_file(directory)? else {
+        return Ok(());
+    };
+    drop(file);
+    unlinkat(directory, FILES.record, AtFlags::empty()).map_err(|_| StoreError::StorageIo)?;
+    directory.sync_all().map_err(|_| StoreError::StorageIo)
+}
+
 fn map_keyring_read_error(error: KeyringErrorKind) -> StoreError {
     match error {
         KeyringErrorKind::Unavailable => StoreError::KeyringUnavailable,
@@ -152,12 +154,11 @@ fn map_keyring_read_error(error: KeyringErrorKind) -> StoreError {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::fs;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    use crate::adapter::auth_files::TestDir;
     use crate::adapter::codex::auth::Credential;
     use crate::adapter::codex::auth::error::StoreError;
     use crate::adapter::codex::auth::keyring::{
@@ -166,33 +167,6 @@ mod tests {
     use crate::config::CodexAuthStore;
 
     use super::CredentialStore;
-
-    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    struct TestDir(PathBuf);
-
-    impl TestDir {
-        fn new() -> Self {
-            use std::os::unix::fs::PermissionsExt;
-
-            let base = fs::canonicalize(std::env::temp_dir()).expect("canonical temp directory");
-            let path = base.join(format!(
-                "kanata-codex-store-{}-{}",
-                std::process::id(),
-                TEST_COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&path).expect("create synthetic directory");
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-                .expect("secure synthetic directory");
-            Self(path)
-        }
-    }
-
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     #[derive(Default)]
     struct FakeKeyring {

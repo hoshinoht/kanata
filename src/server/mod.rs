@@ -89,18 +89,21 @@ pub(crate) struct ClientState {
 }
 
 impl ClientState {
-    pub(crate) fn uploads(&self) -> &Arc<crate::routing::uploads::Uploads> {
-        &self.uploads
-    }
-    pub(crate) fn upload_ms(&self) -> u64 {
-        self.upload_ms
-    }
-    pub(crate) fn registry(&self) -> &Registry {
-        &self.registry
-    }
-
-    pub(crate) fn admission(&self) -> &Admission {
-        &self.admission
+    getters! {
+        pub(crate) uploads: &Arc<crate::routing::uploads::Uploads>,
+        pub(crate) upload_ms: u64,
+        pub(crate) registry: &Registry,
+        pub(crate) admission: &Admission,
+        pub(crate) max_body_bytes: usize,
+        pub(crate) max_audio_chat_body_bytes: usize,
+        pub(crate) max_audio_bytes: usize,
+        pub(crate) max_extension_bytes: usize,
+        pub(crate) first_byte_ms: u64,
+        pub(crate) idle_ms: u64,
+        pub(crate) overall_ms: u64,
+        pub(crate) sse_keepalive_ms: u64,
+        pub(crate) telemetry: &Arc<crate::telemetry::Telemetry>,
+        pub(crate) listener: crate::telemetry::Listener,
     }
 
     pub(crate) fn adapter(&self, id: &str) -> Option<Arc<dyn Adapter>> {
@@ -109,43 +112,11 @@ impl ClientState {
     pub(crate) fn route_is_bound(&self, route: &crate::routing::RouteEntry) -> bool {
         self.adapters.contains_key(&route.adapter_id)
     }
-    pub(crate) fn max_body_bytes(&self) -> usize {
-        self.max_body_bytes
-    }
-    pub(crate) fn max_audio_chat_body_bytes(&self) -> usize {
-        self.max_audio_chat_body_bytes
-    }
-    pub(crate) fn max_audio_bytes(&self) -> usize {
-        self.max_audio_bytes
-    }
-    pub(crate) fn max_extension_bytes(&self) -> usize {
-        self.max_extension_bytes
-    }
-    pub(crate) fn first_byte_ms(&self) -> u64 {
-        self.first_byte_ms
-    }
-    pub(crate) fn idle_ms(&self) -> u64 {
-        self.idle_ms
-    }
-    pub(crate) fn overall_ms(&self) -> u64 {
-        self.overall_ms
-    }
-    pub(crate) fn sse_keepalive_ms(&self) -> u64 {
-        self.sse_keepalive_ms
-    }
     pub(crate) fn next_request_id(&self) -> String {
         format!(
             "req_{:016x}",
             self.request_sequence.fetch_add(1, Ordering::Relaxed)
         )
-    }
-
-    pub(crate) fn telemetry(&self) -> &Arc<crate::telemetry::Telemetry> {
-        &self.telemetry
-    }
-
-    pub(crate) fn listener(&self) -> crate::telemetry::Listener {
-        self.listener
     }
 }
 
@@ -356,18 +327,15 @@ impl TwoPlaneServer {
         })
     }
 
-    pub fn plan(&self) -> ServerPlan {
-        self.plan
+    getters! {
+        pub plan: ServerPlan,
+        pub(crate) configuration_handle(configuration): reload::ConfigurationHandle = clone,
     }
 
     /// Handle to the live key set, for the keys-file reloader.
     #[doc(hidden)]
     pub fn key_handle(&self) -> KeyHandle {
         self.configuration.keys()
-    }
-
-    pub(crate) fn configuration_handle(&self) -> reload::ConfigurationHandle {
-        self.configuration.clone()
     }
 
     /// Loads `usage-<plane>.json` and starts recording; `None` without `[keys] usage_dir`.

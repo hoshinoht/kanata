@@ -1,10 +1,11 @@
+use crate::adapter::{
+    chat_completions::validation::{has_input_audio, uses_tools, validate_messages},
+    internal_error, invalid_request, unsupported_operation,
+};
 use crate::{
     config::ValidatedRoute,
     config::VllmTranscriptionMode,
-    core::{
-        Capabilities, ChatContent, ChatRole, ErrorKind, GatewayError, Request, RouteIdentity,
-        RoutedRequest, ToolChoice, TrustZone,
-    },
+    core::{Capabilities, GatewayError, Request, RouteIdentity, RoutedRequest, TrustZone},
 };
 
 pub(super) struct RouteBinding {
@@ -138,22 +139,8 @@ fn validate_chat(
         return Err(invalid_request());
     }
 
-    let has_audio = chat.messages.iter().any(|message| {
-        message
-            .content
-            .iter()
-            .any(|content| matches!(content, ChatContent::InputAudio { .. }))
-    });
-    let uses_tools = !chat.tools.is_empty()
-        || !matches!(&chat.tool_choice, ToolChoice::Auto | ToolChoice::None)
-        || chat.messages.iter().any(|message| {
-            message.content.iter().any(|content| {
-                matches!(
-                    content,
-                    ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. }
-                )
-            })
-        });
+    let has_audio = has_input_audio(chat);
+    let uses_tools = uses_tools(chat);
     // Tool history needs tool support even when the request declares no tools.
     if uses_tools && !function_tools {
         return Err(unsupported_operation());
@@ -174,45 +161,12 @@ fn validate_chat(
         return Err(unsupported_operation());
     }
 
-    let mut total_audio_bytes = 0usize;
-    for message in chat.messages_without_reasoning() {
-        if message.content.is_empty() {
-            return Err(invalid_request());
-        }
-        for content in &message.content {
-            match content {
-                ChatContent::Text { text } if !text.is_empty() => {}
-                // Clients send empty text beside an assistant's tool calls.
-                ChatContent::Text { .. } if message.role == ChatRole::Assistant => {}
-                ChatContent::Text { .. } => return Err(invalid_request()),
-                ChatContent::ToolCall { .. } if message.role == ChatRole::Assistant => {}
-                ChatContent::Reasoning { .. } | ChatContent::ReasoningText { .. }
-                    if message.role == ChatRole::Assistant => {}
-                ChatContent::ToolResult { .. } if message.role == ChatRole::Tool => {}
-                ChatContent::InputAudio { audio } if message.role == ChatRole::User => {
-                    total_audio_bytes = total_audio_bytes
-                        .checked_add(audio.bytes().len())
-                        .ok_or_else(invalid_request)?;
-                    if total_audio_bytes > max_audio_bytes {
-                        return Err(invalid_request());
-                    }
-                }
-                ChatContent::InputImage { .. }
-                    if message.role == ChatRole::User
-                        && route_binding.is_none_or(|binding| binding.allows_input_images) => {}
-                ChatContent::InputAudio { .. } | ChatContent::InputImage { .. } => {
-                    return Err(unsupported_operation());
-                }
-                ChatContent::ToolCall { .. }
-                | ChatContent::ToolResult { .. }
-                | ChatContent::Reasoning { .. }
-                | ChatContent::ReasoningText { .. } => {
-                    return Err(invalid_request());
-                }
-            }
-        }
-    }
-    Ok(())
+    validate_messages(
+        chat,
+        max_audio_bytes,
+        true,
+        route_binding.is_none_or(|binding| binding.allows_input_images),
+    )
 }
 
 fn validate_transcription(
@@ -254,22 +208,4 @@ fn safe_filename(value: &str) -> bool {
 
 fn valid_hint(value: Option<&str>, max_bytes: usize) -> bool {
     value.is_none_or(|value| value.len() <= max_bytes && !value.chars().any(char::is_control))
-}
-
-fn invalid_request() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
-}
-
-fn internal_error() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
-    }
 }

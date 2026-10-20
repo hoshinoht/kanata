@@ -1,3 +1,6 @@
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::sync::{
     Arc,
@@ -20,8 +23,6 @@ use kanata::core::{
 use kanata::routing::Registry;
 use kanata::server::{Readiness, TwoPlaneServer};
 use serde_json::Value;
-
-static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
 struct MemoryResolver(Vec<u8>);
 
@@ -108,15 +109,7 @@ fn personal_inline_config(edit: impl FnOnce(String) -> String) -> config::Valida
         &template[..keys_start],
         &template[keys_end + 1..]
     ));
-    let path = std::env::temp_dir().join(format!(
-        "kanata-auth-public-{}-{}.toml",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture writes");
-    let result = config::load(&path);
-    fs::remove_file(path).expect("fixture removes");
-    result.expect("personal config validates")
+    scratch::load_text(&contents).expect("personal config validates")
 }
 
 fn personal_public_config(public_routes: &str) -> config::ValidatedConfig {
@@ -139,23 +132,11 @@ fn file_key_config(secret_path: &std::path::Path) -> config::ValidatedConfig {
         "env:KANATA_CLIENT_KEY",
         &format!("file:{}", secret_path.display()),
     );
-    let path = std::env::temp_dir().join(format!(
-        "kanata-auth-config-{}-{}.toml",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture writes");
-    let config = config::load(&path).expect("file-key config validates");
-    fs::remove_file(path).expect("fixture removes");
-    config
+    scratch::load_text(&contents).expect("file-key config validates")
 }
 
 fn secret_file(contents: &[u8]) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "kanata-auth-secret-{}-{}",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
+    let path = scratch::unique_path("auth-secret");
     fs::write(&path, contents).expect("secret writes");
     path
 }
@@ -396,14 +377,7 @@ fn resolved_key_failures_do_not_expose_secret_material() {
         "[limits]",
         "[[application_keys]]\nid = \"second-client\"\nsecret_ref = \"env:KANATA_SECOND_CLIENT_KEY\"\npermissions = [{ model_alias = \"local-chat\", operation = \"chat\" }]\n\n[limits]",
     );
-    let path = std::env::temp_dir().join(format!(
-        "kanata-auth-{}-{}.toml",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, duplicate).expect("fixture writes");
-    let duplicate_config = config::load(&path).expect("duplicate config validates");
-    fs::remove_file(path).expect("fixture removes");
+    let duplicate_config = scratch::load_text(&duplicate).expect("duplicate config validates");
     let error = match ApplicationAuth::from_validated(
         &duplicate_config,
         &MemoryResolver(b"DUPLICATE_MARKER".to_vec()),
@@ -733,24 +707,12 @@ fn sha256_hex(value: &[u8]) -> String {
         .collect()
 }
 
-fn config_from(contents: String) -> Result<config::ValidatedConfig, config::ConfigError> {
-    let path = std::env::temp_dir().join(format!(
-        "kanata-auth-digest-{}-{}.toml",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture writes");
-    let result = config::load(&path);
-    fs::remove_file(path).expect("fixture removes");
-    result
-}
-
 #[test]
 fn digest_keys_authenticate_without_resolution_and_collide_with_resolved_keys() {
     let token = "kanata_sk_DIGEST_SYNTHETIC_KEY_001";
     let example = fs::read_to_string("tests/fixtures/config/example.toml").expect("example reads");
     let digest_ref = format!("sha256:{}", sha256_hex(token.as_bytes()));
-    let digest_config = config_from(example.replace("env:KANATA_CLIENT_KEY", &digest_ref))
+    let digest_config = scratch::load_text(&example.replace("env:KANATA_CLIENT_KEY", &digest_ref))
         .expect("digest config validates");
 
     // Resolving anything would fail, so success proves the digest is used directly.
@@ -773,7 +735,7 @@ fn digest_keys_authenticate_without_resolution_and_collide_with_resolved_keys() 
     }
 
     let secret_path = secret_file(format!("{token}\n").as_bytes());
-    let duplicate = config_from(format!(
+    let duplicate = scratch::load_text(&format!(
         "{}\n[[application_keys]]\nid = \"friend\"\nsecret_ref = \"file:{}\"\npermissions = [\n  {{ model_alias = \"local-chat\", operation = \"chat\" }},\n]\n",
         example.replace("env:KANATA_CLIENT_KEY", &digest_ref),
         secret_path.display()

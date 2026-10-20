@@ -1,7 +1,10 @@
+//! Typed-event SSE bodies (Messages, Responses): `event:` frames carrying JSON, ending in
+//! a completion or a single protocol error frame.
+
 use std::{collections::VecDeque, convert::Infallible};
 
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     http::header,
     response::{IntoResponse, Response},
 };
@@ -12,21 +15,51 @@ use super::{
     super::{
         deadline::RequestDeadline,
         errors::{gateway_error_observed, upstream_failure_observed},
-        keepalive::{COMMENT, keepalive},
-        sse::StreamLifetime,
+        keepalive::keepalive,
         stream_timeout::StreamTimeout,
     },
-    output::{Options, Output, failure},
+    StreamLifetime,
 };
 use crate::{
     adapter::EventStream,
-    core::{GatewayError, ModelAlias, NormalizedEvent, TimeoutPhase},
+    core::{
+        ErrorKind, FinishReason, GatewayError, ModelAlias, NormalizedEvent, TimeoutPhase, Usage,
+    },
 };
 
-pub(in crate::api) async fn stream_response(
+/// Protocol side of a typed event stream.
+pub(in crate::api) trait EventOutput: Send + 'static {
+    /// Frame sent during upstream silence.
+    const KEEPALIVE: &'static [u8];
+    fn accept(&mut self, event: NormalizedEvent) -> Result<Vec<Value>, GatewayError>;
+    fn finish(
+        &mut self,
+        reason: FinishReason,
+        usage: Option<&Usage>,
+    ) -> Result<Vec<Value>, GatewayError>;
+    /// Terminal frame for `error`.
+    fn failed(&mut self, error: GatewayError) -> Value;
+    fn frame(&mut self, value: Value) -> Bytes {
+        event_frame(&value)
+    }
+}
+
+/// `event:` named by the frame's `type`, then the frame as `data:`.
+pub(in crate::api) fn event_frame(value: &Value) -> Bytes {
+    format!(
+        "event: {}\ndata: {}\n\n",
+        value["type"].as_str().expect("event type"),
+        value
+    )
+    .into()
+}
+
+/// Commits the stream once the first event names `model`; `start` then yields the output
+/// state and its opening frames.
+pub(in crate::api) async fn stream_response<O: EventOutput>(
     mut events: EventStream,
     model: ModelAlias,
-    options: Options,
+    start: impl FnOnce(&ModelAlias) -> (O, Vec<Value>),
     deadline: RequestDeadline,
     first_byte_ms: u64,
     idle_ms: u64,
@@ -40,13 +73,12 @@ pub(in crate::api) async fn stream_response(
         }
         _ => return upstream_failure_observed(lifetime.observer.as_ref()),
     }
-    let output = Output::new(options);
-    let pending = output.start().into();
+    let (output, pending) = start(&model);
     let interval = lifetime.keepalive;
     let state = State {
         events: Some(events),
         output,
-        pending,
+        pending: pending.into(),
         timeout,
         lifetime,
         ended: false,
@@ -74,7 +106,7 @@ pub(in crate::api) async fn stream_response(
                 Ok(Some(Ok(NormalizedEvent::ChatCompleted {
                     finish_reason,
                     usage,
-                }))) => match state.output.finish(finish_reason, usage.clone()) {
+                }))) => match state.output.finish(finish_reason, usage.as_ref()) {
                     Ok(frames) => {
                         if let Some(observer) = &state.lifetime.observer {
                             observer.record_usage(usage);
@@ -86,7 +118,7 @@ pub(in crate::api) async fn stream_response(
                     }
                     Err(error) => state.fail(error),
                 },
-                Ok(Some(Ok(event))) => match state.output.accept(event, true) {
+                Ok(Some(Ok(event))) => match state.output.accept(event) {
                     Ok(frames) => {
                         if !frames.is_empty()
                             && let Some(observer) = &state.lifetime.observer
@@ -98,7 +130,7 @@ pub(in crate::api) async fn stream_response(
                     Err(error) => state.fail(error),
                 },
                 Err(error) | Ok(Some(Err(error))) => state.fail(error),
-                Ok(None) => state.fail(failure()),
+                Ok(None) => state.fail(GatewayError::from(ErrorKind::UpstreamFailure)),
             }
         }
     });
@@ -107,14 +139,14 @@ pub(in crate::api) async fn stream_response(
             (header::CONTENT_TYPE, "text/event-stream"),
             (header::CACHE_CONTROL, "no-cache"),
         ],
-        Body::from_stream(keepalive(body, interval, COMMENT)),
+        Body::from_stream(keepalive(body, interval, O::KEEPALIVE)),
     )
         .into_response()
 }
 
-struct State {
+struct State<O> {
     events: Option<EventStream>,
-    output: Output,
+    output: O,
     pending: VecDeque<Value>,
     timeout: StreamTimeout,
     lifetime: StreamLifetime,
@@ -122,7 +154,7 @@ struct State {
     terminal_error: bool,
 }
 
-impl State {
+impl<O: EventOutput> State<O> {
     fn fail(&mut self, error: GatewayError) {
         if let Some(observer) = &self.lifetime.observer {
             observer.record_error(error);

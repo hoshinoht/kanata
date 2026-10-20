@@ -4,7 +4,6 @@ use axum::{body::to_bytes, http::StatusCode};
 use futures_util::StreamExt;
 use kanata::{
     adapter::{Adapter, AdapterOutput, ollama::OllamaAdapter},
-    config,
     core::{
         ChatContent, ChatRole, ErrorKind, Extensions, FinishReason, ModelAlias, NormalizedEvent,
         Operation, Request as CoreRequest, RequestContext, RouteIdentity, RoutedRequest,
@@ -17,8 +16,8 @@ use serde_json::{Value, json};
 use crate::support::{
     MockServer, RequestRecord, ResponseSpec, SEPARATE_USAGE_STREAM, TEXT_RESPONSE, TEXT_STREAM,
     TOOLS_RESPONSE, TOOLS_STREAM, adapter, api_request, capabilities, config_for,
-    config_for_with_timeouts, error_kind, routed, text_request, text_request_with_stream,
-    tool_request,
+    config_for_with_timeouts, error_kind, load_text as load_contents, routed, text_request,
+    text_request_with_stream, tool_request,
 };
 
 fn decode(record: &RequestRecord) -> Value {
@@ -923,12 +922,4 @@ fn constructor_rejects_wrong_provider_and_trust_zone() {
     );
     let config = load_contents(&with_secret).unwrap_or_else(|_| panic!("secret config"));
     assert!(OllamaAdapter::new(&config.adapters()[0], config.timeouts(), config.limits()).is_err());
-}
-
-fn load_contents(contents: &str) -> Result<kanata::config::ValidatedConfig, config::ConfigError> {
-    let path = std::env::temp_dir().join("kanata-ollama-constructor.toml");
-    std::fs::write(&path, contents).unwrap_or_else(|_| panic!("write config"));
-    let result = config::load(&path);
-    let _ = std::fs::remove_file(path);
-    result
 }

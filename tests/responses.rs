@@ -1,5 +1,7 @@
 #[path = "support/gateway.rs"]
 mod gateway;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[allow(dead_code)]
 #[path = "sse/support.rs"]
 mod sse;
@@ -1075,14 +1077,7 @@ fn harness_server() -> gateway::ServerWithRequests {
             "operations = [\"chat\", \"transcription\"]\nstreaming_chat = true\nfunction_tools = true\nsampling_controls = true\n",
             1,
         );
-    let path = std::env::temp_dir().join(format!(
-        "kanata-harness-fixtures-{}.toml",
-        std::process::id()
-    ));
-    std::fs::write(&path, contents).expect("config writes");
-    let config = kanata::config::load(&path);
-    std::fs::remove_file(&path).expect("config removes");
-    let config = config.expect("harness config validates");
+    let config = gateway::load_text(&contents).expect("harness config validates");
     let requests = gateway::Requests::default();
     let adapter = HarnessAdapter {
         capabilities: gateway::capabilities(&config, "vllm-private"),

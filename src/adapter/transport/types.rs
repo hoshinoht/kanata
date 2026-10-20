@@ -167,25 +167,17 @@ fn is_media_token(byte: u8) -> bool {
 }
 
 pub(super) fn timeout(phase: crate::core::TimeoutPhase) -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Timeout { phase },
-    }
+    GatewayError::from(ErrorKind::Timeout { phase })
 }
 
 pub(super) fn unavailable() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamUnavailable,
-    }
+    GatewayError::from(ErrorKind::UpstreamUnavailable)
 }
 
 pub(super) fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
+    GatewayError::from(ErrorKind::UpstreamFailure)
 }
 
 pub(super) fn internal_error() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
-    }
+    GatewayError::from(ErrorKind::Internal)
 }

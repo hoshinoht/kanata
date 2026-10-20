@@ -1,8 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use kanata::config::{ValidatedConfig, load};
-
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
+use kanata::config::ValidatedConfig;
 
 pub(crate) fn config_with_audio(max_body_bytes: usize, max_audio_bytes: usize) -> ValidatedConfig {
     const CAPABILITIES: &str = "operations = [\"chat\", \"transcription\"]\nstreaming_chat = true\nfunction_tools = true\n\n[[adapters]]\nid = \"openrouter-remote\"";
@@ -26,16 +22,7 @@ pub(crate) fn config_with_audio(max_body_bytes: usize, max_audio_bytes: usize) -
         "max_audio_bytes = 26214400",
         &format!("max_audio_bytes = {max_audio_bytes}"),
     );
-
-    let path = std::env::temp_dir().join(format!(
-        "kanata-chat-audio-{}-{}.toml",
-        std::process::id(),
-        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, contents).expect("audio config writes");
-    let result = load(&path);
-    std::fs::remove_file(path).expect("audio config removes");
-    result.expect("audio config validates")
+    crate::support::load_text(&contents).expect("audio config validates")
 }
 
 pub(crate) fn adapters(config: &ValidatedConfig) -> Vec<crate::support::AdapterSpec> {

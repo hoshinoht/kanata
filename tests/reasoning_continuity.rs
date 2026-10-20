@@ -1,15 +1,13 @@
 //! Reasoning continuity and cached-token usage at the adapter boundary: requests are
 //! built as IR directly and the upstream payload is recorded by a loopback mock.
 
-use std::{
-    fs,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+#[path = "support/scratch.rs"]
+mod scratch;
 
 use futures_util::StreamExt;
 use kanata::{
     adapter::{Adapter, AdapterOutput, ollama::OllamaAdapter, vllm::VllmAdapter},
-    config::{self, ValidatedConfig},
+    config::ValidatedConfig,
     core::{
         ChatContent, ChatMessage, ChatRequest, ChatRole, Extensions, ModelAlias, NormalizedEvent,
         PromptCacheKey, ReasoningItem, Request, RequestContext, Response, RoutedRequest,
@@ -22,8 +20,6 @@ use tokio::{
     net::TcpListener,
     task::JoinHandle,
 };
-
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
 
 /// Serves one HTTP response and returns the request body it received.
 async fn mock(content_type: &'static str, body: String) -> (String, JoinHandle<Value>) {
@@ -68,20 +64,8 @@ async fn mock(content_type: &'static str, body: String) -> (String, JoinHandle<V
 }
 
 fn config(address: &str) -> ValidatedConfig {
-    let contents = format!(
-        r#"
-[listeners.client]
-bind = "127.0.0.1"
-port = 18080
-
-[listeners.admin]
-bind = "127.0.0.1"
-port = 18081
-
-[publication]
-tailnet_addresses = ["100.64.0.1"]
-
-[[adapters]]
+    let body = format!(
+        r#"[[adapters]]
 id = "ollama-local"
 kind = "ollama"
 base_url = "http://{address}/v1"
@@ -118,37 +102,13 @@ adapter_id = "vllm-private"
 upstream_id = "served-checkpoint"
 requires_streaming_chat = false
 requires_function_tools = false
-
-[[application_keys]]
-id = "fixture-client"
-secret_ref = "env:KANATA_TEST_KEY"
-permissions = [{{ model_alias = "private-chat", operation = "chat" }}]
-
-[limits]
-max_queue = 2
-max_in_flight = 2
-max_body_bytes = 1048576
-max_audio_bytes = 1048576
-max_extension_bytes = 8192
-
-[timeouts]
-queue_ms = 1000
-connect_ms = 1000
-headers_ms = 1000
-first_byte_ms = 1000
-idle_ms = 1000
-overall_ms = 5000
 "#
     );
-    let id = NEXT_CONFIG.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "kanata-reasoning-continuity-{}-{id}.toml",
-        std::process::id()
-    ));
-    fs::write(&path, contents).expect("write config");
-    let config = config::load(&path).expect("load config");
-    let _ = fs::remove_file(path);
-    config
+    scratch::load_valid(&scratch::fixture_text(
+        &body,
+        r#"{ model_alias = "private-chat", operation = "chat" }"#,
+        1_048_576,
+    ))
 }
 
 fn reasoning(content: &str) -> ChatContent {

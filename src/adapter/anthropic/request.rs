@@ -1,9 +1,10 @@
+use crate::adapter::{internal_error, invalid_request, unsupported_operation};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::core::{
-    ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, FunctionTool, GatewayError,
-    ReasoningEffort, ResponseFormat, ToolChoice,
+    ChatContent, ChatMessage, ChatRequest, ChatRole, FunctionTool, GatewayError, ReasoningEffort,
+    ResponseFormat, ToolChoice,
 };
 
 use super::response::{REDACTED_THINKING_PREFIX, THINKING_PREFIX};
@@ -331,23 +332,5 @@ fn encode_format(format: Option<&ResponseFormat>) -> Result<Option<OutputFormat>
                 schema,
             }))
         }
-    }
-}
-
-fn invalid_request() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
-    }
-}
-
-fn internal_error() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
     }
 }

@@ -1,12 +1,13 @@
+use crate::adapter::{
+    chat_completions::{valid_call_id, valid_tool_name},
+    invalid_request, unsupported_operation,
+};
 use std::collections::BTreeSet;
 
 use crate::core::{
-    Capabilities, ChatContent, ChatRole, ErrorKind, GatewayError, Request, RoutedRequest,
-    ToolChoice, TrustZone,
+    Capabilities, ChatContent, ChatRole, GatewayError, Request, RoutedRequest, ToolChoice,
+    TrustZone,
 };
-
-const MAX_TOOL_CALL_ID_BYTES: usize = 128;
-const MAX_TOOL_NAME_BYTES: usize = 64;
 
 pub(super) fn validate(
     routed: &RoutedRequest,
@@ -121,30 +122,4 @@ fn validate_chat(chat: &crate::core::ChatRequest) -> Result<(), GatewayError> {
         }
     }
     Ok(())
-}
-
-fn valid_call_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_TOOL_CALL_ID_BYTES
-        && value.bytes().all(|byte| byte.is_ascii_graphic())
-}
-
-fn valid_tool_name(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_TOOL_NAME_BYTES
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-}
-
-fn invalid_request() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
-    }
 }

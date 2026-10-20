@@ -31,19 +31,13 @@ use self::metrics::Metrics;
 const NO_EXPLICIT_OUTCOME: u16 = 0;
 const UNSET: &str = "-";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Listener {
-    Private,
-    Public,
-}
-
-impl Listener {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Private => "private",
-            Self::Public => "public",
-        }
+str_enum! {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) enum Listener {
+        Private => "private",
+        Public => "public",
     }
+    const fn as_str;
 }
 
 /// Response extension naming the client-facing error code; never serialized.

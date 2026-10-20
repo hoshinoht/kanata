@@ -66,7 +66,5 @@ pub(super) struct MessageDeltaBody {
 }
 
 pub(super) fn parse(data: &str) -> Result<StreamEvent, GatewayError> {
-    serde_json::from_str(data).map_err(|_| GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    })
+    serde_json::from_str(data).map_err(|_| GatewayError::from(ErrorKind::UpstreamFailure))
 }

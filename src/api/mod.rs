@@ -1,5 +1,16 @@
+/// Value of a `dispatch` step, or its error response returned from the handler.
+macro_rules! try_step {
+    ($step:expr) => {
+        match $step {
+            Ok(value) => value,
+            Err(response) => return *response,
+        }
+    };
+}
+
 mod chat;
 mod deadline;
+mod dispatch;
 mod embeddings;
 mod errors;
 mod extensions;
@@ -34,14 +45,6 @@ pub(crate) fn routes() -> Router<ClientState> {
         .route("/embeddings", post(embeddings::embeddings))
         .route("/audio/speech", post(speech::speech))
         .route("/audio/transcriptions", post(transcription::transcriptions))
-}
-
-pub(super) fn supported(
-    configured: &Capabilities,
-    actual: &Capabilities,
-    request: &CoreRequest,
-) -> bool {
-    check_supported(configured, actual, request).is_ok()
 }
 
 /// On rejection, yields the wire parameter to blame when one is identifiable.

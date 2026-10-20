@@ -32,9 +32,7 @@ pub(crate) enum ResponsesStreamError {
 
 impl ResponsesStreamError {
     pub(crate) fn gateway_error(self) -> GatewayError {
-        GatewayError {
-            kind: ErrorKind::UpstreamFailure,
-        }
+        GatewayError::from(ErrorKind::UpstreamFailure)
     }
 }
 

@@ -1,7 +1,7 @@
 #[path = "../adapter_vllm/support.rs"]
 pub mod common;
 
-use std::{fs, sync::atomic::AtomicUsize};
+use crate::scratch::{fixture_text, load_valid};
 
 use kanata::{
     auth::{SecretResolutionError, SecretResolver},
@@ -17,8 +17,6 @@ pub const TRANSCRIPTION_RESPONSE: &str =
     include_str!("../fixtures/vllm/audio-chat-transcription-response.json");
 pub const NATIVE_ASR_RESPONSE: &str =
     include_str!("../fixtures/vllm/native-asr-transcription-response.json");
-
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
 
 pub struct Resolver;
 
@@ -141,20 +139,8 @@ allows_audio_function_tools = {route_audio_function_tools}
     } else {
         "{ model_alias = \"vllm-public\", operation = \"chat\" }"
     };
-    let contents = format!(
-        r#"
-[listeners.client]
-bind = "127.0.0.1"
-port = 18080
-
-[listeners.admin]
-bind = "127.0.0.1"
-port = 18081
-
-[publication]
-tailnet_addresses = ["100.64.0.1"]
-
-[[adapters]]
+    let body = format!(
+        r#"[[adapters]]
 id = "vllm-fixture"
 kind = "vllm"
 base_url = "{scheme}://{address}/v1"
@@ -167,27 +153,7 @@ input_audio = {input_audio}
 audio_streaming_chat = {audio_streaming_chat}
 audio_function_tools = {audio_function_tools}
 
-{routes}
-[[application_keys]]
-id = "fixture-client"
-secret_ref = "env:KANATA_TEST_KEY"
-permissions = [{permissions}]
-
-[limits]
-max_queue = 2
-max_in_flight = 2
-max_body_bytes = 1048576
-max_audio_bytes = {max_audio_bytes}
-max_extension_bytes = 8192
-
-[timeouts]
-queue_ms = 1000
-connect_ms = 1000
-headers_ms = 1000
-first_byte_ms = 1000
-idle_ms = 1000
-overall_ms = 5000
-"#,
+{routes}"#,
         streaming_chat = options.streaming_chat,
         function_tools = options.function_tools,
         input_audio = options.input_audio,
@@ -206,30 +172,18 @@ overall_ms = 5000
                 "{route_audio_function_tools}",
                 &options.route_audio_function_tools.to_string(),
             ),
-        permissions = permissions,
-        max_audio_bytes = options.max_audio_bytes,
     );
-    load_config(&contents)
+    load_valid(&fixture_text(&body, permissions, options.max_audio_bytes))
 }
+
+const TWO_MIB: usize = 2 * 1024 * 1024;
 
 pub fn audio_chat_native_asr_config(
     audio_chat_address: &str,
     native_asr_address: &str,
 ) -> ValidatedConfig {
-    let contents = format!(
-        r#"
-[listeners.client]
-bind = "127.0.0.1"
-port = 18080
-
-[listeners.admin]
-bind = "127.0.0.1"
-port = 18081
-
-[publication]
-tailnet_addresses = ["100.64.0.1"]
-
-[[adapters]]
+    let body = format!(
+        r#"[[adapters]]
 id = "vllm-audio-chat"
 kind = "vllm"
 base_url = "http://{audio_chat_address}/v1"
@@ -284,50 +238,22 @@ adapter_id = "vllm-native-asr"
 upstream_id = "served-native-asr"
 requires_streaming_chat = false
 requires_function_tools = false
-
-[[application_keys]]
-id = "fixture-client"
-secret_ref = "env:KANATA_TEST_KEY"
-permissions = [
-  {{ model_alias = "audio-public", operation = "chat" }},
-  {{ model_alias = "audio-public", operation = "transcription" }},
-  {{ model_alias = "native-public", operation = "transcription" }}
-]
-
-[limits]
-max_queue = 2
-max_in_flight = 2
-max_body_bytes = 1048576
-max_audio_bytes = 2097152
-max_extension_bytes = 8192
-
-[timeouts]
-queue_ms = 1000
-connect_ms = 1000
-headers_ms = 1000
-first_byte_ms = 1000
-idle_ms = 1000
-overall_ms = 5000
 "#
     );
-    load_config(&contents)
+    load_valid(&fixture_text(
+        &body,
+        r#"
+  { model_alias = "audio-public", operation = "chat" },
+  { model_alias = "audio-public", operation = "transcription" },
+  { model_alias = "native-public", operation = "transcription" }
+"#,
+        TWO_MIB,
+    ))
 }
 
 pub fn two_origin_config(first: &str, second: &str) -> ValidatedConfig {
-    let contents = format!(
-        r#"
-[listeners.client]
-bind = "127.0.0.1"
-port = 18080
-
-[listeners.admin]
-bind = "127.0.0.1"
-port = 18081
-
-[publication]
-tailnet_addresses = ["100.64.0.1"]
-
-[[adapters]]
+    let body = format!(
+        r#"[[adapters]]
 id = "vllm-first"
 kind = "vllm"
 base_url = "http://{first}/v1"
@@ -368,49 +294,21 @@ upstream_id = "served-second"
 requires_streaming_chat = false
 requires_function_tools = false
 allows_input_audio = true
-
-[[application_keys]]
-id = "fixture-client"
-secret_ref = "env:KANATA_TEST_KEY"
-permissions = [
-  {{ model_alias = "first-public", operation = "chat" }},
-  {{ model_alias = "second-public", operation = "chat" }}
-]
-
-[limits]
-max_queue = 2
-max_in_flight = 2
-max_body_bytes = 1048576
-max_audio_bytes = 2097152
-max_extension_bytes = 8192
-
-[timeouts]
-queue_ms = 1000
-connect_ms = 1000
-headers_ms = 1000
-first_byte_ms = 1000
-idle_ms = 1000
-overall_ms = 5000
 "#
     );
-    load_config(&contents)
+    load_valid(&fixture_text(
+        &body,
+        r#"
+  { model_alias = "first-public", operation = "chat" },
+  { model_alias = "second-public", operation = "chat" }
+"#,
+        TWO_MIB,
+    ))
 }
 
 pub fn multi_route_audio_chat_config(address: &str) -> ValidatedConfig {
-    let contents = format!(
-        r#"
-[listeners.client]
-bind = "127.0.0.1"
-port = 18080
-
-[listeners.admin]
-bind = "127.0.0.1"
-port = 18081
-
-[publication]
-tailnet_addresses = ["100.64.0.1"]
-
-[[adapters]]
+    let body = format!(
+        r#"[[adapters]]
 id = "vllm-fixture"
 kind = "vllm"
 base_url = "http://{address}/v1"
@@ -450,43 +348,17 @@ adapter_id = "vllm-fixture"
 upstream_id = "served-transcriber"
 requires_streaming_chat = false
 requires_function_tools = false
-
-[[application_keys]]
-id = "fixture-client"
-secret_ref = "env:KANATA_TEST_KEY"
-permissions = [
-  {{ model_alias = "vllm-text-public", operation = "chat" }},
-  {{ model_alias = "vllm-audio-public", operation = "chat" }},
-  {{ model_alias = "vllm-audio-public", operation = "transcription" }}
-]
-
-[limits]
-max_queue = 2
-max_in_flight = 2
-max_body_bytes = 1048576
-max_audio_bytes = 2097152
-max_extension_bytes = 8192
-
-[timeouts]
-queue_ms = 1000
-connect_ms = 1000
-headers_ms = 1000
-first_byte_ms = 1000
-idle_ms = 1000
-overall_ms = 5000
 "#
     );
-    load_config(&contents)
-}
-
-fn load_config(contents: &str) -> ValidatedConfig {
-    let id = NEXT_CONFIG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("kanata-vllm-audio-{id}.toml"));
-    fs::write(&path, contents).unwrap_or_else(|_| panic!("write vLLM audio config"));
-    let result =
-        config::load(&path).unwrap_or_else(|error| panic!("load vLLM audio config: {error}"));
-    let _ = fs::remove_file(path);
-    result
+    load_valid(&fixture_text(
+        &body,
+        r#"
+  { model_alias = "vllm-text-public", operation = "chat" },
+  { model_alias = "vllm-audio-public", operation = "chat" },
+  { model_alias = "vllm-audio-public", operation = "transcription" }
+"#,
+        TWO_MIB,
+    ))
 }
 
 pub fn route<'a>(config: &'a ValidatedConfig, route_id: &str) -> &'a ValidatedRoute {

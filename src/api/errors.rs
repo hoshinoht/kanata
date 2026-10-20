@@ -260,12 +260,7 @@ pub(super) fn upstream_failure() -> Response {
 }
 
 pub(super) fn upstream_failure_observed(observer: Option<&Observer>) -> Response {
-    observe_error(
-        observer,
-        GatewayError {
-            kind: ErrorKind::UpstreamFailure,
-        },
-    );
+    observe_error(observer, GatewayError::from(ErrorKind::UpstreamFailure));
     upstream_failure()
 }
 
@@ -314,13 +309,13 @@ pub(super) fn quota_rejected(
         ),
     };
     if let Some(observer) = observer {
-        observer.record_error(GatewayError {
-            kind: if status == StatusCode::TOO_MANY_REQUESTS {
+        observer.record_error(GatewayError::from(
+            if status == StatusCode::TOO_MANY_REQUESTS {
                 ErrorKind::RateLimited
             } else {
                 ErrorKind::Internal
             },
-        });
+        ));
     }
     let mut response = error_response(status, message, "quota_error", code);
     if let QuotaError::Exhausted { retry_after } = error {

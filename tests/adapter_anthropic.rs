@@ -1,15 +1,15 @@
 //! `kind = "anthropic"`: Claude Messages API with a Console key, private-only. Wire behaviour
 //! against a loopback TLS fixture lives in `src/adapter/anthropic/tests.rs`.
 
-use std::{
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
-};
+#[path = "support/scratch.rs"]
+mod scratch;
+
+use std::time::Duration;
 
 use kanata::{
     adapter::{Adapter, AdapterOutput, anthropic::AnthropicAdapter},
     auth::{SecretResolutionError, SecretResolver},
-    config::{ConfigError, Plane, ProviderKind, SecretReference, ValidatedConfig},
+    config::{Plane, ProviderKind, SecretReference, ValidatedConfig},
     core::{
         ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, Extensions, FunctionTool,
         InputAudioFormat, ModelAlias, ReasoningEffort, Request, RequestContext, ResponseFormat,
@@ -17,25 +17,12 @@ use kanata::{
     },
 };
 
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-
 /// A published Ollama route next to an Anthropic effort family.
 fn source(extra: &str) -> String {
-    format!(
-        r#"
-[listeners.client]
-bind = "127.0.0.1"
-port = 18080
-[listeners.public]
-bind = "172.30.0.3"
-port = 18081
-[listeners.admin]
-bind = "127.0.0.1"
-port = 19090
-[publication]
-tailnet_addresses = ["100.64.0.10"]
-public_routes = [{{ model_alias = "local", operation = "chat" }}]
-[[adapters]]
+    scratch::compact_config(
+        r#"[{ model_alias = "local", operation = "chat" }]"#,
+        &format!(
+            r#"[[adapters]]
 id = "ollama"
 kind = "ollama"
 base_url = "http://127.0.0.1:9"
@@ -75,47 +62,12 @@ permissions = [
 [[application_keys]]
 id = "public-only"
 secret_ref = "env:PUBLIC_ONLY_KEY"
-permissions = [{{ model_alias = "local", operation = "chat" }}]
-[limits]
-max_queue = 4
-max_in_flight = 2
-max_body_bytes = 1048576
-max_audio_bytes = 1048576
-max_extension_bytes = 1024
-[timeouts]
-queue_ms = 1000
-connect_ms = 1000
-headers_ms = 1000
-first_byte_ms = 1000
-idle_ms = 1000
-overall_ms = 5000
-"#
+permissions = [{{ model_alias = "local", operation = "chat" }}]"#
+        ),
     )
 }
 
-struct TempConfig(std::path::PathBuf);
-
-impl TempConfig {
-    fn new(text: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "kanata-anthropic-{}-{}.toml",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::write(&path, text).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for TempConfig {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-fn load(text: &str) -> Result<ValidatedConfig, ConfigError> {
-    kanata::config::load(&TempConfig::new(text).0)
-}
+use scratch::load_text as load;
 
 fn error(text: &str) -> String {
     load(text).unwrap_err().to_string()
@@ -225,23 +177,14 @@ fn config_rejects_publication_and_invalid_adapters() {
 
 #[test]
 fn public_plane_drops_anthropic_routes_adapters_and_scoped_keys() {
-    let file = TempConfig::new(&source(""));
+    let file = scratch::TempFile::new("anthropic", "toml", source(""));
     let check = |plane: &str| {
-        kanata::cli::run(
-            [
-                "check",
-                "--config",
-                file.0.to_str().unwrap(),
-                "--plane",
-                plane,
-            ]
-            .map(str::to_owned),
-        )
+        kanata::cli::run(["check", "--config", file.as_str(), "--plane", plane].map(str::to_owned))
     };
     for plane in ["private", "public"] {
         assert_eq!(check(plane), Ok(Some("configuration valid".to_owned())));
     }
-    let (_, public) = kanata::config::load_plane(&file.0, Plane::Public).unwrap();
+    let (_, public) = kanata::config::load_plane(file.path(), Plane::Public).unwrap();
     assert!(
         public
             .adapters()
@@ -262,7 +205,7 @@ fn public_plane_drops_anthropic_routes_adapters_and_scoped_keys() {
     assert_eq!(keys, ["public-only"]);
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_kanata"))
-        .args(["routes", "--config", file.0.to_str().unwrap()])
+        .args(["routes", "--config", file.as_str()])
         .output()
         .unwrap();
     assert!(output.status.success());

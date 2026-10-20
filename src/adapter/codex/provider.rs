@@ -1,3 +1,4 @@
+use crate::adapter::{internal_error, status_error, unsupported_operation, upstream_failure};
 use std::{fmt, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use http::Method;
@@ -194,7 +195,7 @@ impl Adapter for CodexAdapter {
                 )
                 .await?;
                 if streaming {
-                    Ok(DispatchResult::Stream(body))
+                    Ok::<_, GatewayError>(DispatchResult::Stream(body))
                 } else {
                     let response = stream::collect_response(
                         body,
@@ -350,53 +351,19 @@ async fn post_responses(
     transport.execute(request).await
 }
 
-fn status_error(status: u16) -> GatewayError {
-    let kind = match status {
-        400 | 422 => ErrorKind::InvalidRequest,
-        404 => ErrorKind::NotFound,
-        401 | 403 | 408 | 503 | 504 => ErrorKind::UpstreamUnavailable,
-        429 => ErrorKind::RateLimited,
-        500..=599 => ErrorKind::UpstreamFailure,
-        _ => ErrorKind::UpstreamFailure,
-    };
-    GatewayError { kind }
-}
-
 fn credential_unavailable(label: &UpstreamLabel, error: RefreshError) -> GatewayError {
     label.credential(error);
     upstream_unavailable()
 }
 
-fn internal_error() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
-    }
-}
-
 fn upstream_unavailable() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamUnavailable,
-    }
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
-    }
+    GatewayError::from(ErrorKind::UpstreamUnavailable)
 }
 
 fn overall_timeout_error() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Timeout {
-            phase: crate::core::TimeoutPhase::Overall,
-        },
-    }
+    GatewayError::from(ErrorKind::Timeout {
+        phase: crate::core::TimeoutPhase::Overall,
+    })
 }
 
 #[cfg(test)]

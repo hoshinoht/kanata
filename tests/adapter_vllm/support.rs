@@ -1,17 +1,17 @@
 #![allow(dead_code)]
 
-use std::{
-    collections::BTreeMap,
-    fs,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+#[path = "../support/http.rs"]
+mod http_mock;
+use crate::scratch;
+
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use kanata::{
     adapter::{AdapterOutput, vllm::VllmAdapter},
-    config::{self, ValidatedConfig},
+    config::ValidatedConfig,
     core::{
         Capabilities, ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, Extensions,
         FinishReason, FunctionTool, ModelAlias, Operation, Request as CoreRequest, RequestContext,
@@ -20,26 +20,19 @@ use kanata::{
     },
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    io::{AsyncWrite, AsyncWriteExt},
+    net::TcpListener,
     sync::oneshot,
     task::JoinHandle,
 };
+
+use http_mock::wait_for_eof;
+pub use http_mock::{RequestRecord, read_request};
 
 pub const TEXT_RESPONSE: &str = include_str!("../fixtures/vllm/chat-text-response.json");
 pub const INVALID_USAGE_RESPONSE: &str =
     include_str!("../fixtures/vllm/chat-inconsistent-usage.json");
 pub const UNEXPECTED_RESPONSE: &str = include_str!("../fixtures/vllm/chat-unexpected-field.json");
-
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
-
-#[derive(Clone, Debug)]
-pub struct RequestRecord {
-    pub method: String,
-    pub path: String,
-    pub headers: BTreeMap<String, String>,
-    pub body: Vec<u8>,
-}
 
 pub struct MockServer {
     pub address: String,
@@ -282,20 +275,9 @@ pub fn config_text_at(
     } else {
         ""
     };
-    format!(
-        r#"
-[listeners.client]
-bind = "127.0.0.1"
-port = 18080
-
-[listeners.admin]
-bind = "127.0.0.1"
-port = 18081
-
-[publication]
-tailnet_addresses = ["100.64.0.1"]
-
-[[adapters]]
+    scratch::fixture_text(
+        &format!(
+            r#"[[adapters]]
 id = "vllm-fixture"
 kind = "vllm"
 base_url = "{base_url}"
@@ -313,37 +295,15 @@ adapter_id = "vllm-fixture"
 upstream_id = "served-checkpoint-alias"
 requires_streaming_chat = false
 requires_function_tools = false
-
-[[application_keys]]
-id = "fixture-client"
-secret_ref = "env:KANATA_TEST_KEY"
-permissions = [{{ model_alias = "vllm-public", operation = "{operation}" }}]
-
-[limits]
-max_queue = 2
-max_in_flight = 2
-max_body_bytes = 1048576
-max_audio_bytes = 1048576
-max_extension_bytes = 8192
-
-[timeouts]
-queue_ms = 1000
-connect_ms = 1000
-headers_ms = 1000
-first_byte_ms = 1000
-idle_ms = 1000
-overall_ms = 5000
 "#
+        ),
+        &format!("{{ model_alias = \"vllm-public\", operation = \"{operation}\" }}"),
+        1_048_576,
     )
 }
 
 pub fn load_config(contents: &str) -> ValidatedConfig {
-    let id = NEXT_CONFIG.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("kanata-vllm-fixture-{id}.toml"));
-    fs::write(&path, contents).unwrap_or_else(|_| panic!("write test config"));
-    let result = config::load(&path).unwrap_or_else(|error| panic!("load test config: {error}"));
-    let _ = fs::remove_file(path);
-    result
+    scratch::load_valid(contents)
 }
 
 pub fn adapter(config: &ValidatedConfig) -> VllmAdapter {
@@ -498,75 +458,6 @@ pub fn fixture_finish_reason() -> FinishReason {
     FinishReason::Stop
 }
 
-pub async fn read_request<S: AsyncRead + Unpin>(socket: &mut S) -> std::io::Result<RequestRecord> {
-    let mut bytes = Vec::new();
-    let head_end = loop {
-        let mut chunk = [0_u8; 1024];
-        let count = socket.read(&mut chunk).await?;
-        if count == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "headers",
-            ));
-        }
-        bytes.extend_from_slice(&chunk[..count]);
-        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break index + 4;
-        }
-        if bytes.len() > 64 * 1024 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "headers",
-            ));
-        }
-    };
-    let head = std::str::from_utf8(&bytes[..head_end - 4])
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "headers"))?;
-    let mut lines = head.split("\r\n");
-    let request_line = lines
-        .next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "request line"))?;
-    let mut request_parts = request_line.split_whitespace();
-    let method = request_parts
-        .next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "method"))?
-        .to_owned();
-    let path = request_parts
-        .next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "path"))?
-        .to_owned();
-    let mut headers = BTreeMap::new();
-    for line in lines {
-        let Some((name, value)) = line.split_once(':') else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "header",
-            ));
-        };
-        headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
-    }
-    let length = headers
-        .get("content-length")
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "length"))?
-        .parse::<usize>()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "length"))?;
-    let mut body = bytes.split_off(head_end);
-    if body.len() > length {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "body"));
-    }
-    let already_read = body.len();
-    body.resize(length, 0);
-    if already_read < length {
-        socket.read_exact(&mut body[already_read..]).await?;
-    }
-    Ok(RequestRecord {
-        method,
-        path,
-        headers,
-        body,
-    })
-}
-
 pub async fn write_response<S: AsyncWrite + Unpin>(
     socket: &mut S,
     status: u16,
@@ -594,9 +485,4 @@ pub async fn write_response<S: AsyncWrite + Unpin>(
     );
     socket.write_all(response.as_bytes()).await?;
     socket.write_all(body).await
-}
-
-async fn wait_for_eof(socket: &mut TcpStream) {
-    let mut buffer = [0_u8; 1024];
-    while socket.read(&mut buffer).await.unwrap_or(0) != 0 {}
 }

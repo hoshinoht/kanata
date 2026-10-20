@@ -1,32 +1,27 @@
 use axum::{
-    body::to_bytes,
     extract::{Request, State},
-    http::{HeaderMap, header},
     response::Response,
 };
 use futures_util::StreamExt;
 
 use crate::adapter::AdapterOutput;
 use crate::core::{
-    ChatContent, ChatRequest, Operation, Request as CoreRequest, RequestContext,
-    Response as CoreResponse, RoutedRequest,
+    ChatContent, ChatRequest, Operation, Request as CoreRequest, Response as CoreResponse,
 };
 use crate::server::{Authenticated, ClientState};
 
 use super::{
     check_supported,
-    deadline::RequestDeadline,
+    dispatch::{self, Inbound},
     errors::{
-        admission_rejected_observed, annotate_client_request_id, body_too_large, forbidden,
-        gateway_error_observed, invalid, invalid_param, quota_rejected, request_id, reserve_usage,
-        server_draining_observed, unavailable, upstream_failure_observed,
+        body_too_large, forbidden, gateway_error_observed, invalid, invalid_param, unavailable,
+        upstream_failure_observed,
     },
     serialization,
-    sse::{StreamLifetime, StreamOutput, stream_response},
+    sse::{StreamLifetime, StreamOutput, stream_response, typed},
     validate_extensions,
     wire::{ChatWireError, parse_chat},
 };
-use crate::telemetry::Observer;
 
 pub(super) async fn chat_completions(
     auth: Authenticated,
@@ -49,41 +44,9 @@ pub(super) async fn handle_chat(
     request: Request,
     output_format: OutputFormat,
 ) -> Response {
-    let observer = request.extensions().get::<Observer>().cloned();
-    if state.admission().is_closed() {
-        return server_draining_observed(observer.as_ref());
-    }
-    let deadline = match RequestDeadline::new(state.overall_ms()) {
-        Ok(deadline) => deadline,
-        Err(error) => return gateway_error_observed(error, observer.as_ref()),
-    };
-    let request_id = request_id(request.headers(), &state);
-    let Some(request_id) = request_id else {
-        return invalid();
-    };
-    annotate_client_request_id(observer.as_ref(), request.headers(), &request_id);
-    if !has_json_content_type(request.headers()) {
-        return invalid();
-    }
-    let (_reservation, max_body_bytes) = match super::upload::reserve(
-        &state,
-        request.headers(),
-        state.max_audio_chat_body_bytes(),
-    ) {
-        Ok(value) => value,
-        Err(response) => return *response,
-    };
-    let bytes = match super::upload::read(
-        deadline,
-        state.upload_ms(),
-        to_bytes(request.into_body(), max_body_bytes),
-    )
-    .await
-    {
-        Ok(Ok(bytes)) => bytes,
-        Ok(Err(_)) => return body_too_large(),
-        Err(error) => return gateway_error_observed(error, observer.as_ref()),
-    };
+    let (inbound, request_id) = try_step!(dispatch::inbound(&state, &request));
+    let max_body_bytes = state.max_audio_chat_body_bytes();
+    let (_reservation, bytes) = try_step!(inbound.read_json(&state, request, max_body_bytes).await);
     let raw_body_len = bytes.len();
     let parsed = match output_format {
         OutputFormat::Chat => parse_chat(&bytes, state.max_audio_bytes()),
@@ -109,25 +72,22 @@ pub(super) async fn handle_chat(
     dispatch_chat(
         auth,
         state,
-        deadline,
+        inbound,
         request_id,
         request,
         include_usage,
-        observer,
         output_format,
     )
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn dispatch_chat(
     auth: Authenticated,
     state: ClientState,
-    deadline: RequestDeadline,
+    inbound: Inbound,
     request_id: String,
     mut chat: ChatRequest,
     include_usage: bool,
-    observer: Option<Observer>,
     output_format: OutputFormat,
 ) -> Response {
     let reasoning_param = match output_format {
@@ -151,7 +111,7 @@ async fn dispatch_chat(
     {
         chat.options.reasoning_effort = None;
     }
-    if let (Some(observer), Some(route)) = (observer.as_ref(), state.registry().resolve(&selector))
+    if let (Some(observer), Some(route)) = (inbound.observer(), state.registry().resolve(&selector))
     {
         observer.annotate_route(
             &route.identity.selector.model_alias.0,
@@ -186,7 +146,7 @@ async fn dispatch_chat(
             .pinned_reasoning_effort
             .and_then(crate::core::ReasoningEffort::parse);
     }
-    if let Some(observer) = observer.as_ref() {
+    if let Some(observer) = inbound.observer() {
         observer.annotate_route(&routed_model.0, Operation::Chat, stream);
     }
     let Some(adapter) = state.adapter(&route.adapter_id) else {
@@ -266,66 +226,19 @@ async fn dispatch_chat(
         return invalid_param(max_output_tokens_param.as_str());
     }
     if let (Some(observer), Some(effort)) = (
-        observer.as_ref(),
+        inbound.observer(),
         reasoning_effort
             .map(|effort| effort.as_str())
             .or(route.pinned_reasoning_effort),
     ) {
         observer.annotate_reasoning_effort(effort);
     }
-    let context = RequestContext {
-        request_id,
-        route: route.identity.clone(),
-        trust_zone: route.trust_zone,
-        extensions,
-    };
-    let routed = match RoutedRequest::new(context, request) {
-        Ok(value) => value,
-        Err(_) => return invalid(),
-    };
-    if let Some(observer) = observer.as_ref() {
-        observer.begin_queue();
-    }
-    let admission = deadline
-        .run(|| state.admission().acquire(route, auth.key_limits()))
-        .await;
-    if let Some(observer) = observer.as_ref() {
-        observer.end_queue();
-    }
-    let mut permit = match admission {
-        Ok(Ok(permit)) => permit,
-        Ok(Err(error)) => {
-            return admission_rejected_observed(
-                error,
-                state.admission().retry_after_secs(error),
-                observer.as_ref(),
-            );
-        }
-        Err(error) => return gateway_error_observed(error, observer.as_ref()),
-    };
-    match deadline
-        .run(|| reserve_usage(&auth, observer.as_ref()))
-        .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return quota_rejected(error, observer.as_ref()),
-        Err(error) => return gateway_error_observed(error, observer.as_ref()),
-    }
-    if let Some(observer) = observer.as_ref() {
-        observer.begin_upstream();
-        observer.annotate_adapter(&route.adapter_id, &provider_label(route));
-    }
-    let result = deadline.run(move || adapter.execute(routed)).await;
-    if !matches!(&result, Ok(Ok(AdapterOutput::Events(_))))
-        && let Some(observer) = observer.as_ref()
-    {
-        observer.end_upstream();
-    }
-    if let Ok(outcome) = &result {
-        permit.record_outcome(outcome);
-    }
+    let routed = try_step!(dispatch::routed(route, request_id, extensions, request));
+    let execution = inbound.execute(&auth, &state, route, &*adapter, routed);
+    let (permit, result) = try_step!(execution.await);
+    let Inbound { observer, deadline } = inbound;
     match result {
-        Ok(Ok(AdapterOutput::Complete(CoreResponse::Chat(mut response)))) if !stream => {
+        Ok(AdapterOutput::Complete(CoreResponse::Chat(mut response))) if !stream => {
             if response.model != routed_model {
                 return upstream_failure_observed(observer.as_ref());
             }
@@ -348,7 +261,7 @@ async fn dispatch_chat(
                 observer.as_ref(),
             )
         }
-        Ok(Ok(AdapterOutput::Events(events))) if stream => {
+        Ok(AdapterOutput::Events(events)) if stream => {
             let published_model = response_model.clone();
             let events = Box::pin(events.map(move |event| match event {
                 Ok(crate::core::NormalizedEvent::ChatStarted { model }) => {
@@ -372,10 +285,10 @@ async fn dispatch_chat(
                 other => other,
             }));
             if let Some(options) = response_options {
-                return super::responses::stream_response(
+                return typed::stream_response(
                     events,
                     response_model,
-                    options,
+                    super::responses::stream_start(options),
                     deadline,
                     state.first_byte_ms(),
                     state.idle_ms(),
@@ -384,10 +297,10 @@ async fn dispatch_chat(
                 .await;
             }
             if let Some(id) = message_id {
-                return super::messages::stream_response(
+                return typed::stream_response(
                     events,
                     response_model,
-                    id,
+                    super::messages::stream_start(id),
                     deadline,
                     state.first_byte_ms(),
                     state.idle_ms(),
@@ -409,28 +322,7 @@ async fn dispatch_chat(
             )
             .await
         }
-        Ok(Ok(_)) => upstream_failure_observed(observer.as_ref()),
-        Ok(Err(error)) => gateway_error_observed(error, observer.as_ref()),
+        Ok(_) => upstream_failure_observed(observer.as_ref()),
         Err(error) => gateway_error_observed(error, observer.as_ref()),
     }
-}
-
-pub(super) fn has_json_content_type(headers: &HeaderMap) -> bool {
-    let mut values = headers.get_all(header::CONTENT_TYPE).iter();
-    let Some(value) = values.next() else {
-        return false;
-    };
-    if values.next().is_some() {
-        return false;
-    }
-    value
-        .to_str()
-        .ok()
-        .and_then(|value| value.split(';').next())
-        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
-}
-
-/// Lowercased config kind name; kept generic so this layer names no concrete provider.
-pub(super) fn provider_label(route: &crate::routing::RouteEntry) -> String {
-    route.provider_kind.label().to_owned()
 }

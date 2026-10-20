@@ -1,8 +1,9 @@
+use crate::adapter::{internal_error, invalid_request, unsupported_operation};
 use crate::{
     config::ValidatedRoute,
     core::{
-        Capabilities, ChatContent, ChatRequest, ChatRole, ErrorKind, GatewayError, Operation,
-        Request, RouteIdentity, RoutedRequest, ToolChoice, TrustZone,
+        Capabilities, ChatContent, ChatRequest, ChatRole, GatewayError, Operation, Request,
+        RouteIdentity, RoutedRequest, ToolChoice, TrustZone,
     },
 };
 
@@ -117,22 +118,4 @@ fn validate_chat(
         }
     }
     Ok(())
-}
-
-fn internal_error() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
-    }
-}
-
-fn invalid_request() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
-    }
 }

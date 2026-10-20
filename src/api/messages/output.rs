@@ -88,9 +88,7 @@ pub(super) fn stop_reason(
         FinishReason::Length => Ok("max_tokens"),
         FinishReason::ToolCalls => Ok("tool_use"),
         FinishReason::ContentFilter => Ok("refusal"),
-        FinishReason::Cancelled => Err(GatewayError {
-            kind: ErrorKind::Cancelled,
-        }),
+        FinishReason::Cancelled => Err(GatewayError::from(ErrorKind::Cancelled)),
     }
 }
 
@@ -132,7 +130,5 @@ pub(super) fn valid_call(id: &str, name: &str) -> bool {
 }
 
 pub(super) fn failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
+    GatewayError::from(ErrorKind::UpstreamFailure)
 }

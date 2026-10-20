@@ -1,9 +1,6 @@
 #![allow(dead_code)]
 
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::{Arc, Mutex};
 
 use axum::{
     body::{Body, Bytes, to_bytes},
@@ -22,13 +19,16 @@ use kanata::{
 };
 use serde_json::Value;
 
+#[allow(unused_imports)]
+pub use crate::scratch::{
+    ScratchDir, TempFile, compact_config, load_text, load_valid, unique_path,
+};
+
 pub const CHAT_CONTENT_TYPE: &str = "application/json";
 pub const MULTIPART_BOUNDARY: &str = "gateway-boundary";
 pub const MULTIPART_CONTENT_TYPE: &str = "multipart/form-data; boundary=\"gateway-boundary\"";
 pub type Requests = Arc<Mutex<Vec<RoutedRequest>>>;
 pub type ServerWithRequests = (TwoPlaneServer, Requests);
-
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
 
 pub struct Resolver;
 
@@ -180,15 +180,7 @@ pub fn config_with_public_routes(routes: &[(&str, &str)]) -> ValidatedConfig {
             "tailnet_addresses = [\"100.64.0.10\", \"fd7a:115c:a1e0::10\"]\npublic_routes = [{routes}]"
         ),
     );
-    let path = std::env::temp_dir().join(format!(
-        "kanata-gateway-public-{}-{}.toml",
-        std::process::id(),
-        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, contents).expect("fixture writes");
-    let result = load(&path);
-    std::fs::remove_file(path).expect("fixture removes");
-    result.expect("public config validates")
+    load_text(&contents).expect("public config validates")
 }
 
 pub fn capabilities(config: &ValidatedConfig, id: &str) -> Capabilities {
@@ -362,4 +354,67 @@ pub fn core_chat(request: RoutedRequest) -> kanata::core::ChatRequest {
         panic!("chat request")
     };
     request
+}
+
+/// A scratch dir holding `config.toml`, an empty `state/`, and a `keys/keys.toml` with one key
+/// `id` whose secret is `test-key`; `fields` are the record's remaining TOML lines.
+pub fn test_key_dir(
+    label: &str,
+    id: &str,
+    fields: &str,
+    config: &str,
+) -> (ScratchDir, ValidatedConfig) {
+    use sha2::Digest as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = ScratchDir::new(label);
+    std::fs::create_dir(dir.join("keys")).expect("keys dir");
+    std::fs::create_dir(dir.join("state")).expect("state dir");
+    let hex: String = sha2::Sha256::digest(b"test-key")
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let keys = dir.join("keys/keys.toml");
+    std::fs::write(
+        &keys,
+        format!(
+            "version = 1\n[[keys]]\nid = \"{id}\"\ndigest = \"sha256:{hex}\"\ncreated_at = \"2026-01-01T00:00:00Z\"\n{fields}\n"
+        ),
+    )
+    .expect("keys write");
+    std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o600)).expect("keys mode");
+    std::fs::write(dir.join("config.toml"), config).expect("config write");
+    let config = load(dir.join("config.toml")).expect("keyed config validates");
+    (dir, config)
+}
+
+/// Collects tracing output written through `MakeWriter` or `io::Write`.
+#[derive(Clone, Default)]
+pub struct Capture(Arc<Mutex<Vec<u8>>>);
+
+impl Capture {
+    pub fn text(&self) -> String {
+        String::from_utf8(self.0.lock().expect("capture lock").clone()).expect("capture utf8")
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+    type Writer = Capture;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+impl std::io::Write for Capture {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("capture lock")
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }

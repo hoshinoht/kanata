@@ -1,11 +1,13 @@
-use serde::Serialize;
-use serde_json::Value;
-
-use crate::core::{
-    ChatContent, ChatMessage, ChatRequest, ChatRole, FunctionTool, ResponseFormat, ToolChoice,
+use crate::adapter::{
+    chat_completions::request::{
+        ContentPart, MessageContent, SamplingPayload, StreamOptions, ToolCallPayload,
+        ToolChoicePayload, ToolPayload, encode_tool_choice, encode_tools,
+    },
+    invalid_request, unsupported_operation,
 };
+use serde::Serialize;
 
-use super::super::super::core::{ErrorKind, GatewayError};
+use crate::core::{ChatContent, ChatMessage, ChatRequest, ChatRole, GatewayError, ResponseFormat};
 
 #[derive(Serialize)]
 pub(super) struct ChatPayload {
@@ -19,18 +21,8 @@ pub(super) struct ChatPayload {
     stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<ResponseFormat>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    top_p: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    seed: Option<i64>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    stop: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    presence_penalty: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    frequency_penalty: Option<f64>,
+    #[serde(flatten)]
+    sampling: SamplingPayload,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -39,11 +31,7 @@ pub(super) struct ChatPayload {
     reasoning_effort: Option<&'static str>,
 }
 
-#[derive(Serialize)]
-struct StreamOptions {
-    include_usage: bool,
-}
-
+/// Unlike the shared message, `content` is sent as `null` when absent.
 #[derive(Serialize)]
 struct MessagePayload {
     role: &'static str,
@@ -55,70 +43,6 @@ struct MessagePayload {
     // Replayed assistant reasoning; Ollama's OpenAI layer maps it to the message's thinking.
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum MessageContent {
-    Text(String),
-    Parts(Vec<ContentPart>),
-}
-
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ContentPart {
-    Text { text: String },
-    ImageUrl { image_url: ImageUrl },
-}
-
-#[derive(Serialize)]
-struct ImageUrl {
-    url: String,
-}
-
-#[derive(Serialize)]
-struct ToolPayload {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    function: FunctionPayload,
-}
-
-#[derive(Serialize)]
-struct FunctionPayload {
-    name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    parameters: Value,
-}
-
-#[derive(Serialize)]
-struct ToolCallPayload {
-    id: String,
-    #[serde(rename = "type")]
-    kind: &'static str,
-    function: CallFunctionPayload,
-}
-
-#[derive(Serialize)]
-struct CallFunctionPayload {
-    name: String,
-    arguments: String,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum ToolChoicePayload {
-    Simple(&'static str),
-    Named {
-        #[serde(rename = "type")]
-        kind: &'static str,
-        function: NamedFunctionPayload,
-    },
-}
-
-#[derive(Serialize)]
-struct NamedFunctionPayload {
-    name: String,
 }
 
 /// `apple_fm` selects the `fm serve` dialect: it ignores `max_tokens`, rejects `json_object`,
@@ -148,44 +72,19 @@ pub(super) fn encode(
         .messages_without_reasoning()
         .map(|message| encode_message(message, replay_reasoning))
         .collect::<Result<Vec<_>, _>>()?;
-    let tools = (!chat.tools.is_empty()).then(|| {
-        chat.tools
-            .iter()
-            .map(encode_tool)
-            .collect::<Result<Vec<_>, _>>()
-    });
-    let tools = match tools {
-        Some(tools) => Some(tools?),
-        None => None,
-    };
     Ok(ChatPayload {
         model: upstream_model.to_owned(),
         messages,
-        tools,
+        tools: encode_tools(&chat.tools),
         tool_choice: encode_tool_choice(&chat.tool_choice),
         stream,
-        stream_options: stream.then_some(StreamOptions {
-            include_usage: true,
-        }),
+        stream_options: StreamOptions::for_stream(stream),
         response_format: chat
             .options
             .response_format
             .clone()
             .filter(|format| !matches!(format, ResponseFormat::Text)),
-        temperature: chat.options.sampling.temperature.map(|value| value.get()),
-        top_p: chat.options.sampling.top_p.map(|value| value.get()),
-        seed: chat.options.sampling.seed,
-        stop: chat.options.sampling.stop.clone(),
-        presence_penalty: chat
-            .options
-            .sampling
-            .presence_penalty
-            .map(|value| value.get()),
-        frequency_penalty: chat
-            .options
-            .sampling
-            .frequency_penalty
-            .map(|value| value.get()),
+        sampling: SamplingPayload::new(&chat.options.sampling),
         max_tokens: chat.options.max_output_tokens.filter(|_| !apple_fm),
         max_completion_tokens: chat.options.max_output_tokens.filter(|_| apple_fm),
         reasoning_effort: chat.options.reasoning_effort.map(|effort| effort.as_str()),
@@ -216,11 +115,7 @@ fn encode_message(
             .iter()
             .map(|part| match part {
                 ChatContent::Text { text } => Ok(ContentPart::Text { text: text.clone() }),
-                ChatContent::InputImage { image } => Ok(ContentPart::ImageUrl {
-                    image_url: ImageUrl {
-                        url: image.data_url().to_owned(),
-                    },
-                }),
+                ChatContent::InputImage { image } => Ok(ContentPart::image(image.data_url())),
                 _ => Err(unsupported_operation()),
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -239,14 +134,7 @@ fn encode_message(
     for content in &message.content {
         match content {
             ChatContent::Text { text: value } => text.push_str(value),
-            ChatContent::ToolCall { call } => calls.push(ToolCallPayload {
-                id: call.id.clone(),
-                kind: "function",
-                function: CallFunctionPayload {
-                    name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                },
-            }),
+            ChatContent::ToolCall { call } => calls.push(ToolCallPayload::new(call)),
             ChatContent::ToolResult { call_id, content } => {
                 if result.replace((call_id.clone(), content.clone())).is_some() {
                     return Err(invalid_request());
@@ -293,41 +181,6 @@ fn encode_message(
         tool_call_id,
         reasoning: (!reasoning.is_empty()).then_some(reasoning),
     })
-}
-
-fn encode_tool(tool: &FunctionTool) -> Result<ToolPayload, GatewayError> {
-    Ok(ToolPayload {
-        kind: "function",
-        function: FunctionPayload {
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            parameters: tool.parameters.clone(),
-        },
-    })
-}
-
-fn encode_tool_choice(choice: &ToolChoice) -> ToolChoicePayload {
-    match choice {
-        ToolChoice::None => ToolChoicePayload::Simple("none"),
-        ToolChoice::Auto => ToolChoicePayload::Simple("auto"),
-        ToolChoice::Required => ToolChoicePayload::Simple("required"),
-        ToolChoice::Function { name } => ToolChoicePayload::Named {
-            kind: "function",
-            function: NamedFunctionPayload { name: name.clone() },
-        },
-    }
-}
-
-fn invalid_request() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
-    }
 }
 
 #[cfg(test)]

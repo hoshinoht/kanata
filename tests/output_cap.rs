@@ -1,5 +1,7 @@
 #[path = "support/gateway.rs"]
 mod gateway;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "adapter_ollama/support.rs"]
 mod upstream;
 use std::sync::Arc;

@@ -2,6 +2,8 @@
 
 #[path = "support/gateway.rs"]
 mod gateway;
+#[path = "support/scratch.rs"]
+mod scratch;
 
 use std::sync::Arc;
 

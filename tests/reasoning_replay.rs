@@ -2,15 +2,14 @@
 //! forwarded as the assistant message's `reasoning` to an upstream that reads it (vLLM),
 //! and dropped for one that does not (CLIProxyAPI).
 
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/gateway.rs"]
 mod support;
 #[path = "adapter_ollama/support.rs"]
 mod upstream;
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
 
 use axum::http::StatusCode;
 use kanata::{
@@ -24,24 +23,11 @@ use support::{chat_request, response_json};
 const RESPONSE: &str = include_str!("fixtures/cliproxy/chat-text-response.json");
 const REASONING: &str = "Need the file list first; call ls.";
 
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-
 fn load(kind: &str, base_url: &str) -> ValidatedConfig {
-    let text = format!(
-        r#"
-[listeners.client]
-bind = "127.0.0.1"
-port = 18080
-[listeners.public]
-bind = "172.30.0.3"
-port = 18081
-[listeners.admin]
-bind = "127.0.0.1"
-port = 19090
-[publication]
-tailnet_addresses = ["100.64.0.10"]
-public_routes = []
-[[adapters]]
+    let text = support::compact_config(
+        "[]",
+        &format!(
+            r#"[[adapters]]
 id = "upstream"
 kind = "{kind}"
 base_url = "{base_url}"
@@ -57,31 +43,10 @@ upstream_id = "gpt-oss-120b"
 [[application_keys]]
 id = "agent"
 secret_ref = "env:AGENT_KEY"
-permissions = [{{ model_alias = "agent", operation = "chat" }}]
-[limits]
-max_queue = 4
-max_in_flight = 2
-max_body_bytes = 1048576
-max_audio_bytes = 1048576
-max_extension_bytes = 1024
-[timeouts]
-queue_ms = 1000
-connect_ms = 1000
-headers_ms = 1000
-first_byte_ms = 1000
-idle_ms = 1000
-overall_ms = 5000
-"#
+permissions = [{{ model_alias = "agent", operation = "chat" }}]"#
+        ),
     );
-    let path = std::env::temp_dir().join(format!(
-        "kanata-reasoning-replay-{}-{}.toml",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, text).expect("write config");
-    let config = kanata::config::load(&path);
-    let _ = std::fs::remove_file(&path);
-    config.unwrap_or_else(|error| panic!("{kind} config: {error}"))
+    support::load_text(&text).unwrap_or_else(|error| panic!("{kind} config: {error}"))
 }
 
 fn server(config: &ValidatedConfig) -> TwoPlaneServer {

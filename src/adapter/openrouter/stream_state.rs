@@ -1,18 +1,13 @@
-use std::collections::BTreeMap;
-
-use crate::core::{ErrorKind, FinishReason, GatewayError, ModelAlias, NormalizedEvent, Usage};
-
-use super::{
-    response::{self, MAX_TOOL_CALLS, parse_finish_reason, valid_call_id, valid_tool_name},
-    stream_wire::{self, StreamChoice, StreamChunk, ToolDelta},
+use crate::adapter::{
+    chat_completions::{
+        response::parse_finish_reason, stream_state::ToolCalls, stream_wire::parse,
+    },
+    upstream_failure,
 };
 
-const MAX_ARGUMENT_DELTA_BYTES: usize = 16 * 1024;
+use crate::core::{FinishReason, GatewayError, ModelAlias, NormalizedEvent, Usage};
 
-struct ToolState {
-    id: String,
-    name: String,
-}
+use super::stream_wire::{StreamChoice, StreamChunk};
 
 #[derive(Clone)]
 struct FinishState {
@@ -25,7 +20,7 @@ pub(super) struct StreamState {
     public_model: ModelAlias,
     started: bool,
     has_text: bool,
-    tools: BTreeMap<usize, ToolState>,
+    tools: ToolCalls,
     finish: Option<FinishState>,
     usage: Option<Usage>,
     done: bool,
@@ -37,7 +32,7 @@ impl StreamState {
             public_model,
             started: false,
             has_text: false,
-            tools: BTreeMap::new(),
+            tools: ToolCalls::new(true),
             finish: None,
             usage: None,
             done: false,
@@ -48,7 +43,7 @@ impl StreamState {
         if self.done {
             return Err(upstream_failure());
         }
-        let chunk = stream_wire::parse(data)?;
+        let chunk: StreamChunk = parse(data)?;
         self.validate_chunk(&chunk)?;
         if chunk.error.is_some() {
             return Err(upstream_failure());
@@ -131,7 +126,7 @@ impl StreamState {
         for call in choice.delta.tool_calls.unwrap_or_default() {
             meaningful = true;
             self.start(&mut events);
-            events.push(self.tool(call)?);
+            events.push(self.tools.delta(call.into())?);
         }
         if let Some(value) = choice.finish_reason {
             meaningful = true;
@@ -190,7 +185,7 @@ impl StreamState {
         {
             return Err(upstream_failure());
         }
-        self.usage = Some(response::normalize_usage(usage)?);
+        self.usage = Some(usage.normalize()?);
         Ok(Vec::new())
     }
 
@@ -198,61 +193,6 @@ impl StreamState {
     /// tool calls.
     fn has_output(&self, reason: FinishReason) -> bool {
         reason != FinishReason::ContentFilter || self.has_text || !self.tools.is_empty()
-    }
-
-    fn tool(&mut self, call: ToolDelta) -> Result<NormalizedEvent, GatewayError> {
-        let index = usize::try_from(call.index).map_err(|_| upstream_failure())?;
-        let function = call.function;
-        let arguments = function
-            .as_ref()
-            .and_then(|function| function.arguments.clone())
-            .unwrap_or_default();
-        if index >= MAX_TOOL_CALLS || arguments.len() > MAX_ARGUMENT_DELTA_BYTES {
-            return Err(upstream_failure());
-        }
-        if let Some(existing) = self.tools.get(&index) {
-            if call.kind.as_deref().is_some_and(|kind| kind != "function")
-                || call.id.as_deref().is_some_and(|id| id != existing.id)
-                || function
-                    .as_ref()
-                    .and_then(|function| function.name.as_deref())
-                    .is_some_and(|name| name != existing.name)
-            {
-                return Err(upstream_failure());
-            }
-            return Ok(NormalizedEvent::ChatToolCallDelta {
-                call_id: existing.id.clone(),
-                name: None,
-                arguments_delta: arguments,
-            });
-        }
-        // A new call carries its id, type and name, at the next free index.
-        let (Some(id), Some("function"), Some(name)) = (
-            call.id,
-            call.kind.as_deref(),
-            function.and_then(|function| function.name),
-        ) else {
-            return Err(upstream_failure());
-        };
-        if index != self.tools.len()
-            || !valid_call_id(&id)
-            || !valid_tool_name(&name)
-            || self.tools.values().any(|tool| tool.id == id)
-        {
-            return Err(upstream_failure());
-        }
-        self.tools.insert(
-            index,
-            ToolState {
-                id: id.clone(),
-                name: name.clone(),
-            },
-        );
-        Ok(NormalizedEvent::ChatToolCallDelta {
-            call_id: id,
-            name: Some(name),
-            arguments_delta: arguments,
-        })
     }
 
     fn start(&mut self, events: &mut Vec<NormalizedEvent>) {
@@ -275,12 +215,6 @@ fn validate_choice(choice: &StreamChoice) -> Result<(), GatewayError> {
         return Err(upstream_failure());
     }
     Ok(())
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
 }
 
 #[cfg(test)]

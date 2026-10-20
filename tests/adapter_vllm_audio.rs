@@ -2,5 +2,7 @@
 mod cases;
 #[path = "adapter_vllm_audio/native_asr.rs"]
 mod native_asr;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "adapter_vllm_audio/support.rs"]
 mod support;

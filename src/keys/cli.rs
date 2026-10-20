@@ -2,7 +2,9 @@ mod args;
 mod display;
 mod report;
 use args::*;
+pub(crate) use args::{expires_at, parse_expires};
 use display::*;
+pub(crate) use display::{key_json, missing_routes_json, rate_limit_json, scope_json};
 
 // `kanata key` commands. Synchronous, host-only; writes go through store.
 
@@ -18,7 +20,7 @@ use crate::config::{
 use crate::core::{ModelAlias, Operation, RouteSelector};
 use crate::keys::file::{self, KeysFile, StoredKey};
 use crate::keys::store::{self, AuditEvent, LockedKeys, SecretFile};
-use crate::keys::time;
+use crate::keys::time::{self, SECONDS_PER_DAY};
 use crate::keys::usage::{self, KeyUsage};
 
 pub const KEY_USAGE: &str = "usage: kanata key new --config <path> --id <id> [--chat <alias>]... [--transcription <alias>]... [--embeddings <alias>]... [--speech <alias>]... --expires <1|3|7|13|30|60|unlimited> [--owner] [--max-in-flight N] [--rate-limit N/MS] [--daily-requests N] [--daily-tokens N --reservation-tokens N] [--key-out <path>] [--keys <path>]
@@ -31,7 +33,6 @@ pub const KEY_USAGE: &str = "usage: kanata key new --config <path> --id <id> [--
        kanata key usage (--config <path>|--usage-dir <path>) [--plane all|private|public] [--key-id <id>] [--model <alias>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--input-cost-per-million N --output-cost-per-million N --cost-unit <label>] [--json]";
 
 const KEY_PREFIX: &str = "kanata_sk_";
-const SECONDS_PER_DAY: u64 = 86_400;
 const PICKER_ATTEMPTS: usize = 3;
 const APPLY_NOTE: &str = "note: the change applies within ~2 s without a restart; a rejected reload is logged as a WARN (kanata::keys)";
 const ROUTES_HINT: &str = "run \"kanata routes --config <path>\" to see all";
@@ -127,7 +128,7 @@ fn write_keys(
                     .map(|scope| {
                         format!(
                             "--remove-{} {}",
-                            operation_name(scope.operation),
+                            scope.operation.as_str(),
                             scope.model_alias.0
                         )
                     })
@@ -188,10 +189,7 @@ fn read_location(args: &Args) -> Result<ReadLocation, String> {
         .one("--usage-dir")?
         .map(PathBuf::from)
         .or(derived_usage);
-    let keys = match file::read(&keys_path).map_err(|error| error.to_string())? {
-        Some(bytes) => file::parse_without_routes(&bytes).map_err(|error| error.to_string())?,
-        None => KeysFile::default(),
-    };
+    let keys = file::load(&keys_path)?;
     Ok(ReadLocation {
         config,
         keys,
@@ -201,16 +199,37 @@ fn read_location(args: &Args) -> Result<ReadLocation, String> {
 
 // ---- scopes ----
 
-fn operation_name(operation: Operation) -> &'static str {
-    operation.as_str()
+fn scope_label(selector: &RouteSelector) -> String {
+    format!("{}:{}", selector.operation.as_str(), selector.model_alias.0)
 }
 
-fn scope_label(selector: &RouteSelector) -> String {
-    format!(
-        "{}:{}",
-        operation_name(selector.operation),
-        selector.model_alias.0
-    )
+/// The configured `[keys] usage_dir`, required for daily quotas.
+pub(crate) fn usage_dir(config: &ValidatedConfig) -> Option<&Path> {
+    match config.key_source() {
+        KeySource::File { usage_dir, .. } => usage_dir.as_deref(),
+        KeySource::Inline => None,
+    }
+}
+
+/// Whether a key with these scopes is loaded by the public listener.
+pub(crate) fn publicly_usable(
+    owner: bool,
+    scopes: &[RouteSelector],
+    routes: &[RouteChoice],
+) -> bool {
+    let exposure = |scope: &RouteSelector| {
+        routes
+            .iter()
+            .find(|route| route.selector == *scope)
+            .map(|route| route.exposure)
+    };
+    !owner
+        && scopes
+            .iter()
+            .all(|scope| exposure(scope) != Some(Exposure::Never))
+        && scopes
+            .iter()
+            .any(|scope| exposure(scope) == Some(Exposure::Public))
 }
 
 fn selector(alias: &str, operation: Operation) -> RouteSelector {
@@ -232,7 +251,7 @@ fn resolve_scope(
     if routes.iter().any(|route| route.selector == wanted) {
         return Ok(wanted);
     }
-    let name = operation_name(operation);
+    let name = operation.as_str();
     if let Some(other) = routes
         .iter()
         .find(|route| route.selector.model_alias.0 == alias)
@@ -240,7 +259,7 @@ fn resolve_scope(
         let other = other.selector.operation;
         return Err(format!(
             "no {name} route \"{alias}\"; \"{alias}\" is a {} route, use {} {alias}",
-            operation_name(other),
+            other.as_str(),
             flag(other)
         ));
     }
@@ -373,7 +392,7 @@ pub fn pick(
             "{:>3} {mark} {:<width$}  {:<13}  {}",
             index + 1,
             route.selector.model_alias.0,
-            operation_name(route.selector.operation),
+            route.selector.operation.as_str(),
             exposure_note(route.exposure),
         )
         .map_err(io_error)?;
@@ -463,7 +482,7 @@ fn run_picker(
 
 // ---- secrets ----
 
-fn generate_key() -> Result<(String, [u8; 32]), String> {
+pub(crate) fn generate_key() -> Result<(String, [u8; 32]), String> {
     use base64::Engine as _;
     use sha2::Digest as _;
 
@@ -667,11 +686,7 @@ fn rotate(arguments: &[String]) -> Result<String, String> {
     let expires_at = expires_at(now, days);
     let mut keys = locked.read()?;
     let record = match &target {
-        Some(id) => keys
-            .records_mut()
-            .iter_mut()
-            .find(|record| record.id() == id)
-            .ok_or_else(|| format!("no key {id:?}"))?,
+        Some(id) => keys.get_mut(id).ok_or_else(|| format!("no key {id:?}"))?,
         None => keys
             .records_mut()
             .iter_mut()
@@ -709,11 +724,7 @@ fn rm(arguments: &[String]) -> Result<String, String> {
     let (config, keys_path) = mutating_location(&args, "rm")?;
     let locked = store::lock(&keys_path, store::LOCK_TIMEOUT)?;
     let mut keys = locked.read()?;
-    let record = keys
-        .records_mut()
-        .iter_mut()
-        .find(|record| record.id() == id)
-        .ok_or_else(|| format!("no key {id:?}"))?;
+    let record = keys.get_mut(&id).ok_or_else(|| format!("no key {id:?}"))?;
     if record.is_revoked() {
         return Ok(format!("key {id} is already revoked"));
     }
@@ -806,10 +817,7 @@ fn edit(
             .any(|flag| !args.all(flag).is_empty());
     let limits_given = max_in_flight.is_some() || rate_limit.is_some() || clear_limits;
     if added.is_empty() && removed.is_empty() && days.is_none() && !limits_given && !quota_given {
-        let current = match file::read(&keys_path).map_err(|error| error.to_string())? {
-            Some(bytes) => file::parse_without_routes(&bytes).map_err(|error| error.to_string())?,
-            None => KeysFile::default(),
-        };
+        let current = file::load(&keys_path)?;
         let record = current
             .records()
             .iter()
@@ -838,11 +846,7 @@ fn edit(
 
     let locked = store::lock(&keys_path, store::LOCK_TIMEOUT)?;
     let mut keys = locked.read()?;
-    let record = keys
-        .records_mut()
-        .iter_mut()
-        .find(|record| record.id() == id)
-        .ok_or_else(|| format!("no key {id:?}"))?;
+    let record = keys.get_mut(&id).ok_or_else(|| format!("no key {id:?}"))?;
     if record.is_revoked() {
         return Err(format!("key {id:?} is revoked and cannot be edited"));
     }
@@ -874,13 +878,7 @@ fn edit(
             .find(|route| route.selector == *scope)
             .map(|route| route.exposure)
     };
-    let publicly_usable = !record.is_owner()
-        && before
-            .iter()
-            .all(|scope| exposure(scope) != Some(Exposure::Never))
-        && before
-            .iter()
-            .any(|scope| exposure(scope) == Some(Exposure::Public));
+    let publicly_usable = publicly_usable(record.is_owner(), &before, &routes);
     let mut notes = Vec::new();
     for scope in &added {
         match exposure(scope) {
@@ -904,17 +902,6 @@ fn edit(
     record.set_daily_quota(quota);
     record.set_permissions(after.clone());
     let mut changes = serde_json::Map::new();
-    let scope_json = |scopes: &[RouteSelector]| -> Value {
-        scopes
-            .iter()
-            .map(|scope| {
-                json!({
-                    "model_alias": scope.model_alias.0,
-                    "operation": operation_name(scope.operation),
-                })
-            })
-            .collect()
-    };
     if quota_given {
         changes.insert("daily_quota".into(), json!(quota));
     }
@@ -1071,13 +1058,7 @@ fn quota_flags(
     if requests.is_none() && tokens.is_none() && reservation_tokens.is_none() {
         return Ok(existing);
     }
-    if !matches!(
-        config.key_source(),
-        KeySource::File {
-            usage_dir: Some(_),
-            ..
-        }
-    ) {
+    if usage_dir(config).is_none() {
         return Err("daily quotas require [keys] usage_dir".into());
     }
     let quota = crate::keys::quota::DailyQuota {

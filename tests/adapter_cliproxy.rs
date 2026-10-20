@@ -1,23 +1,24 @@
 //! `kind = "cliproxy"`: CLIProxyAPI on the vLLM chat path, private-only like ChatGPT/Codex.
 
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/gateway.rs"]
 mod support;
 #[path = "adapter_ollama/support.rs"]
 mod upstream;
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
 
 use axum::http::StatusCode;
 use kanata::{
     adapter::{Adapter, ollama::OllamaAdapter, vllm::VllmAdapter},
-    config::{ConfigError, Plane, ProviderKind, ValidatedConfig},
+    config::{Plane, ProviderKind, ValidatedConfig},
     server::{Readiness, TwoPlaneServer},
 };
 use serde_json::{Value, json};
-use support::{chat_request, models_request, response_json};
+use support::{
+    TempFile, chat_request, compact_config, load_text as load, models_request, response_json,
+};
 
 const RESPONSE: &str = include_str!("fixtures/cliproxy/chat-text-response.json");
 const LOOPBACK: &str = "http://127.0.0.1:9/v1";
@@ -28,25 +29,12 @@ secret_ref = "env:PUBLIC_ONLY_KEY"
 permissions = [{ model_alias = "local", operation = "chat" }]
 "#;
 
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-
 /// An Ollama route published on the public listener next to a CLIProxyAPI effort family.
 fn source(base_url: &str, extra_keys: &str) -> String {
-    format!(
-        r#"
-[listeners.client]
-bind = "127.0.0.1"
-port = 18080
-[listeners.public]
-bind = "172.30.0.3"
-port = 18081
-[listeners.admin]
-bind = "127.0.0.1"
-port = 19090
-[publication]
-tailnet_addresses = ["100.64.0.10"]
-public_routes = [{{ model_alias = "local", operation = "chat" }}]
-[[adapters]]
+    compact_config(
+        r#"[{ model_alias = "local", operation = "chat" }]"#,
+        &format!(
+            r#"[[adapters]]
 id = "ollama"
 kind = "ollama"
 base_url = "http://127.0.0.1:9"
@@ -82,46 +70,9 @@ permissions = [
   {{ model_alias = "claude", operation = "chat" }},
   {{ model_alias = "claude:high", operation = "chat" }},
 ]
-{extra_keys}
-[limits]
-max_queue = 4
-max_in_flight = 2
-max_body_bytes = 1048576
-max_audio_bytes = 1048576
-max_extension_bytes = 1024
-[timeouts]
-queue_ms = 1000
-connect_ms = 1000
-headers_ms = 1000
-first_byte_ms = 1000
-idle_ms = 1000
-overall_ms = 5000
-"#
+{extra_keys}"#
+        ),
     )
-}
-
-struct TempConfig(std::path::PathBuf);
-
-impl TempConfig {
-    fn new(text: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "kanata-cliproxy-{}-{}.toml",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::write(&path, text).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for TempConfig {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-fn load(text: &str) -> Result<ValidatedConfig, ConfigError> {
-    kanata::config::load(&TempConfig::new(text).0)
 }
 
 fn error(text: &str) -> String {
@@ -186,7 +137,8 @@ fn config_accepts_loopback_http_and_private_ca_https_with_an_effort_family() {
         "secret_ref = \"env:CLIPROXY_KEY\"",
         "secret_ref = \"env:CLIPROXY_KEY\"\nca_file = \"/run/secrets/cliproxy-ca.pem\"",
     );
-    let config = kanata::config::load_deferring_keys(&TempConfig::new(&sidecar).0).unwrap();
+    let sidecar = TempFile::new("cliproxy", "toml", sidecar);
+    let config = kanata::config::load_deferring_keys(sidecar.path()).unwrap();
     let adapter = &config.adapters()[1];
     assert_eq!(adapter.kind(), ProviderKind::Cliproxy);
     assert!(adapter.ca_bundle().is_some());
@@ -194,11 +146,7 @@ fn config_accepts_loopback_http_and_private_ca_https_with_an_effort_family() {
 
 #[test]
 fn check_reads_ca_file_only_for_adapters_the_plane_keeps() {
-    let missing = std::env::temp_dir().join(format!(
-        "kanata-cliproxy-missing-ca-{}-{}.pem",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
+    let missing = support::unique_path("cliproxy-missing-ca").with_extension("pem");
     let sidecar = source("https://cliproxy-tls:8443/v1", "").replace(
         "secret_ref = \"env:CLIPROXY_KEY\"",
         &format!(
@@ -206,17 +154,10 @@ fn check_reads_ca_file_only_for_adapters_the_plane_keeps() {
             missing.display()
         ),
     );
-    let config = TempConfig::new(&sidecar);
+    let config = TempFile::new("cliproxy", "toml", sidecar);
     let check = |plane: &str| {
         kanata::cli::run(
-            [
-                "check",
-                "--config",
-                config.0.to_str().unwrap(),
-                "--plane",
-                plane,
-            ]
-            .map(str::to_owned),
+            ["check", "--config", config.as_str(), "--plane", plane].map(str::to_owned),
         )
     };
     // The public plane drops the private-only adapter, so its CA is never read.
@@ -227,7 +168,7 @@ fn check_reads_ca_file_only_for_adapters_the_plane_keeps() {
             Err("config error at adapters[1].ca_file: read_error".to_owned())
         );
     }
-    let (full, public) = kanata::config::load_plane(&config.0, Plane::Public).unwrap();
+    let (full, public) = kanata::config::load_plane(config.path(), Plane::Public).unwrap();
     assert!(
         public
             .adapters()
@@ -339,9 +280,9 @@ fn public_plane_drops_cliproxy_routes_adapters_and_keys_with_cliproxy_scopes() {
 
 #[test]
 fn routes_command_marks_cliproxy_routes_never_public() {
-    let file = TempConfig::new(&source(LOOPBACK, ""));
+    let file = TempFile::new("cliproxy", "toml", source(LOOPBACK, ""));
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_kanata"))
-        .args(["routes", "--config", file.0.to_str().unwrap()])
+        .args(["routes", "--config", file.as_str()])
         .output()
         .unwrap();
     assert!(output.status.success());

@@ -66,30 +66,16 @@ pub enum KeySource {
 }
 
 impl ValidatedConfig {
-    pub fn listeners(&self) -> &ValidatedListeners {
-        &self.listeners
-    }
-    pub fn publication(&self) -> &ValidatedPublication {
-        &self.publication
-    }
-    pub fn codex_auth(&self) -> Option<&ValidatedCodexAuth> {
-        self.codex_auth.as_ref()
-    }
-    pub fn chatgpt_auth(&self) -> Option<&ValidatedChatgptAuth> {
-        self.chatgpt_auth.as_ref()
-    }
-    pub fn adapters(&self) -> &[ValidatedAdapter] {
-        &self.adapters
-    }
-    pub fn routes(&self) -> &[ValidatedRoute] {
-        &self.routes
-    }
-    /// Non-revoked keys, expired ones included.
-    pub fn application_keys(&self) -> &[ValidatedApplicationKey] {
-        &self.application_keys
-    }
-    pub fn key_source(&self) -> &KeySource {
-        &self.key_source
+    getters! {
+        pub listeners: &ValidatedListeners,
+        pub publication: &ValidatedPublication,
+        pub codex_auth: Option<&ValidatedCodexAuth> = as_ref,
+        pub chatgpt_auth: Option<&ValidatedChatgptAuth> = as_ref,
+        pub adapters: &[ValidatedAdapter],
+        pub routes: &[ValidatedRoute],
+        /// Non-revoked keys, expired ones included.
+        pub application_keys: &[ValidatedApplicationKey],
+        pub key_source: &KeySource,
     }
 
     /// Replaces the keys with the active records of a reloaded keys file.
@@ -151,46 +137,27 @@ impl ValidatedConfig {
         warnings
     }
 
-    pub fn limits(&self) -> &ValidatedLimits {
-        &self.limits
-    }
-    pub fn timeouts(&self) -> &ValidatedTimeouts {
-        &self.timeouts
-    }
-    pub fn logging(&self) -> &ValidatedLogging {
-        &self.logging
+    getters! {
+        pub limits: &ValidatedLimits,
+        pub timeouts: &ValidatedTimeouts,
+        pub logging: &ValidatedLogging,
     }
 }
 
-/// Which listeners one `kanata serve` process runs.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum Plane {
-    /// Private and public listeners in one process.
-    #[default]
-    All,
-    /// Private listener only; no public listener or public routes.
-    Private,
-    /// Public listener only, with just the public routes, their adapters and non-owner keys.
-    Public,
-}
-
-impl Plane {
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "all" => Some(Self::All),
-            "private" => Some(Self::Private),
-            "public" => Some(Self::Public),
-            _ => None,
-        }
+str_enum! {
+    /// Which listeners one `kanata serve` process runs.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum Plane {
+        /// Private and public listeners in one process.
+        #[default]
+        All => "all",
+        /// Private listener only; no public listener or public routes.
+        Private => "private",
+        /// Public listener only, with just the public routes, their adapters and non-owner keys.
+        Public => "public",
     }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Private => "private",
-            Self::Public => "public",
-        }
-    }
+    pub const fn as_str;
+    pub fn parse;
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -219,11 +186,9 @@ pub struct ValidatedLogging {
 }
 
 impl ValidatedLogging {
-    pub fn level(&self) -> LogLevel {
-        self.level
-    }
-    pub fn format(&self) -> LogFormat {
-        self.format
+    getters! {
+        pub level: LogLevel,
+        pub format: LogFormat,
     }
 }
 
@@ -234,14 +199,10 @@ pub struct ValidatedListeners {
     public: Option<ValidatedListener>,
 }
 impl ValidatedListeners {
-    pub fn client(&self) -> &ValidatedListener {
-        &self.client
-    }
-    pub fn admin(&self) -> &ValidatedListener {
-        &self.admin
-    }
-    pub fn public(&self) -> Option<&ValidatedListener> {
-        self.public.as_ref()
+    getters! {
+        pub client: &ValidatedListener,
+        pub admin: &ValidatedListener,
+        pub public: Option<&ValidatedListener> = as_ref,
     }
 }
 
@@ -251,11 +212,9 @@ pub struct ValidatedListener {
     port: u16,
 }
 impl ValidatedListener {
-    pub fn bind(&self) -> IpAddr {
-        self.bind
-    }
-    pub fn port(&self) -> u16 {
-        self.port
+    getters! {
+        pub bind: IpAddr,
+        pub port: u16,
     }
 }
 
@@ -265,11 +224,9 @@ pub struct ValidatedPublication {
     public_routes: Vec<RouteSelector>,
 }
 impl ValidatedPublication {
-    pub fn tailnet_addresses(&self) -> &[IpAddr] {
-        &self.tailnet_addresses
-    }
-    pub fn public_routes(&self) -> &[RouteSelector] {
-        &self.public_routes
+    getters! {
+        pub tailnet_addresses: &[IpAddr],
+        pub public_routes: &[RouteSelector],
     }
 }
 
@@ -280,12 +237,15 @@ pub enum CodexAuthStore {
     File,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CodexReasoningEffort {
-    Low,
-    Medium,
-    High,
+str_enum! {
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum CodexReasoningEffort {
+        Low => "low",
+        Medium => "medium",
+        High => "high",
+    }
+    pub const fn as_str;
 }
 
 impl CodexReasoningEffort {
@@ -301,36 +261,21 @@ impl CodexReasoningEffort {
             | ReasoningEffort::Max => None,
         }
     }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
-    }
 }
 
-/// Requested reasoning summary detail.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ReasoningSummary {
-    Auto,
-    Concise,
-    Detailed,
+str_enum! {
+    /// Requested reasoning summary detail.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum ReasoningSummary {
+        Auto => "auto",
+        Concise => "concise",
+        Detailed => "detailed",
+    }
+    pub const fn as_str;
 }
 
 pub type CodexReasoningSummary = ReasoningSummary;
-
-impl ReasoningSummary {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Concise => "concise",
-            Self::Detailed => "detailed",
-        }
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedCodexAuth {
@@ -338,11 +283,9 @@ pub struct ValidatedCodexAuth {
     state_dir: PathBuf,
 }
 impl ValidatedCodexAuth {
-    pub fn store(&self) -> CodexAuthStore {
-        self.store
-    }
-    pub fn state_dir(&self) -> &Path {
-        &self.state_dir
+    getters! {
+        pub store: CodexAuthStore,
+        pub state_dir: &Path,
     }
 }
 
@@ -372,44 +315,22 @@ pub struct ValidatedAdapter {
     anthropic: Option<ValidatedAnthropicSettings>,
 }
 impl ValidatedAdapter {
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-    pub fn kind(&self) -> ProviderKind {
-        self.kind
-    }
-    pub fn base_url(&self) -> &Url {
-        &self.base_url
-    }
-    pub fn trust_zone(&self) -> TrustZone {
-        self.trust_zone
-    }
-    pub fn transcription_mode(&self) -> Option<VllmTranscriptionMode> {
-        self.transcription_mode
-    }
-    pub fn secret_ref(&self) -> Option<&SecretReference> {
-        self.secret_ref.as_ref()
-    }
-    pub fn extension_allowlist(&self) -> &BTreeSet<ExtensionKey> {
-        &self.extension_allowlist
-    }
-    pub fn capabilities(&self) -> &Capabilities {
-        &self.capabilities
-    }
-    /// Concurrency cap shared by every route on this adapter; `None` means uncapped.
-    pub fn max_in_flight(&self) -> Option<u64> {
-        self.max_in_flight
-    }
-    pub fn circuit_breaker(&self) -> CircuitBreakerPolicy {
-        self.circuit_breaker
-    }
-    /// Private CA that replaces the platform roots for this adapter's TLS (`ca_file`).
-    pub fn ca_bundle(&self) -> Option<&CaBundle> {
-        self.ca_bundle.as_ref()
-    }
-    /// `[adapters.anthropic]` settings, defaults applied; `Some` exactly for Anthropic adapters.
-    pub fn anthropic(&self) -> Option<&ValidatedAnthropicSettings> {
-        self.anthropic.as_ref()
+    getters! {
+        pub id: &str,
+        pub kind: ProviderKind,
+        pub base_url: &Url,
+        pub trust_zone: TrustZone,
+        pub transcription_mode: Option<VllmTranscriptionMode>,
+        pub secret_ref: Option<&SecretReference> = as_ref,
+        pub extension_allowlist: &BTreeSet<ExtensionKey>,
+        pub capabilities: &Capabilities,
+        /// Concurrency cap shared by every route on this adapter; `None` means uncapped.
+        pub max_in_flight: Option<u64>,
+        pub circuit_breaker: CircuitBreakerPolicy,
+        /// Private CA that replaces the platform roots for this adapter's TLS (`ca_file`).
+        pub ca_bundle: Option<&CaBundle> = as_ref,
+        /// `[adapters.anthropic]` settings, defaults applied; `Some` exactly for Anthropic adapters.
+        pub anthropic: Option<&ValidatedAnthropicSettings> = as_ref,
     }
 }
 
@@ -422,13 +343,11 @@ pub struct ValidatedAnthropicSettings {
     default_max_output_tokens: u32,
 }
 impl ValidatedAnthropicSettings {
-    /// Sent as `anthropic-workspace-id` when set.
-    pub fn workspace_id(&self) -> Option<&str> {
-        self.workspace_id.as_deref()
-    }
-    /// `max_tokens` on every request.
-    pub fn default_max_output_tokens(&self) -> u32 {
-        self.default_max_output_tokens
+    getters! {
+        /// Sent as `anthropic-workspace-id` when set.
+        pub workspace_id: Option<&str> = as_deref,
+        /// `max_tokens` on every request.
+        pub default_max_output_tokens: u32,
     }
 }
 
@@ -443,11 +362,9 @@ pub struct CaBundle {
     certificates: std::sync::Arc<[rustls::pki_types::CertificateDer<'static>]>,
 }
 impl CaBundle {
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-    pub(crate) fn certificates(&self) -> &[rustls::pki_types::CertificateDer<'static>] {
-        &self.certificates
+    getters! {
+        pub path: &Path,
+        pub(crate) certificates: &[rustls::pki_types::CertificateDer<'static>],
     }
 }
 impl fmt::Debug for CaBundle {
@@ -511,12 +428,6 @@ impl SecretReference {
             Self::File(_) | Self::Sha256(_) => None,
         }
     }
-    pub fn file_path(&self) -> Option<&Path> {
-        match self {
-            Self::File(path) => Some(path),
-            Self::Env(_) | Self::Sha256(_) => None,
-        }
-    }
     pub fn sha256_digest(&self) -> Option<&[u8; 32]> {
         match self {
             Self::Sha256(digest) => Some(digest),
@@ -549,57 +460,29 @@ pub struct ValidatedRoute {
     enable_thinking: Option<bool>,
 }
 impl ValidatedRoute {
-    pub fn identity(&self) -> &RouteIdentity {
-        &self.identity
-    }
-    pub fn adapter_id(&self) -> &str {
-        &self.adapter_id
-    }
-    pub fn codex_reasoning_effort(&self) -> Option<CodexReasoningEffort> {
-        self.codex_reasoning_effort
-    }
-    pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
-        self.reasoning_effort
-    }
-    pub fn codex_reasoning_summary(&self) -> Option<CodexReasoningSummary> {
-        self.codex_reasoning_summary
+    getters! {
+        pub identity: &RouteIdentity,
+        pub adapter_id: &str,
+        pub codex_reasoning_effort: Option<CodexReasoningEffort>,
+        pub reasoning_effort: Option<ReasoningEffort>,
+        pub codex_reasoning_summary: Option<CodexReasoningSummary>,
+        pub extension_allowlist: &BTreeSet<ExtensionKey>,
+        pub requires_streaming_chat: bool,
+        pub requires_function_tools: bool,
+        pub speech: Option<&crate::core::SpeechPolicy> = as_ref,
+        pub allows_input_images: bool,
+        pub allows_input_audio: bool,
+        pub allows_audio_streaming_chat: bool,
+        pub allows_audio_function_tools: bool,
+        /// Declared upstream context window; `None` means the provider's own.
+        pub context_tokens: Option<u32>,
+        /// Declared output cap; larger client requests are rejected.
+        pub max_output_tokens: Option<u32>,
+        /// vLLM chat-template thinking switch; `None` leaves the template default.
+        pub enable_thinking: Option<bool>,
     }
     pub fn reasoning_summary(&self) -> Option<ReasoningSummary> {
         self.reasoning_summary.or(self.codex_reasoning_summary)
-    }
-    pub fn extension_allowlist(&self) -> &BTreeSet<ExtensionKey> {
-        &self.extension_allowlist
-    }
-    pub fn requires_streaming_chat(&self) -> bool {
-        self.requires_streaming_chat
-    }
-    pub fn requires_function_tools(&self) -> bool {
-        self.requires_function_tools
-    }
-    pub fn speech(&self) -> Option<&crate::core::SpeechPolicy> {
-        self.speech.as_ref()
-    }
-
-    pub fn allows_input_images(&self) -> bool {
-        self.allows_input_images
-    }
-
-    pub fn allows_input_audio(&self) -> bool {
-        self.allows_input_audio
-    }
-    pub fn allows_audio_streaming_chat(&self) -> bool {
-        self.allows_audio_streaming_chat
-    }
-    pub fn allows_audio_function_tools(&self) -> bool {
-        self.allows_audio_function_tools
-    }
-    /// Declared upstream context window; `None` means the provider's own.
-    pub fn context_tokens(&self) -> Option<u32> {
-        self.context_tokens
-    }
-    /// Declared output cap; larger client requests are rejected.
-    pub fn max_output_tokens(&self) -> Option<u32> {
-        self.max_output_tokens
     }
     /// Reasoning effort fixed by the route rather than the client.
     pub fn pinned_reasoning_effort(&self) -> Option<&'static str> {
@@ -619,10 +502,6 @@ impl ValidatedRoute {
             .map(|(model, _)| model)
             .unwrap_or(alias)
     }
-    /// vLLM chat-template thinking switch; `None` leaves the template default.
-    pub fn enable_thinking(&self) -> Option<bool> {
-        self.enable_thinking
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -637,33 +516,19 @@ pub struct ValidatedApplicationKey {
     expires_at: Option<u64>,
 }
 impl ValidatedApplicationKey {
-    pub fn daily_quota(&self) -> Option<crate::keys::quota::DailyQuota> {
-        self.daily_quota
-    }
-    /// Unix seconds; `None` never expires (always for inline keys).
-    pub fn expires_at(&self) -> Option<u64> {
-        self.expires_at
+    getters! {
+        pub daily_quota: Option<crate::keys::quota::DailyQuota>,
+        /// Unix seconds; `None` never expires (always for inline keys).
+        pub expires_at: Option<u64>,
+        pub id: &str,
+        pub is_owner(owner): bool,
+        pub secret_ref: &SecretReference,
+        pub permissions: &[RouteSelector],
+        pub max_in_flight: Option<u64>,
+        pub rate_limit: Option<KeyRateLimit>,
     }
     pub fn is_expired(&self, now: u64) -> bool {
         self.expires_at.is_some_and(|at| now >= at)
-    }
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-    pub fn is_owner(&self) -> bool {
-        self.owner
-    }
-    pub fn secret_ref(&self) -> &SecretReference {
-        &self.secret_ref
-    }
-    pub fn permissions(&self) -> &[RouteSelector] {
-        &self.permissions
-    }
-    pub fn max_in_flight(&self) -> Option<u64> {
-        self.max_in_flight
-    }
-    pub fn rate_limit(&self) -> Option<KeyRateLimit> {
-        self.rate_limit
     }
 }
 
@@ -679,29 +544,15 @@ pub struct ValidatedLimits {
     max_extension_bytes: u64,
 }
 impl ValidatedLimits {
-    pub fn max_uploads(&self) -> u64 {
-        self.max_uploads
-    }
-    pub fn max_buffered_bytes(&self) -> u64 {
-        self.max_buffered_bytes
-    }
-    pub fn max_queue(&self) -> u64 {
-        self.max_queue
-    }
-    pub fn max_in_flight(&self) -> u64 {
-        self.max_in_flight
-    }
-    pub fn max_body_bytes(&self) -> u64 {
-        self.max_body_bytes
-    }
-    pub fn max_audio_bytes(&self) -> u64 {
-        self.max_audio_bytes
-    }
-    pub fn max_audio_chat_body_bytes(&self) -> u64 {
-        self.max_audio_chat_body_bytes
-    }
-    pub fn max_extension_bytes(&self) -> u64 {
-        self.max_extension_bytes
+    getters! {
+        pub max_uploads: u64,
+        pub max_buffered_bytes: u64,
+        pub max_queue: u64,
+        pub max_in_flight: u64,
+        pub max_body_bytes: u64,
+        pub max_audio_bytes: u64,
+        pub max_audio_chat_body_bytes: u64,
+        pub max_extension_bytes: u64,
     }
 }
 
@@ -717,29 +568,15 @@ pub struct ValidatedTimeouts {
     sse_keepalive_ms: u64,
 }
 impl ValidatedTimeouts {
-    pub fn upload_ms(&self) -> u64 {
-        self.upload_ms
-    }
-    pub fn queue_ms(&self) -> u64 {
-        self.queue_ms
-    }
-    pub fn connect_ms(&self) -> u64 {
-        self.connect_ms
-    }
-    pub fn headers_ms(&self) -> u64 {
-        self.headers_ms
-    }
-    pub fn first_byte_ms(&self) -> u64 {
-        self.first_byte_ms
-    }
-    pub fn idle_ms(&self) -> u64 {
-        self.idle_ms
-    }
-    pub fn overall_ms(&self) -> u64 {
-        self.overall_ms
-    }
-    pub fn sse_keepalive_ms(&self) -> u64 {
-        self.sse_keepalive_ms
+    getters! {
+        pub upload_ms: u64,
+        pub queue_ms: u64,
+        pub connect_ms: u64,
+        pub headers_ms: u64,
+        pub first_byte_ms: u64,
+        pub idle_ms: u64,
+        pub overall_ms: u64,
+        pub sse_keepalive_ms: u64,
     }
 }
 

@@ -1,8 +1,12 @@
+use crate::adapter::{
+    chat_completions::validation::{has_input_audio, uses_tools, validate_messages},
+    internal_error, invalid_request, unsupported_operation,
+};
 use crate::{
     config::ValidatedRoute,
     core::{
-        Capabilities, ChatContent, ChatRole, ErrorKind, GatewayError, Operation, Request,
-        RouteIdentity, RoutedRequest, ToolChoice, TranscriptionRequest, TrustZone,
+        Capabilities, GatewayError, Operation, Request, RouteIdentity, RoutedRequest,
+        TranscriptionRequest, TrustZone,
     },
 };
 
@@ -121,81 +125,16 @@ fn validate_chat(
     if chat.extensions.iter().next().is_some() {
         return Err(invalid_request());
     }
-    let has_audio = chat.messages.iter().any(|message| {
-        message
-            .content
-            .iter()
-            .any(|content| matches!(content, ChatContent::InputAudio { .. }))
-    });
-    let uses_tools = !chat.tools.is_empty()
-        || !matches!(&chat.tool_choice, ToolChoice::Auto | ToolChoice::None)
-        || chat.messages.iter().any(|message| {
-            message.content.iter().any(|content| {
-                matches!(
-                    content,
-                    ChatContent::ToolCall { .. } | ChatContent::ToolResult { .. }
-                )
-            })
-        });
     // Tool history needs tool support even when the request declares no tools.
-    if uses_tools && (!function_tools || (has_audio && !binding.allows_audio_function_tools)) {
+    if uses_tools(chat)
+        && (!function_tools || (has_input_audio(chat) && !binding.allows_audio_function_tools))
+    {
         return Err(unsupported_operation());
     }
-
-    let mut total_audio_bytes = 0usize;
-    for message in chat.messages_without_reasoning() {
-        if message.content.is_empty() {
-            return Err(invalid_request());
-        }
-        for content in &message.content {
-            match content {
-                ChatContent::Text { text } if !text.is_empty() => {}
-                // Clients send empty text beside an assistant's tool calls.
-                ChatContent::Text { .. } if message.role == ChatRole::Assistant => {}
-                ChatContent::Text { .. } => return Err(invalid_request()),
-                ChatContent::ToolCall { .. } if message.role == ChatRole::Assistant => {}
-                ChatContent::Reasoning { .. } | ChatContent::ReasoningText { .. }
-                    if message.role == ChatRole::Assistant => {}
-                ChatContent::ToolResult { .. } if message.role == ChatRole::Tool => {}
-                ChatContent::InputAudio { audio }
-                    if binding.allows_input_audio && message.role == ChatRole::User =>
-                {
-                    total_audio_bytes = total_audio_bytes
-                        .checked_add(audio.bytes().len())
-                        .filter(|total| *total <= max_audio_bytes)
-                        .ok_or_else(invalid_request)?;
-                }
-                ChatContent::InputImage { .. }
-                    if binding.allows_input_images && message.role == ChatRole::User => {}
-                ChatContent::InputAudio { .. } | ChatContent::InputImage { .. } => {
-                    return Err(unsupported_operation());
-                }
-                ChatContent::ToolCall { .. }
-                | ChatContent::ToolResult { .. }
-                | ChatContent::Reasoning { .. }
-                | ChatContent::ReasoningText { .. } => {
-                    return Err(invalid_request());
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn internal_error() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
-    }
-}
-
-fn invalid_request() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
-    }
+    validate_messages(
+        chat,
+        max_audio_bytes,
+        binding.allows_input_audio,
+        binding.allows_input_images,
+    )
 }

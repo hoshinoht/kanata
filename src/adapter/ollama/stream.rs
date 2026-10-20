@@ -1,139 +1,44 @@
-use std::{
-    collections::VecDeque,
-    pin::Pin,
-    task::{Context, Poll},
-};
-
-use futures_core::Stream;
-
 use crate::{
-    adapter::diagnostics::ProviderError,
-    adapter::transport::ResponseBody,
-    core::{ErrorKind, FinishReason, GatewayError, ModelAlias, NormalizedEvent},
+    adapter::{
+        EventStream,
+        chat_completions::{stream::ChatStream, stream_state::StreamDialect},
+        diagnostics::ProviderError,
+        transport::ResponseBody,
+    },
+    core::ModelAlias,
 };
 
-use super::{apple_fm, sse::SseFramer, stream_state::StreamState};
+use super::{apple_fm, response::UsagePayload};
 
-pub(super) struct OllamaStream {
-    body: Option<ResponseBody>,
-    framer: SseFramer,
-    state: StreamState,
-    pending: VecDeque<NormalizedEvent>,
-    terminal: bool,
+enum Ollama {}
+
+impl StreamDialect for Ollama {
+    type Usage = UsagePayload;
+    const TRAILING_EMPTY_CHOICE: bool = false;
+    const REPEATED_USAGE: bool = false;
+}
+
+pub(super) fn event_stream(
+    body: ResponseBody,
+    public_model: ModelAlias,
     apple_fm: bool,
-}
-
-impl OllamaStream {
-    pub(super) fn new(body: ResponseBody, public_model: ModelAlias, apple_fm: bool) -> Self {
-        Self {
-            body: Some(body),
-            // fm serve sends `event: error`; other named events still fail below.
-            framer: if apple_fm {
-                SseFramer::new_with_named_events()
-            } else {
-                SseFramer::new()
-            },
-            state: StreamState::new(public_model),
-            pending: VecDeque::new(),
-            terminal: false,
-            apple_fm,
-        }
-    }
-
-    fn fail(&mut self, error: GatewayError) -> Poll<Option<Result<NormalizedEvent, GatewayError>>> {
-        self.body.take();
-        self.pending.clear();
-        self.terminal = true;
-        Poll::Ready(Some(Err(error)))
-    }
-
-    fn records(&mut self, records: Vec<super::sse::SseRecord>) -> Result<(), GatewayError> {
-        let mut events = Vec::new();
-        for record in records {
-            if self.terminal {
-                return Err(upstream_failure());
-            }
-            if self.apple_fm && record.event.as_deref() == Some("error") {
-                // fm serve reports a guardrail refusal as a mid-stream error event.
-                let error = serde_json::from_str::<serde_json::Value>(&record.data)
-                    .map(|value| ProviderError::from_json(&value))
-                    .unwrap_or_default();
-                if apple_fm::classify(500, &error) != Some(apple_fm::Failure::Guardrail) {
-                    return Err(upstream_failure());
-                }
-                events.extend(self.state.interrupt(FinishReason::ContentFilter)?);
-                self.body.take();
-                self.terminal = true;
-                break;
-            }
-            if record
-                .event
-                .as_deref()
-                .is_some_and(|event| event != "message")
-            {
-                return Err(upstream_failure());
-            }
-            if record.data == "[DONE]" {
-                events.push(self.state.done()?);
-                self.body.take();
-                self.terminal = true;
-                break;
-            } else {
-                events.extend(self.state.data(&record.data)?);
-            }
-        }
-        self.pending.extend(events);
-        Ok(())
+) -> EventStream {
+    if apple_fm {
+        // fm serve sends `event: error`; other named events still fail.
+        Box::pin(ChatStream::<Ollama>::with_error_events(
+            body,
+            public_model,
+            guardrail_error,
+        ))
+    } else {
+        Box::pin(ChatStream::<Ollama>::new(body, public_model))
     }
 }
 
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
-}
-
-impl Stream for OllamaStream {
-    type Item = Result<NormalizedEvent, GatewayError>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        if let Some(event) = this.pending.pop_front() {
-            return Poll::Ready(Some(Ok(event)));
-        }
-        if this.terminal {
-            return Poll::Ready(None);
-        }
-        loop {
-            let Some(body) = this.body.as_mut() else {
-                return this.fail(GatewayError {
-                    kind: ErrorKind::UpstreamFailure,
-                });
-            };
-            match body.as_mut().poll_next(cx) {
-                Poll::Ready(Some(Ok(bytes))) => match this.framer.feed(&bytes) {
-                    Ok(records) => {
-                        if let Err(error) = this.records(records) {
-                            return this.fail(error);
-                        }
-                        if let Some(event) = this.pending.pop_front() {
-                            return Poll::Ready(Some(Ok(event)));
-                        }
-                        if this.terminal {
-                            return Poll::Ready(None);
-                        }
-                    }
-                    Err(error) => return this.fail(error),
-                },
-                Poll::Ready(Some(Err(error))) => return this.fail(error),
-                Poll::Ready(None) => {
-                    if let Err(error) = this.framer.finish() {
-                        return this.fail(error);
-                    }
-                    return this.fail(this.state.eof());
-                }
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-    }
+/// fm serve reports a guardrail refusal as a mid-stream error event.
+fn guardrail_error(data: &str) -> bool {
+    let error = serde_json::from_str::<serde_json::Value>(data)
+        .map(|value| ProviderError::from_json(&value))
+        .unwrap_or_default();
+    apple_fm::classify(500, &error) == Some(apple_fm::Failure::Guardrail)
 }

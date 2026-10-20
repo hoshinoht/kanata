@@ -33,18 +33,10 @@ async fn redirect_location_is_returned_without_following_or_replaying() {
             .await
             .unwrap_or_else(|_| panic!("redirect response"));
     });
-    let mut response = fixture::transport(
-        first_address,
-        fixture::timeouts(
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        ),
-    )
-    .execute(fixture::request(Bytes::from_static(b"{}"), 1024))
-    .await
-    .unwrap_or_else(|_| panic!("redirect response"));
+    let mut response = fixture::transport(first_address, fixture::uniform_timeouts())
+        .execute(fixture::request(Bytes::from_static(b"{}"), 1024))
+        .await
+        .unwrap_or_else(|_| panic!("redirect response"));
     assert_eq!(response.status, 302);
     assert!(response.body.next().await.is_none());
     first.await.unwrap_or_else(|_| panic!("first server"));
@@ -76,17 +68,9 @@ async fn connection_error_has_one_source_write_and_no_second_connection() {
         );
         done_tx.send(()).unwrap_or_else(|_| panic!("done signal"));
     });
-    let result = fixture::transport(
-        address,
-        fixture::timeouts(
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        ),
-    )
-    .execute(fixture::request(Bytes::from_static(b"{}"), 1024))
-    .await;
+    let result = fixture::transport(address, fixture::uniform_timeouts())
+        .execute(fixture::request(Bytes::from_static(b"{}"), 1024))
+        .await;
     let error = match result {
         Err(error) => error,
         Ok(_) => panic!("reset response accepted"),

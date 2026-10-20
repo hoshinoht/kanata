@@ -8,6 +8,7 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
+use crate::adapter::{internal_error, unsupported_operation, upstream_failure};
 use std::{fmt, sync::Arc};
 
 use futures_util::StreamExt;
@@ -237,30 +238,8 @@ impl Adapter for AnthropicAdapter {
 
 /// The shared mapping plus 529 (`overloaded_error`) as unavailable.
 fn status_error(status: u16) -> GatewayError {
-    let kind = match status {
-        400 | 422 => ErrorKind::InvalidRequest,
-        404 => ErrorKind::NotFound,
-        401 | 403 | 408 | 503 | 504 | 529 => ErrorKind::UpstreamUnavailable,
-        429 => ErrorKind::RateLimited,
-        _ => ErrorKind::UpstreamFailure,
-    };
-    GatewayError { kind }
-}
-
-fn internal_error() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
-    }
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
+    match status {
+        529 => ErrorKind::UpstreamUnavailable.into(),
+        _ => super::status_error(status),
     }
 }

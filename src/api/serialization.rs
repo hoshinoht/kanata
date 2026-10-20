@@ -36,12 +36,7 @@ pub(super) fn chat_response(
         return upstream_failure_observed(observer);
     }
     let Some(finish_reason) = finish(response.finish_reason) else {
-        return gateway_error_observed(
-            GatewayError {
-                kind: ErrorKind::Cancelled,
-            },
-            observer,
-        );
+        return gateway_error_observed(GatewayError::from(ErrorKind::Cancelled), observer);
     };
     let Some(mut message) = response_message(&response.message) else {
         return upstream_failure_observed(observer);

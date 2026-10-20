@@ -1,12 +1,15 @@
 use axum::{
     Json,
+    body::Bytes,
     response::{IntoResponse, Response},
 };
 use serde_json::{Value, json};
 
 use super::super::{
     errors::{gateway_error_observed, sse_error_data},
+    keepalive::COMMENT,
     serialization::finish_matches_tool_calls,
+    sse::typed::{EventOutput, event_frame},
 };
 use crate::{
     core::{
@@ -108,7 +111,7 @@ pub(in crate::api) fn complete(
     }
 }
 
-pub(super) struct Output {
+pub(in crate::api) struct Output {
     pub(super) response: Value,
     sequence: u64,
     bytes: usize,
@@ -149,17 +152,6 @@ impl Output {
             json!({"type":"response.created","response":self.response}),
             json!({"type":"response.in_progress","response":self.response}),
         ]
-    }
-
-    pub(super) fn frame(&mut self, mut value: Value) -> axum::body::Bytes {
-        value["sequence_number"] = json!(self.sequence);
-        self.sequence += 1;
-        format!(
-            "event: {}\ndata: {}\n\n",
-            value["type"].as_str().expect("event type"),
-            value
-        )
-        .into()
     }
 
     pub(super) fn accept(
@@ -305,9 +297,7 @@ impl Output {
         let mut frames = Vec::new();
         let incomplete = match reason {
             FinishReason::Cancelled => {
-                return Err(GatewayError {
-                    kind: ErrorKind::Cancelled,
-                });
+                return Err(GatewayError::from(ErrorKind::Cancelled));
             }
             FinishReason::Length => Some("max_output_tokens"),
             FinishReason::ContentFilter => Some("content_filter"),
@@ -377,12 +367,6 @@ impl Output {
         index
     }
 
-    pub(super) fn failed(&mut self, error: GatewayError) -> Value {
-        self.response["status"] = json!("failed");
-        self.response["error"] = sse_error_data(error)["error"].clone();
-        json!({"type":"response.failed","response":self.response})
-    }
-
     fn items(&mut self) -> &mut Vec<Value> {
         self.response["output"]
             .as_array_mut()
@@ -398,10 +382,47 @@ impl Output {
     }
 }
 
-pub(super) fn failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
+/// Output state and opening frames of a Responses stream.
+pub(in crate::api) fn stream_start(
+    options: Options,
+) -> impl FnOnce(&ModelAlias) -> (Output, Vec<Value>) {
+    move |_| {
+        let output = Output::new(options);
+        let frames = output.start();
+        (output, frames)
     }
+}
+
+impl EventOutput for Output {
+    const KEEPALIVE: &'static [u8] = COMMENT;
+
+    fn accept(&mut self, event: NormalizedEvent) -> Result<Vec<Value>, GatewayError> {
+        Output::accept(self, event, true)
+    }
+
+    fn finish(
+        &mut self,
+        reason: FinishReason,
+        usage: Option<&Usage>,
+    ) -> Result<Vec<Value>, GatewayError> {
+        Output::finish(self, reason, usage.cloned())
+    }
+
+    fn failed(&mut self, error: GatewayError) -> Value {
+        self.response["status"] = json!("failed");
+        self.response["error"] = sse_error_data(error)["error"].clone();
+        json!({"type":"response.failed","response":self.response})
+    }
+
+    fn frame(&mut self, mut value: Value) -> Bytes {
+        value["sequence_number"] = json!(self.sequence);
+        self.sequence += 1;
+        event_frame(&value)
+    }
+}
+
+fn failure() -> GatewayError {
+    GatewayError::from(ErrorKind::UpstreamFailure)
 }
 
 #[cfg(test)]

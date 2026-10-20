@@ -14,6 +14,7 @@ use super::{
         STREAM_RESPONSE_BYTES, Transport, TransportRequest,
     },
 };
+use crate::adapter::status_error;
 use crate::{
     config::{ProviderKind, ValidatedConfig},
     core::{
@@ -114,10 +115,10 @@ impl Adapter for ChatgptAdapter {
                 .await
             })
             .await
-            .map_err(|_| GatewayError {
-                kind: ErrorKind::Timeout {
+            .map_err(|_| {
+                GatewayError::from(ErrorKind::Timeout {
                     phase: crate::core::TimeoutPhase::Overall,
-                },
+                })
             })?
         })
     }
@@ -328,34 +329,15 @@ fn decode_models(bytes: &[u8]) -> Result<Vec<Model>, ()> {
     Ok(models)
 }
 
-fn status_error(status: u16) -> GatewayError {
-    GatewayError {
-        kind: match status {
-            400 | 422 => ErrorKind::InvalidRequest,
-            404 => ErrorKind::NotFound,
-            401 | 403 | 408 | 503 | 504 => ErrorKind::UpstreamUnavailable,
-            429 => ErrorKind::RateLimited,
-            _ => ErrorKind::UpstreamFailure,
-        },
-    }
-}
 fn internal() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
-    }
+    GatewayError::from(ErrorKind::Internal)
 }
 fn invalid() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
+    GatewayError::from(ErrorKind::InvalidRequest)
 }
 fn unavailable() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamUnavailable,
-    }
+    GatewayError::from(ErrorKind::UpstreamUnavailable)
 }
 fn failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
+    GatewayError::from(ErrorKind::UpstreamFailure)
 }

@@ -1,20 +1,16 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use futures_util::StreamExt;
 use http::StatusCode;
 use kanata::{
     adapter::{Adapter, AdapterOutput},
-    config::{self, ValidatedConfig},
+    config::ValidatedConfig,
     core::{ErrorKind, FinishReason, NormalizedEvent, Request as CoreRequest, ResponseFormat},
 };
 use serde_json::Value;
 
 use crate::support::{
-    MockServer, ResponseSpec, TEXT_RESPONSE, adapter, error_kind, routed, take_chat, text_request,
-    text_request_with_stream,
+    MockServer, ResponseSpec, TEXT_RESPONSE, adapter, error_kind, load_text, routed, take_chat,
+    text_request, text_request_with_stream,
 };
-
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
 
 fn apple_config(address: &str) -> ValidatedConfig {
     let contents = include_str!("../fixtures/config/example.toml")
@@ -33,15 +29,7 @@ fn apple_config(address: &str) -> ValidatedConfig {
             "requires_function_tools = false",
             1,
         );
-    let path = std::env::temp_dir().join(format!(
-        "kanata-apple-fm-{}-{}.toml",
-        std::process::id(),
-        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, contents).expect("config writes");
-    let result = config::load(&path);
-    let _ = std::fs::remove_file(path);
-    result.expect("apple_fm config loads")
+    load_text(&contents).expect("apple_fm config loads")
 }
 
 fn error_spec(message: &str) -> ResponseSpec {

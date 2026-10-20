@@ -2,10 +2,8 @@
 
 #[path = "support/gateway.rs"]
 mod gateway;
-
-use std::future::Future;
-use std::io::{self, Write};
-use std::sync::{Arc, Mutex};
+#[path = "support/scratch.rs"]
+mod scratch;
 
 use axum::{
     body::{Body, to_bytes},
@@ -15,18 +13,16 @@ use axum::{
 use kanata::core::ErrorKind;
 use tracing::instrument::WithSubscriber;
 
-use gateway as support;
+use gateway::{self as support, Capture};
 
 const PROMPT: &str = "SYNTHETIC_PROMPT_MARKER";
 
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
+trait AccessLine {
+    /// The single `kanata::access` line.
+    fn access_line(&self) -> String;
+}
 
-impl Capture {
-    fn text(&self) -> String {
-        String::from_utf8(self.0.lock().expect("capture lock").clone()).expect("capture utf8")
-    }
-
+impl AccessLine for Capture {
     fn access_line(&self) -> String {
         let text = self.text();
         let lines: Vec<_> = text
@@ -35,20 +31,6 @@ impl Capture {
             .collect();
         assert_eq!(lines.len(), 1, "access line count: {text}");
         lines[0].to_owned()
-    }
-}
-
-impl Write for Capture {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0
-            .lock()
-            .expect("capture lock")
-            .extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }
 

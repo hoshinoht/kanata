@@ -1,6 +1,6 @@
 use serde::{Deserialize, de::IgnoredAny};
 
-use crate::core::{ErrorKind, GatewayError};
+use crate::adapter::chat_completions::stream_wire::StrictToolDelta;
 
 use super::response::UsagePayload;
 
@@ -52,36 +52,5 @@ pub(super) struct StreamDelta {
     #[serde(default)]
     pub(super) reasoning_details: Option<serde_json::Value>,
     #[serde(default)]
-    pub(super) tool_calls: Option<Vec<ToolDelta>>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ToolDelta {
-    pub(super) index: u64,
-    #[serde(default)]
-    pub(super) id: Option<String>,
-    #[serde(rename = "type", default)]
-    pub(super) kind: Option<String>,
-    #[serde(default)]
-    pub(super) function: Option<FunctionDelta>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct FunctionDelta {
-    #[serde(default)]
-    pub(super) name: Option<String>,
-    #[serde(default)]
-    pub(super) arguments: Option<String>,
-}
-
-pub(super) fn parse(data: &str) -> Result<StreamChunk, GatewayError> {
-    serde_json::from_str(data).map_err(|_| upstream_failure())
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
+    pub(super) tool_calls: Option<Vec<StrictToolDelta>>,
 }

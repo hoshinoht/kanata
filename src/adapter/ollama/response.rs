@@ -1,16 +1,13 @@
-use std::collections::BTreeSet;
+use crate::adapter::{
+    chat_completions::response::{
+        CompletionTokensDetails, assistant_content, chat_response, parse_finish_reason, usage,
+    },
+    upstream_failure,
+};
 
 use serde::Deserialize;
 
-use crate::core::{
-    ChatContent, ChatMessage, ChatResponse, ChatRole, FinishReason, ModelAlias, ToolCall, Usage,
-};
-
-use super::super::super::core::{ErrorKind, GatewayError};
-
-const MAX_TOOL_CALLS: usize = 64;
-const MAX_TOOL_CALL_ID_BYTES: usize = 128;
-const MAX_TOOL_NAME_BYTES: usize = 64;
+use crate::core::{ChatResponse, FinishReason, GatewayError, ModelAlias, ToolCall, Usage};
 
 #[derive(Deserialize)]
 struct CompletionPayload {
@@ -53,8 +50,10 @@ struct FunctionCallPayload {
     arguments: String,
 }
 
+/// Lenient usage, in replies and on the final stream chunk; cached prompt tokens are not
+/// read.
 #[derive(Deserialize)]
-struct UsagePayload {
+pub(super) struct UsagePayload {
     prompt_tokens: u64,
     completion_tokens: u64,
     total_tokens: u64,
@@ -62,10 +61,16 @@ struct UsagePayload {
     completion_tokens_details: Option<CompletionTokensDetails>,
 }
 
-#[derive(Deserialize)]
-struct CompletionTokensDetails {
-    #[serde(default)]
-    reasoning_tokens: Option<u64>,
+impl From<UsagePayload> for Usage {
+    fn from(payload: UsagePayload) -> Self {
+        usage(
+            payload.prompt_tokens,
+            payload.completion_tokens,
+            payload.total_tokens,
+            None,
+            payload.completion_tokens_details,
+        )
+    }
 }
 
 pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatResponse, GatewayError> {
@@ -88,72 +93,36 @@ pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatRespo
         .reasoning
         .or(choice.message.reasoning_content)
         .filter(|text| !text.is_empty());
-    let mut content = Vec::new();
-    if let Some(text) = choice.message.content
-        && !text.is_empty()
-    {
-        content.push(ChatContent::Text { text });
-    }
-    let calls = choice.message.tool_calls.unwrap_or_default();
-    if calls.len() > MAX_TOOL_CALLS {
-        return Err(upstream_failure());
-    }
-    let mut ids = BTreeSet::new();
-    for call in calls {
-        if call.kind != "function"
-            || !valid_call_id(&call.id)
-            || !ids.insert(call.id.clone())
-            || !valid_tool_name(&call.function.name)
-        {
-            return Err(upstream_failure());
-        }
-        content.push(ChatContent::ToolCall {
-            call: ToolCall {
-                id: call.id,
-                name: call.function.name,
-                arguments: call.function.arguments,
-            },
+    let calls = choice
+        .message
+        .tool_calls
+        .unwrap_or_default()
+        .into_iter()
+        .map(|call| {
+            (
+                call.kind,
+                ToolCall {
+                    id: call.id,
+                    name: call.function.name,
+                    arguments: call.function.arguments,
+                },
+            )
         });
-    }
+    let (content, has_tool_calls) = assistant_content(choice.message.content, calls)?;
     if content.is_empty() && finish_reason == FinishReason::ContentFilter {
         return Err(upstream_failure());
     }
-    let has_tool_calls = content
-        .iter()
-        .any(|item| matches!(item, ChatContent::ToolCall { .. }));
     if !finish_matches_tool_calls(finish_reason, has_tool_calls) {
         return Err(upstream_failure());
     }
-    let usage = payload.usage.map(|usage| Usage {
-        input_tokens: usage.prompt_tokens,
-        output_tokens: usage.completion_tokens,
-        total_tokens: usage.total_tokens,
-        reasoning_tokens: usage
-            .completion_tokens_details
-            .and_then(|details| details.reasoning_tokens),
-        cached_input_tokens: None,
-    });
-    Ok(ChatResponse {
-        model: public_model,
-        message: ChatMessage {
-            role: ChatRole::Assistant,
-            content,
-        },
+    let usage = payload.usage.map(Usage::from);
+    Ok(chat_response(
+        public_model,
+        content,
         finish_reason,
         usage,
         reasoning,
-        reasoning_items: Vec::new(),
-    })
-}
-
-fn parse_finish_reason(value: &str) -> Result<FinishReason, GatewayError> {
-    match value {
-        "stop" => Ok(FinishReason::Stop),
-        "length" => Ok(FinishReason::Length),
-        "tool_calls" => Ok(FinishReason::ToolCalls),
-        "content_filter" => Ok(FinishReason::ContentFilter),
-        _ => Err(upstream_failure()),
-    }
+    ))
 }
 
 fn finish_matches_tool_calls(reason: FinishReason, has_tool_calls: bool) -> bool {
@@ -162,25 +131,5 @@ fn finish_matches_tool_calls(reason: FinishReason, has_tool_calls: bool) -> bool
         FinishReason::ToolCalls => has_tool_calls,
         FinishReason::Length | FinishReason::ContentFilter => true,
         FinishReason::Cancelled => false,
-    }
-}
-
-fn valid_call_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_TOOL_CALL_ID_BYTES
-        && value.bytes().all(|byte| byte.is_ascii_graphic())
-}
-
-fn valid_tool_name(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_TOOL_NAME_BYTES
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
     }
 }

@@ -4,5 +4,7 @@
 mod cases;
 #[path = "support/gateway.rs"]
 mod gateway;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "messages_contract/support.rs"]
 mod support;

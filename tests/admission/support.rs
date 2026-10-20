@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
+use crate::scratch;
+
 use std::{
     collections::VecDeque,
-    fs,
-    future::Future,
     pin::Pin,
     sync::{
         Arc, Mutex,
@@ -21,7 +21,7 @@ use futures_core::Stream;
 use kanata::{
     adapter::{Adapter, AdapterFuture, AdapterOutput},
     auth::{SecretResolutionError, SecretResolver},
-    config::{SecretReference, ValidatedConfig, load},
+    config::{SecretReference, ValidatedConfig},
     core::{
         Capabilities, ChatContent, ChatMessage, ChatResponse, ChatRole, FinishReason, GatewayError,
         ModelAlias, NormalizedEvent, Response as CoreResponse, RoutedRequest,
@@ -61,18 +61,8 @@ pub fn config_with(
         &format!("max_in_flight = {max_in_flight}"),
     );
     contents = contents.replace("queue_ms = 1000", &format!("queue_ms = {queue_ms}"));
-    let path = std::env::temp_dir().join(format!(
-        "kanata-reliability-admission-{}-{}.toml",
-        std::process::id(),
-        CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("reliability config writes");
-    let config = load(&path).expect("reliability config validates");
-    let _ = fs::remove_file(path);
-    config
+    scratch::load_valid(&contents)
 }
-
-static CONFIG_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 pub fn capabilities(config: &ValidatedConfig, id: &str) -> Capabilities {
     config
@@ -252,24 +242,30 @@ impl Adapter for PendingAdapter {
             let permit = gate.acquire_owned().await.expect("pending gate open");
             permit.forget();
             cancellation.completed = true;
-            Ok(AdapterOutput::Complete(CoreResponse::Chat(ChatResponse {
-                model: ModelAlias(model),
-                message: ChatMessage {
-                    role: ChatRole::Assistant,
-                    content: vec![ChatContent::Text { text: "ok".into() }],
-                },
-                finish_reason: FinishReason::Stop,
-                usage: None,
-                reasoning: None,
-                reasoning_items: Vec::new(),
-            })))
+            Ok(ok_chat(model))
         })
     }
 }
 
-struct CancellationGuard {
-    counter: Arc<AtomicUsize>,
-    completed: bool,
+/// A complete assistant reply of `ok` for `model`.
+pub fn ok_chat(model: String) -> AdapterOutput {
+    AdapterOutput::Complete(CoreResponse::Chat(ChatResponse {
+        model: ModelAlias(model),
+        message: ChatMessage {
+            role: ChatRole::Assistant,
+            content: vec![ChatContent::Text { text: "ok".into() }],
+        },
+        finish_reason: FinishReason::Stop,
+        usage: None,
+        reasoning: None,
+        reasoning_items: Vec::new(),
+    }))
+}
+
+/// Counts a cancellation when dropped before `completed` is set.
+pub struct CancellationGuard {
+    pub counter: Arc<AtomicUsize>,
+    pub completed: bool,
 }
 
 impl Drop for CancellationGuard {

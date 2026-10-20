@@ -3,10 +3,9 @@ use std::{
     fs, future,
     net::SocketAddr,
     os::unix::fs::PermissionsExt,
-    path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
     },
     time::Duration,
 };
@@ -32,32 +31,11 @@ use tokio_rustls::{
 
 use super::record::{Identity, Session};
 use super::*;
+use crate::adapter::auth_files::TestDir;
 
 const JWKS: &[u8] = include_bytes!("../../../../tests/fixtures/chatgpt/test-only-jwks.json");
 const PRIVATE_KEY: &[u8] = include_bytes!("../../../../tests/fixtures/chatgpt/test-only-rsa.pk8");
 const CLIENT: &str = "oaiapp_test_only";
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-struct Temp(PathBuf);
-impl Temp {
-    fn new() -> Self {
-        let path = fs::canonicalize(std::env::temp_dir())
-            .unwrap()
-            .join(format!(
-                "kanata-chatgpt-auth-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-        fs::create_dir(&path).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-        Self(path)
-    }
-}
-impl Drop for Temp {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 fn claims(nonce: &str) -> Value {
     let now = unix_now().unwrap();
@@ -238,7 +216,7 @@ impl Fixture {
             release_exchange,
         }
     }
-    fn manager(&self, directory: &Temp) -> AuthManager {
+    fn manager(&self, directory: &TestDir) -> AuthManager {
         let config = super::super::tests::config();
         AuthManager {
             store: store::Store::new(&directory.0),
@@ -394,7 +372,7 @@ fn signed_identity_requires_signature_issuer_audience_nonce_and_valid_times() {
 #[tokio::test]
 async fn signed_login_binds_pkce_callback_identity_and_persists_registration() {
     let fixture = Fixture::new().await;
-    let temp = Temp::new();
+    let temp = TestDir::new();
     let manager = fixture.manager(&temp);
     let flow = manager.begin_login("default").await.unwrap();
     let url = url::Url::parse(flow.authorization_url()).unwrap();
@@ -465,7 +443,7 @@ async fn signed_login_binds_pkce_callback_identity_and_persists_registration() {
 #[tokio::test]
 async fn refresh_is_serialized_across_instances_and_survives_caller_cancellation() {
     let fixture = Fixture::new().await;
-    let temp = Temp::new();
+    let temp = TestDir::new();
     let manager = fixture.manager(&temp);
     seed(&manager, registered(1)).await;
     fixture.pause_exchange.store(true, Ordering::SeqCst);
@@ -514,7 +492,7 @@ async fn refresh_is_serialized_across_instances_and_survives_caller_cancellation
 #[tokio::test]
 async fn declined_plan_permission_terminal_refresh_and_remote_logout_are_explicit() {
     let fixture = Fixture::new().await;
-    let temp = Temp::new();
+    let temp = TestDir::new();
     let manager = fixture.manager(&temp);
     let mut registration = registered(3600);
     registration.session.as_mut().unwrap().scopes = vec!["openid".into()];
@@ -586,7 +564,7 @@ async fn storage_and_discovery_reject_unsafe_paths_and_malformed_state() {
     ] {
         assert!(net::discovered_endpoint(value).is_err());
     }
-    let temp = Temp::new();
+    let temp = TestDir::new();
     let store = store::Store::new(&temp.0);
     let locked = store.lock().await.unwrap();
     locked.save(&State::new().unwrap()).unwrap();
@@ -598,7 +576,7 @@ async fn storage_and_discovery_reject_unsafe_paths_and_malformed_state() {
     fs::write(&path, "malformed").unwrap();
     assert!(store.lock().await.unwrap().load().is_err());
     fs::remove_file(&path).unwrap();
-    let outside = Temp::new();
+    let outside = TestDir::new();
     let target = outside.0.join("sentinel");
     fs::write(&target, "untouched").unwrap();
     std::os::unix::fs::symlink(&target, &path).unwrap();
@@ -609,7 +587,7 @@ async fn storage_and_discovery_reject_unsafe_paths_and_malformed_state() {
 #[tokio::test]
 async fn callbacks_and_returning_identity_cannot_overwrite_selected_registration() {
     let fixture = Fixture::new().await;
-    let temp = Temp::new();
+    let temp = TestDir::new();
     let manager = fixture.manager(&temp);
     let flow = manager.begin_login("new").await.unwrap();
     let url = url::Url::parse(flow.authorization_url()).unwrap();
@@ -721,7 +699,7 @@ fn token_response_requires_bounded_expiry_and_rotated_refresh_token() {
 #[tokio::test]
 async fn clock_rollback_and_earliest_refresh_time_do_not_dispatch_refresh() {
     let fixture = Fixture::new().await;
-    let temp = Temp::new();
+    let temp = TestDir::new();
     let manager = fixture.manager(&temp);
     let mut registration = registered(3600);
     registration.session.as_mut().unwrap().saved_at = unix_now().unwrap() + 100;
@@ -743,7 +721,7 @@ async fn clock_rollback_and_earliest_refresh_time_do_not_dispatch_refresh() {
 #[tokio::test]
 async fn cancelled_logout_finishes_revocation_and_preserves_recovery_until_then() {
     let fixture = Fixture::new().await;
-    let temp = Temp::new();
+    let temp = TestDir::new();
     let manager = fixture.manager(&temp);
     seed(&manager, registered(3600)).await;
     fixture.pause_exchange.store(true, Ordering::SeqCst);

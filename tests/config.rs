@@ -1,9 +1,14 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
+#[path = "support/keys.rs"]
+mod key_fixtures;
+#[path = "support/scratch.rs"]
+mod scratch;
 
-static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+use std::fs;
+use std::path::PathBuf;
+use std::process::{Command, Output};
+
+use key_fixtures::{EXAMPLE_INLINE_KEY, set_mode};
+use scratch::ScratchDir;
 
 fn example() -> String {
     fs::read_to_string("tests/fixtures/config/example.toml").expect("example exists")
@@ -15,16 +20,11 @@ fn personal_example() -> String {
 
 /// A unique directory holding `config.toml` and optionally `keys/keys.toml`, so
 /// relative `[keys]` paths never resolve to shared or live files.
-struct Scratch(PathBuf);
+struct Scratch(ScratchDir);
 
 impl Scratch {
     fn new(config: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "kanata-config-{}-{}",
-            std::process::id(),
-            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&dir).expect("scratch dir");
+        let dir = ScratchDir::new("config");
         fs::write(dir.join("config.toml"), config).expect("config writes");
         Self(dir)
     }
@@ -63,17 +63,6 @@ impl Scratch {
     }
 }
 
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn set_mode(path: &Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt as _;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("chmod");
-}
-
 fn check(contents: String) -> Result<kanata::config::ValidatedConfig, String> {
     Scratch::new(&contents).load()
 }
@@ -94,27 +83,12 @@ fn assert_only_missing_keys_warning(output: &Output) {
     assert!(stderr.contains(MISSING_KEYS_WARNING), "{stderr}");
 }
 
-const EXAMPLE_INLINE_KEY: &str = "[[application_keys]]
-id = \"personal-client\"
-secret_ref = \"env:KANATA_CLIENT_KEY\"
-owner = true
-permissions = [
-  { model_alias = \"local-chat\", operation = \"chat\" },
-  { model_alias = \"private-chat\", operation = \"chat\" },
-  { model_alias = \"private-transcribe\", operation = \"transcription\" },
-  { model_alias = \"remote-chat\", operation = \"chat\" },
-  { model_alias = \"codex-chat\", operation = \"chat\" },
-]
-";
-
 /// The schema fixture with its inline key replaced by `[keys]`.
 fn keyed_example() -> String {
-    let contents = example().replace(
-        EXAMPLE_INLINE_KEY,
+    key_fixtures::keyed_example(
         "[keys]\nfile = \"keys/keys.toml\"\nusage_dir = \"state\"\n",
-    );
-    assert!(contents.contains("[keys]"));
-    contents
+        false,
+    )
 }
 
 fn digest(byte: u8) -> String {
