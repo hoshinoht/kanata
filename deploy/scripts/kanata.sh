@@ -2,7 +2,7 @@
 # Kanata deployment helper: Docker lifecycle, config checks, sign-in and host keys.
 # Uses the repo's .env (COMPOSE_FILE, KANATA_CONFIG_FILE, ...) like `docker compose`.
 set -euo pipefail
-cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
+cd "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
 # Image tag: KANATA_IMAGE from the environment or .env, as Compose resolves it.
 IMAGE=${KANATA_IMAGE:-}
@@ -15,7 +15,7 @@ tmp=
 
 usage() {
   cat <<'EOF'
-Usage: scripts/kanata.sh <command> [args]
+Usage: deploy/scripts/kanata.sh <command> [args]
 
 Lifecycle
   build                      Build the Kanata image
@@ -29,7 +29,7 @@ Lifecycle
 Codex
   codex login|status|logout  Device-code sign-in inside the running container
 
-ChatGPT (host browser sign-in, compose.kanata.chatgpt.yml)
+ChatGPT (host browser sign-in, deploy/compose/compose.kanata.chatgpt.yml)
   chatgpt login|status|logout|models [--profile NAME]
                              Use deployed credentials; --profile for login/logout only
 
@@ -107,7 +107,7 @@ if auth is not None:
     services = json.loads(model)["services"]
     mounts = services["kanata"].get("volumes", [])
     if not any(v.get("type") == "bind" and v.get("source") == path and v.get("target") == path and not v.get("read_only", False) for v in mounts):
-        fail("ChatGPT requires compose.kanata.chatgpt.yml with KANATA_CHATGPT_STATE_DIR matching chatgpt_auth.state_dir")
+        fail("ChatGPT requires deploy/compose/compose.kanata.chatgpt.yml with KANATA_CHATGPT_STATE_DIR matching chatgpt_auth.state_dir")
     for mount in services.get("kanata-public", {}).get("volumes", []):
         for name in ("source", "target"):
             value = mount.get(name, "")
@@ -206,7 +206,7 @@ chatgpt() {
   fi
   host_kanata
   deploy_paths
-  [[ -n $chatgpt_dir ]] || die "configure [chatgpt_auth] and compose.kanata.chatgpt.yml first"
+  [[ -n $chatgpt_dir ]] || die "configure [chatgpt_auth] and deploy/compose/compose.kanata.chatgpt.yml first"
   prepare_dirs
   exec kanata auth chatgpt "$action" --config "$config" "$@"
 }
@@ -232,7 +232,7 @@ recreate_kanata() {
 codex() {
   local action=${1:-}
   case $action in login | status | logout) ;; *) die "usage: codex login|status|logout" ;; esac
-  running || die 'Kanata is not running; start it with: scripts/kanata.sh up'
+  running || die 'Kanata is not running; start it with: deploy/scripts/kanata.sh up'
   run() { docker compose exec "$@" kanata /usr/local/bin/kanata auth codex "$action" --config /etc/kanata/config.toml; }
   if [[ $action == login ]]; then
     cat <<'EOF'
@@ -254,7 +254,7 @@ key_new_legacy() {
   deprecated "key new ID OUT; use: kanata key new --config <config> --id $id --key-out $out ..."
   for arg in "$@"; do [[ $arg == --expires ]] && break; done
   [[ $arg == --expires ]] ||
-    die "--expires is required: scripts/kanata.sh key new --id $id --key-out $out $* --expires <1|3|7|13|30|60|unlimited>"
+    die "--expires is required: deploy/scripts/kanata.sh key new --id $id --key-out $out $* --expires <1|3|7|13|30|60|unlimited>"
   host_kanata
   case $(cd -- "$(dirname -- "$out")" 2>/dev/null && pwd)/ in
     "$PWD"/*) die 'write keys outside the repository (e.g. ~/.config/kanata/keys/)' ;;
@@ -295,7 +295,7 @@ print(json.dumps({"model": sys.argv[1], "from": sys.argv[2], "parameters": {"num
 
   cat <<EOF
 Created Ollama model $name ($tokens-token context, shares $model's weights).
-Add or update a route in the config, then: scripts/kanata.sh restart
+Add or update a route in the config, then: deploy/scripts/kanata.sh restart
 
 [[routes]]
 id = "ollama-$(printf '%s' "$name" | tr -c 'A-Za-z0-9\n' '-')"
@@ -434,7 +434,7 @@ owner_key_rotate() {
       *) die "usage: owner-key rotate --expires <1|3|7|13|30|60|unlimited>" ;;
     esac
   done
-  [[ -n $expires ]] || die "--expires is required: scripts/kanata.sh owner-key rotate --expires <1|3|7|13|30|60|unlimited>"
+  [[ -n $expires ]] || die "--expires is required: deploy/scripts/kanata.sh owner-key rotate --expires <1|3|7|13|30|60|unlimited>"
   host_kanata
   # Host-side key path: KANATA_OWNER_KEY_FILE from the environment or .env.
   key_file=${KANATA_OWNER_KEY_FILE:-$(sed -n 's/^KANATA_OWNER_KEY_FILE=//p' .env 2>/dev/null | tail -1)}
@@ -475,14 +475,14 @@ If you suspect a compromise, also:
   - Codex: \`codex logout\`, sign out Codex sessions in ChatGPT security settings, then \`codex login\`.
   - Cloudflare: refresh the tunnel token (replace its file, then \`up\`), and roll any
     Cloudflare API tokens used by your reverse proxy.
-  - Check \`scripts/kanata.sh logs\` for unfamiliar key ids or client IPs.
+  - Check \`deploy/scripts/kanata.sh logs\` for unfamiliar key ids or client IPs.
 EOF
 }
 
 command=${1:-help}
 [[ $# -eq 0 ]] || shift
 case $command in
-  build) docker build -t "$IMAGE" . ;;
+  build) docker build -f deploy/docker/Dockerfile -t "$IMAGE" . ;;
   check) check_config ;;
   up) check_config && docker compose up -d --no-build ;;
   down) docker compose down ;;

@@ -1,5 +1,5 @@
 # Opt-in: lets Kanata reach Ollama on the Docker host (macOS/Metal).
-#   docker compose -f compose.kanata.yml -f compose.kanata.host-ollama.yml ...
+#   docker compose -f deploy/compose/compose.kanata.yml -f deploy/compose/compose.kanata.host-ollama.yml ...
 # Point the Ollama adapter base_url at http://host.orb.internal:11434.
 # Names the host explicitly; OrbStack already lets any container reach Mac
 # services, so this is not an isolation boundary.

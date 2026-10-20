@@ -150,7 +150,7 @@ Both listeners sit on internal Docker networks; the container publishes no host 
 
 ```sh
 # 1. Build
-scripts/kanata.sh build
+deploy/scripts/kanata.sh build
 
 # 2. Configure (config/config.toml is git-ignored)
 cp config/container.example.toml config/config.toml   # edit tailnet address, adapters, routes
@@ -161,8 +161,8 @@ cargo install --locked --path .
 mkdir -p ~/.config/kanata && chmod 700 ~/.config/kanata
 kanata key new --config config/config.toml --id owner --owner --chat <alias> --expires 30 \
   --key-out ~/.config/kanata/owner-client-key
-scripts/kanata.sh up
-scripts/kanata.sh logs
+deploy/scripts/kanata.sh up
+deploy/scripts/kanata.sh logs
 ```
 
 **Next steps:**
@@ -171,14 +171,14 @@ scripts/kanata.sh logs
 | --- | --- |
 | Put your reverse proxy on `kanata_private_ingress` → `172.30.0.2:8080` | [deploy/docker](deploy/docker/README.md) |
 | Expose chosen models publicly through a Cloudflare tunnel | [deploy/cloudflared](deploy/cloudflared/README.md) |
-| Legacy Codex sign-in (deprecated) | `scripts/kanata.sh codex login` |
+| Legacy Codex sign-in (deprecated) | `deploy/scripts/kanata.sh codex login` |
 | Issue a key for someone else | `kanata key new --config config/config.toml --id alice --chat <alias> --expires 30` |
 | List, inspect, change or revoke keys | `kanata key list`, `key show`, `key edit`, `key rm` (each with `--config`); see `kanata key` |
-| Manage deployed keys in your browser | `scripts/kanata.sh portal`; see [private portal](docs/guides/private-portal.md) |
-| Sign in with ChatGPT for the private container | `scripts/kanata.sh chatgpt login`; see [Docker setup](deploy/docker/README.md#sign-in-with-chatgpt) |
+| Manage deployed keys in your browser | `deploy/scripts/kanata.sh portal`; see [private portal](docs/guides/private-portal.md) |
+| Sign in with ChatGPT for the private container | `deploy/scripts/kanata.sh chatgpt login`; see [Docker setup](deploy/docker/README.md#sign-in-with-chatgpt) |
 | Which routes are public | `kanata routes --config config/config.toml` |
 | Rotate the owner key | `kanata key rotate --owner --config config/config.toml --expires 30 --key-out ~/.config/kanata/owner-client-key` |
-| Everything else (`status`, `restart`, `check`, `down`, …) | `scripts/kanata.sh help` |
+| Everything else (`status`, `restart`, `check`, `down`, …) | `deploy/scripts/kanata.sh help` |
 | Config fields and templates | [config/README.md](config/README.md) |
 
 ## API

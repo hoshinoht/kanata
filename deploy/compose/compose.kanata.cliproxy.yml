@@ -1,8 +1,8 @@
 # Opt-in: runs CLIProxyAPI (OpenAI-compatible) in this project and lets Kanata use it over TLS.
-#   COMPOSE_FILE=...:compose.kanata.cliproxy.yml
+#   COMPOSE_FILE=...:deploy/compose/compose.kanata.cliproxy.yml
 # `cliproxy` keeps tsuna's existing config.yaml and sign-ins (CLIPROXY_CONFIG_FILE,
 # CLIPROXY_AUTH_DIR) and publishes 127.0.0.1:18317 for host clients. An nginx sidecar
-# terminates TLS with a private CA (scripts/cliproxy-tls-certs.sh) and forwards to it
+# terminates TLS with a private CA (deploy/scripts/cliproxy-tls-certs.sh) and forwards to it
 # over the internal cliproxy_upstream network. Kanata reaches only the sidecar, over
 # cliproxy_tls; the private-only `cliproxy` adapter pins that CA:
 #   kind       = "cliproxy"
@@ -78,19 +78,19 @@ services:
       - /tmp:mode=0700,uid=101,gid=101,size=16m
     volumes:
       - type: bind
-        source: ./deploy/cliproxy-tls/nginx.conf
+        source: ../cliproxy-tls/nginx.conf
         target: /etc/nginx/cliproxy.conf
         read_only: true
         bind:
           create_host_path: false
       - type: bind
-        source: "${CLIPROXY_TLS_DIR:?Set CLIPROXY_TLS_DIR to the scripts/cliproxy-tls-certs.sh output directory}/server.crt"
+        source: "${CLIPROXY_TLS_DIR:?Set CLIPROXY_TLS_DIR to the deploy/scripts/cliproxy-tls-certs.sh output directory}/server.crt"
         target: /etc/nginx/tls/server.crt
         read_only: true
         bind:
           create_host_path: false
       - type: bind
-        source: "${CLIPROXY_TLS_DIR:?Set CLIPROXY_TLS_DIR to the scripts/cliproxy-tls-certs.sh output directory}/server.key"
+        source: "${CLIPROXY_TLS_DIR:?Set CLIPROXY_TLS_DIR to the deploy/scripts/cliproxy-tls-certs.sh output directory}/server.key"
         target: /etc/nginx/tls/server.key
         read_only: true
         bind:
@@ -106,7 +106,7 @@ secrets:
   cliproxy_api_key:
     file: "${KANATA_CLIPROXY_KEY_FILE:?Set KANATA_CLIPROXY_KEY_FILE to the CLIProxyAPI client key file}"
   cliproxy_ca:
-    file: "${CLIPROXY_TLS_DIR:?Set CLIPROXY_TLS_DIR to the scripts/cliproxy-tls-certs.sh output directory}/ca.pem"
+    file: "${CLIPROXY_TLS_DIR:?Set CLIPROXY_TLS_DIR to the deploy/scripts/cliproxy-tls-certs.sh output directory}/ca.pem"
 
 networks:
   cliproxy_tls:

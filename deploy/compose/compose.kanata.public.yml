@@ -1,6 +1,6 @@
 # Opt-in public ingress: api hostname -> owner-managed Cloudflare tunnel ->
 # a separate kanata-public container. Requires [listeners.public] bind = "172.29.0.2".
-#   docker compose -f compose.kanata.yml -f compose.kanata.public.yml ...
+#   docker compose -f deploy/compose/compose.kanata.yml -f deploy/compose/compose.kanata.public.yml ...
 # Nothing is host-published; cloudflared never joins the private network.
 # The public process loads only public routes, their adapters and public keys:
 # no Codex adapter, credentials or volume, and no private listener.
@@ -52,7 +52,7 @@ services:
         target: /etc/kanata/state
         bind:
           create_host_path: false
-    # Public routes usually serve host Ollama (see compose.kanata.host-ollama.yml).
+    # Public routes usually serve host Ollama (see deploy/compose/compose.kanata.host-ollama.yml).
     extra_hosts:
       - "host.orb.internal:host-gateway"
     networks:

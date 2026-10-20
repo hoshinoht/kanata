@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Creates a private CA and a server certificate for the CLIProxyAPI TLS sidecar.
 #
-# Usage: scripts/cliproxy-tls-certs.sh [OUT_DIR]
+# Usage: deploy/scripts/cliproxy-tls-certs.sh [OUT_DIR]
 #   OUT_DIR  default ~/.config/kanata/cliproxy-tls (created 0700)
 # Env: CLIPROXY_TLS_NAMES  extra comma-separated DNS SANs (default: cliproxy-tls)
 #      CLIPROXY_TLS_DAYS   server certificate lifetime in days (default 397)

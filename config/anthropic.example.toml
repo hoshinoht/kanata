@@ -1,5 +1,5 @@
 # Claude Messages API with a Console API key: private chat routes only.
-# With Compose, add compose.kanata.anthropic.yml and set KANATA_ANTHROPIC_KEY_FILE.
+# With Compose, add deploy/compose/compose.kanata.anthropic.yml and set KANATA_ANTHROPIC_KEY_FILE.
 [listeners.client]
 bind = "127.0.0.1"
 port = 8080

@@ -91,7 +91,7 @@ The legacy Codex adapter is deprecated. Keep its implementation and credentials 
 ## Operate client access
 
 - Use the [private portal](private-portal.md) to create, rotate or revoke gateway keys and grant exact models and efforts. Provider and global selection controls stage changes until **Save changes**.
-- Run `scripts/kanata.sh chatgpt status` to inspect saved sign-in metadata and `scripts/kanata.sh chatgpt models` to fetch the account catalog. Reauthenticate with `scripts/kanata.sh chatgpt login` when needed.
+- Run `deploy/scripts/kanata.sh chatgpt status` to inspect saved sign-in metadata and `deploy/scripts/kanata.sh chatgpt models` to fetch the account catalog. Reauthenticate with `deploy/scripts/kanata.sh chatgpt login` when needed.
 - Configure ChatGPT pins from `supported_reasoning_efforts` and select the desired default for the unsuffixed route. Unsupported catalog levels cannot be configured.
 - Keep the protected ChatGPT state directory writable and mounted only in the private container. See [Docker setup](../../deploy/docker/README.md#sign-in-with-chatgpt).
 - Key edits use automatic reload. Route edits follow [configuration reload](config-reload.md); binary and mount changes require rebuilding or restarting as appropriate.

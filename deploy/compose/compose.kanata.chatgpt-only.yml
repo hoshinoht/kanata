@@ -1,4 +1,4 @@
-# Apply after compose.kanata.chatgpt.yml to detach the retained Codex credential volume.
+# Apply after deploy/compose/compose.kanata.chatgpt.yml to detach the retained Codex credential volume.
 services:
   kanata:
     volumes: !override

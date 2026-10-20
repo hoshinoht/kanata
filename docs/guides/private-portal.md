@@ -20,14 +20,14 @@ Install the current host binary, then run the helper from the deployment checkou
 
 ```sh
 cargo install --locked --path .
-scripts/kanata.sh portal
+deploy/scripts/kanata.sh portal
 # Choose another host port if 9091 is occupied:
-scripts/kanata.sh portal --port 9092
+deploy/scripts/kanata.sh portal --port 9092
 ```
 
 The helper reads the resolved Compose mounts, including `.env` and `COMPOSE_FILE`, and opens the deployed config on the host. It verifies that `KANATA_KEYS_DIR` is `<config dir>/keys`, `KANATA_STATE_DIR` is `<config dir>/state`, and `[keys]` uses `file = "keys/keys.toml"` and `usage_dir = "state"`. This makes the dashboard write the keys file mounted into the gateway and read persisted usage from its private and public state subdirectories. The gateway's read-only key mount remains in place; the host writes and the gateway reloads the file.
 
-Keep the helper running in a private terminal, open its printed loopback URL on that host, and use the login code from the terminal. The helper starts a separate foreground host process; it adds no Compose service or published port. Ctrl-C stops that process. Starting or stopping it does not restart the gateway. Check `scripts/kanata.sh status` and gateway logs to confirm deployment health and key reloads after an edit.
+Keep the helper running in a private terminal, open its printed loopback URL on that host, and use the login code from the terminal. The helper starts a separate foreground host process; it adds no Compose service or published port. Ctrl-C stops that process. Starting or stopping it does not restart the gateway. Check `deploy/scripts/kanata.sh status` and gateway logs to confirm deployment health and key reloads after an edit.
 
 The portal manages gateway keys and quotas. Set up account authentication separately with the [Sign in with ChatGPT guide](sign-in-with-chatgpt.md).
 

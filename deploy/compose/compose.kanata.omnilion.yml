@@ -1,6 +1,6 @@
 # Opt-in: hands Kanata an OmniLion API key as a Compose secret.
-#   COMPOSE_FILE=...:compose.kanata.omnilion.yml
-# Mounted into kanata-public too, so list it after compose.kanata.public.yml.
+#   COMPOSE_FILE=...:deploy/compose/compose.kanata.omnilion.yml
+# Mounted into kanata-public too, so list it after deploy/compose/compose.kanata.public.yml.
 # Point the OmniLion adapters at secret_ref = "file:/run/secrets/omnilion-api-key".
 services:
   kanata:

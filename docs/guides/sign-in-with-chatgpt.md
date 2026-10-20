@@ -38,17 +38,17 @@ Your account permissions, workspace policy and current model catalog determine w
 
 ## Docker deployment
 
-For an existing Compose deployment, use the [Docker setup](../../deploy/docker/README.md#sign-in-with-chatgpt). It adds the opt-in `compose.kanata.chatgpt.yml` overlay and a dedicated `KANATA_CHATGPT_STATE_DIR` directory. Set `[chatgpt_auth].state_dir` to the same absolute path; host browser login and the private container use one protected state store. This preserves the existing client key file, provider API-key secrets and Codex credentials.
+For an existing Compose deployment, use the [Docker setup](../../deploy/docker/README.md#sign-in-with-chatgpt). It adds the opt-in `deploy/compose/compose.kanata.chatgpt.yml` overlay and a dedicated `KANATA_CHATGPT_STATE_DIR` directory. Set `[chatgpt_auth].state_dir` to the same absolute path; host browser login and the private container use one protected state store. This preserves the existing client key file, provider API-key secrets and Codex credentials.
 
 ```sh
-scripts/kanata.sh chatgpt login
-scripts/kanata.sh chatgpt status
-scripts/kanata.sh chatgpt models
+deploy/scripts/kanata.sh chatgpt login
+deploy/scripts/kanata.sh chatgpt status
+deploy/scripts/kanata.sh chatgpt models
 # Named profile for login or logout:
-scripts/kanata.sh chatgpt login --profile work
+deploy/scripts/kanata.sh chatgpt login --profile work
 ```
 
-The callback stays on host loopback. Nothing is published through the reverse proxy or public gateway. After selecting an account model slug and adding a private route, grant its alias through `scripts/kanata.sh portal` or the key CLI. Starting the gateway does not start sign-in.
+The callback stays on host loopback. Nothing is published through the reverse proxy or public gateway. After selecting an account model slug and adding a private route, grant its alias through `deploy/scripts/kanata.sh portal` or the key CLI. Starting the gateway does not start sign-in.
 
 ## Profiles and sign-out
 

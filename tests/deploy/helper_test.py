@@ -22,9 +22,9 @@ class DeploymentHelperTests(unittest.TestCase):
         bins = self.root / "bin"
         bins.mkdir()
         self.checkout = self.root / "checkout"
-        (self.checkout / "scripts").mkdir(parents=True)
-        self.helper = self.checkout / "scripts/kanata.sh"
-        self.helper.write_text((REPO / "scripts/kanata.sh").read_text())
+        (self.checkout / "deploy/scripts").mkdir(parents=True)
+        self.helper = self.checkout / "deploy/scripts/kanata.sh"
+        self.helper.write_text((REPO / "deploy/scripts/kanata.sh").read_text())
         (bins / "docker").write_text(
             "#!/usr/bin/env python3\nimport os, sys\n"
             'assert sys.argv[1:] == ["compose", "config", "--format", "json"], sys.argv\n'
@@ -104,7 +104,7 @@ class DeploymentHelperTests(unittest.TestCase):
 
     def test_chatgpt_requires_writable_same_path_bind(self):
         self.write_config(auth=True)
-        self.assertIn("compose.kanata.chatgpt.yml", self.run_helper("chatgpt", "status", success=False))
+        self.assertIn("deploy/compose/compose.kanata.chatgpt.yml", self.run_helper("chatgpt", "status", success=False))
         volumes = self.model["services"]["kanata"]["volumes"]
         volumes.append(self.mount(self.auth_dir, "/container-only"))
         self.assertIn("matching", self.run_helper("chatgpt", "status", success=False))

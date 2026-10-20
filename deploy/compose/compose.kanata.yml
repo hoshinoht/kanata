@@ -1,10 +1,13 @@
+# Default project name; the files live in deploy/compose, so the directory name no longer fits.
+name: kanata
+
 services:
   kanata:
     image: ${KANATA_IMAGE:-kanata:test}
     pull_policy: never
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
     command: ["serve", "--config", "/etc/kanata/config.toml"]
     user: "10001:10001"
     init: false

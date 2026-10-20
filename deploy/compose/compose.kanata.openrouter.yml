@@ -1,5 +1,5 @@
 # Opt-in: hands Kanata an OpenRouter API key as a Compose secret.
-#   COMPOSE_FILE=...:compose.kanata.openrouter.yml
+#   COMPOSE_FILE=...:deploy/compose/compose.kanata.openrouter.yml
 # The key file stays on the host (e.g. 0600 in a 0700 directory); point the
 # OpenRouter adapter at secret_ref = "file:/run/secrets/openrouter-api-key".
 services:
