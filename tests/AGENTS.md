@@ -1,33 +1,19 @@
 ## Layout
-- Each `tests/<suite>.rs` is one integration test binary; run it with `cargo test --test <suite>`.
-- Larger suites keep a thin entry file that pulls in a same-named directory with `#[path = "<suite>/cases.rs"] mod cases;` plus suite-local `support.rs`. Examples: `admission`, `chat_contract`, `models_contract`, `sse_contract`, `error_contract`, `cancellation`, `shutdown`, `timeouts`, `metrics`, `redaction`, `adapter_vllm`, `adapter_openrouter`, `adapter_ollama`. Some split further (`transcription_contract` → `transcription/`, `extensions_contract` → `extensions/`).
-- Small suites are single files (`config`, `routing`, `auth`, `listeners`, `smoke`, `serve_smoke`, `codex_*`, `adapter_codex`, `access_log`).
-- Key lifecycle: `key_reload` (hot reload, expiry, revocation, public-plane narrowing), `key_usage` (usage state files), `key_cli` (host `kanata key` binary, concurrent writers, file permissions).
-- `architecture_boundaries.rs` enforces the provider-name ban described in `src/AGENTS.md`.
+- Each `tests/<suite>.rs` is one test binary (`cargo test --test <suite>`). Larger suites keep a thin entry file plus a same-named directory (`#[path = "<suite>/cases.rs"] mod cases;`, suite-local `support.rs`).
+- In-crate test helpers live in `src/test_support.rs`; unit tests stay next to the code.
 
 ## Shared helpers
-- `support/gateway.rs`: `config()` (loads the fixture), `config_with_public_routes`, `server_with`/`try_server_with` (a `TwoPlaneServer` with recording test adapters), `adapter_spec`, `capabilities`, `models_request`, `response_json`. Its `Resolver` resolves every secret to `test-key`, so requests use `Authorization: Bearer test-key`.
-- `support/mod.rs`: `run_kanata()` runs the built binary.
-- Drive a server in-process with `client_oneshot`, `public_oneshot` and `admin_oneshot` (defined on `TwoPlaneServer` in `src/server/mod.rs`). Use real sockets only for connection-level behaviour (`metrics/socket.rs`, `serve_smoke.rs`).
-- `admission/support.rs`: `pending_adapter` (a gated adapter with a dispatch probe), `failing_adapter`, `stream_adapter`, `poll_once`, and `config_with(.., edits)`.
+- `support/scratch.rs`: self-cleaning temp paths/dirs/files and config loading from text. Declare it once per binary (`#[path = "support/scratch.rs"] mod scratch;`) and reach it from support modules via `crate::scratch`; loading it twice fails clippy (`duplicate_mod`).
+- `support/gateway.rs`: fixture `config()`, `server_with` (a `TwoPlaneServer` with recording adapters from `AdapterSpec`), request/response helpers. Its resolver maps every secret to `test-key`. Prefer `AdapterSpec` over a new hand-written fake adapter.
+- `support/keys.rs` (key-file fixtures), `support/http.rs` (mock upstream request reader), `support/template.rs` (isolated example templates), `support/mod.rs` (`run_kanata()`).
+- Drive servers in-process with `client_oneshot`/`public_oneshot`/`admin_oneshot`; use real sockets only for connection-level behaviour.
 
-## Fixtures and config variants
-- `fixtures/config/example.toml` is the schema fixture every suite starts from. Make variants by string `replace` on it, write a unique temp file, `kanata::config::load` it, then delete it (`support/gateway.rs`, `tests/config.rs` `check`). Assert that the replacement actually changed the text (`assert_ne!` or `contains`).
-- Provider payloads live in `fixtures/{openai,ollama,openrouter,vllm,codex}/`, contract JSON in `fixtures/contracts/`, and Codex auth flows in `fixtures/codex_login/`, `fixtures/codex_token/`.
-- `support/template.rs` isolates example templates and explicit empty key files.
-
-`tests/config.rs` also validates the `config/*.example.toml` templates, so template edits must keep them valid.
+## Fixtures
+- `fixtures/config/example.toml` is the base config. Make variants by string replacement and assert the replacement changed the text.
+- `tests/config.rs` validates `config/*.example.toml`; template edits must keep them valid.
 
 ## Timing
-- Prefer `#[tokio::test(start_paused = true)]` with `tokio::time::advance` and `poll_once` for queue and timeout logic when no real sockets are involved. With real sockets, paused time races auto-advance; use short real timeouts instead (see `metrics/socket.rs`, which uses `BoundTwoPlaneServer::with_header_read_timeout`).
+- Without real sockets, prefer `#[tokio::test(start_paused = true)]` with `tokio::time::advance`. With real sockets, paused time races; use short real timeouts.
 
-## Live tests
-- `ollama_live.rs` and one `serve_smoke.rs` case are `#[ignore]` and need real services (local Ollama `qwen3:0.6b`; `KANATA_TEST_PUBLIC_BIND`). Run them only when asked, with `-- --ignored`.
-
-- `api_guide.rs`: exact public page exception, static page non-disclosure, CSP hashes, authenticated discovery and cache headers.
-- `uploads.rs`: upload slots, byte reservations, cancellation and phase timing. `diagnostics.rs`: native health/doctor HTTP contracts.
-- Parser mutation fuzzing is `cargo test --lib parser_mutation_smoke` (`KANATA_FUZZ_CASES` controls its bounded case count). The manual transport benchmark is the single ignored `connection_reuse_benchmark` unit test; it uses only loopback fixtures.
-
-- `guide/code.test.mjs`: run with `node --test tests/guide/code.test.mjs`; checks highlighted text preservation and code-literal escaping.
-- `guide/portal.test.mjs`: verifies grouped reasoning levels retain their exact underlying key-scope indices.
-- `deploy/helper_test.py`: run with `python3 tests/deploy/helper_test.py`; mocked Compose and host commands check deployed paths and private credential boundaries without Docker or live credentials.
+## Live and manual tests
+- `#[ignore]` tests (`ollama_live.rs`, one `serve_smoke.rs` case, the transport `connection_reuse_benchmark`) need real services or are manual; run them only when asked, with `-- --ignored`.
