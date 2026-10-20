@@ -1,5 +1,4 @@
 mod apple_fm;
-mod embeddings;
 mod request;
 mod response;
 mod stream;
@@ -211,10 +210,15 @@ impl Adapter for OllamaAdapter {
             let transport = self.transport.clone();
             let max_body_bytes = self.max_body_bytes;
             let label = UpstreamLabel::new(&self.id, self.kind.label());
-            return Box::pin(embeddings::execute(
+            return Box::pin(chat_completions::embeddings::execute::<
+                chat_completions::embeddings::List,
+                _,
+            >(
                 transport,
                 request,
                 context.route.upstream_id,
+                (),
+                None,
                 max_body_bytes,
                 label,
             ));

@@ -36,6 +36,8 @@ const FIXTURE_HOST: &str = "openrouter.fixture";
 const TOKEN: &str = "fixture-openrouter-key";
 const RESPONSE: &str = include_str!("../../../tests/fixtures/openrouter/chat-completion.json");
 
+#[path = "tests/embeddings.rs"]
+mod embeddings;
 #[path = "tests/stream.rs"]
 mod stream;
 
@@ -57,12 +59,14 @@ struct Features {
     streaming_chat: bool,
     input_images: bool,
     allows_input_images: bool,
+    embeddings: bool,
 }
 
 const STREAMING: Features = Features {
     streaming_chat: true,
     input_images: false,
     allows_input_images: false,
+    embeddings: false,
 };
 
 fn config_text(host: &str, port: u16, features: Features) -> String {
@@ -70,7 +74,9 @@ fn config_text(host: &str, port: u16, features: Features) -> String {
         streaming_chat,
         input_images,
         allows_input_images,
+        embeddings,
     } = features;
+    let operation = if embeddings { "embeddings" } else { "chat" };
     format!(
         r#"
 [listeners.client]
@@ -91,7 +97,7 @@ base_url = "https://{host}:{port}/api/v1"
 trust_zone = "external"
 secret_ref = "env:TEST_OPENROUTER_KEY"
 [adapters.capabilities]
-operations = ["chat"]
+operations = ["{operation}"]
 streaming_chat = {streaming_chat}
 function_tools = false
 input_audio = false
@@ -102,7 +108,7 @@ audio_function_tools = false
 [[routes]]
 id = "{ROUTE_ID}"
 model_alias = "{PUBLIC_MODEL}"
-operation = "chat"
+operation = "{operation}"
 adapter_id = "{ADAPTER_ID}"
 upstream_id = "{UPSTREAM_MODEL}"
 requires_streaming_chat = false
@@ -160,7 +166,16 @@ impl Client {
         content_type: &'static str,
         body: &[u8],
     ) -> (Self, JoinHandle<io::Result<RequestRecord>>) {
-        let (client, listener, acceptor) = Self::new(FIXTURE_HOST, Features::default()).await;
+        Self::responding_with(Features::default(), status, content_type, body).await
+    }
+
+    async fn responding_with(
+        features: Features,
+        status: u16,
+        content_type: &'static str,
+        body: &[u8],
+    ) -> (Self, JoinHandle<io::Result<RequestRecord>>) {
+        let (client, listener, acceptor) = Self::new(FIXTURE_HOST, features).await;
         let server = tokio::spawn(serve_response(
             listener,
             acceptor,

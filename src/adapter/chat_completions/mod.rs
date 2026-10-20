@@ -1,8 +1,9 @@
-//! OpenAI-compatible Chat Completions wire handling shared by the vLLM (and CLIProxyAPI),
-//! Ollama (and Apple FM) and OpenRouter adapters. Provider differences are explicit
-//! parameters: `request::MessageRules`, `stream_state::StreamDialect`, strict wire variants
-//! in `stream_wire`, and the per-provider response envelopes.
+//! OpenAI-compatible Chat Completions and Embeddings wire handling shared by the vLLM (and
+//! CLIProxyAPI), Ollama (and Apple FM) and OpenRouter adapters. Provider differences are
+//! explicit parameters: `request::MessageRules`, `stream_state::StreamDialect`, strict wire
+//! variants in `stream_wire`, and the per-provider response envelopes.
 
+pub(crate) mod embeddings;
 pub(crate) mod request;
 pub(crate) mod response;
 pub(crate) mod stream;

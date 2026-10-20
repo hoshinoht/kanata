@@ -203,10 +203,24 @@ impl Adapter for OpenRouterAdapter {
         let bearer_token = format!("Bearer {}", self.bearer_token);
         let label = UpstreamLabel::new(&self.id, "openrouter");
         let chat = match request {
-            Request::Speech(_) | Request::Embeddings(_) => {
+            Request::Speech(_) => {
                 return Box::pin(async {
                     Err(GatewayError::from(ErrorKind::UnsupportedOperation))
                 });
+            }
+            Request::Embeddings(embedding) => {
+                return Box::pin(chat_completions::embeddings::execute::<
+                    response::EmbeddingListPayload,
+                    _,
+                >(
+                    transport,
+                    embedding,
+                    context.route.upstream_id,
+                    request::EMBEDDING_OPTIONS,
+                    Some(CredentialHeader::authorization(bearer_token)),
+                    self.max_body_bytes,
+                    label,
+                ));
             }
             Request::Chat(chat) => chat,
             Request::Transcription(transcription) => {

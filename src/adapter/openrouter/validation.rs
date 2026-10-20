@@ -81,7 +81,7 @@ pub(super) fn validate(
 
     match request {
         Request::Speech(_) => Err(unsupported_operation()),
-        Request::Embeddings(_) => Err(unsupported_operation()),
+        Request::Embeddings(embedding) => embedding.validate().map_err(|_| invalid_request()),
         Request::Chat(chat) => {
             validate_chat(chat, binding, capabilities.function_tools, max_audio_bytes)
         }

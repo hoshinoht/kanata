@@ -92,7 +92,12 @@ pub(super) fn validate(
                 "speech_only",
             ));
         }
-        if operations.contains(&Operation::Embeddings) && adapter.kind != ProviderKind::Ollama {
+        if operations.contains(&Operation::Embeddings)
+            && !matches!(
+                adapter.kind,
+                ProviderKind::Ollama | ProviderKind::Vllm | ProviderKind::Openrouter
+            )
+        {
             return Err(ConfigError::new(
                 format!("{path}.capabilities.operations"),
                 "embeddings_unsupported_by_adapter_kind",

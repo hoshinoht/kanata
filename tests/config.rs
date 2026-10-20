@@ -1278,6 +1278,36 @@ fn apple_fm_adapters_are_local_chat_without_tools() {
 }
 
 #[test]
+fn embeddings_operation_is_limited_to_ollama_vllm_and_openrouter() {
+    let vllm = "operations = [\"chat\", \"transcription\"]";
+    let openrouter = "kind = \"openrouter\"\nbase_url = \"https://openrouter.invalid/api/v1\"\ntrust_zone = \"external\"\nsecret_ref = \"env:KANATA_OPENROUTER_TOKEN\"\n[adapters.capabilities]\noperations = [\"chat\"]";
+    let chatgpt = "kind = \"chatgpt\"\nbase_url = \"https://api.openai.com/v1\"\ntrust_zone = \"external\"\n[adapters.capabilities]\noperations = [\"chat\"]";
+    let with_embeddings = |anchor: &str| anchor.replace("\"]", "\", \"embeddings\"]");
+    for (anchor, replacement, rejected_adapter) in [
+        (vllm, with_embeddings(vllm), None),
+        (openrouter, with_embeddings(openrouter), None),
+        (
+            openrouter,
+            with_embeddings(openrouter).replace("openrouter\"", "cliproxy\""),
+            Some(2),
+        ),
+        (chatgpt, with_embeddings(chatgpt), Some(3)),
+    ] {
+        let contents = example().replacen(anchor, &replacement, 1);
+        assert_ne!(contents, example(), "{replacement}");
+        match rejected_adapter {
+            None => assert!(check(contents).is_ok(), "{replacement}"),
+            Some(index) => assert_eq!(
+                check(contents).unwrap_err(),
+                format!(
+                    "config error at adapters[{index}].capabilities.operations: embeddings_unsupported_by_adapter_kind"
+                )
+            ),
+        }
+    }
+}
+
+#[test]
 fn planes_split_listeners_routes_keys_and_chatgpt() {
     use kanata::config::{Plane, ProviderKind};
 

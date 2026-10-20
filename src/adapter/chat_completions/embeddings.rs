@@ -1,50 +1,71 @@
-use crate::adapter::{chat_completions, invalid_request, upstream_failure};
+//! OpenAI-compatible `POST embeddings` shared by Ollama, vLLM and OpenRouter. Callers validate
+//! the request first; providers pass extra body members and their response envelope.
+
+use std::sync::Arc;
+
 use http::Method;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::core::{EmbeddingRequest, EmbeddingResponse, Usage};
-
-use super::*;
-use crate::adapter::transport::{Accept, COMPLETE_RESPONSE_BYTES, Endpoint, TransportRequest};
+use crate::{
+    adapter::{
+        AdapterOutput,
+        diagnostics::UpstreamLabel,
+        transport::{
+            Accept, COMPLETE_RESPONSE_BYTES, CredentialHeader, Endpoint, Transport,
+            TransportRequest,
+        },
+        upstream_failure,
+    },
+    core::{EmbeddingRequest, EmbeddingResponse, GatewayError, Response, Usage},
+};
 
 #[derive(Serialize)]
-struct Payload<'a> {
+struct Payload<'a, E> {
     model: &'a str,
     input: &'a [String],
     encoding_format: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     dimensions: Option<usize>,
+    #[serde(flatten)]
+    extra: E,
 }
 
+/// OpenAI embedding list; unknown members are ignored.
 #[derive(Deserialize)]
-struct WireResponse {
-    object: String,
-    data: Vec<WireEmbedding>,
+pub(crate) struct List {
+    pub(crate) object: String,
+    pub(crate) data: Vec<Item>,
     #[serde(default)]
-    usage: Option<WireUsage>,
+    pub(crate) usage: Option<TokenUsage>,
 }
 
 #[derive(Deserialize)]
-struct WireEmbedding {
-    object: String,
-    index: usize,
-    embedding: Vec<f32>,
+pub(crate) struct Item {
+    pub(crate) object: String,
+    pub(crate) index: usize,
+    pub(crate) embedding: Vec<f32>,
 }
 
 #[derive(Deserialize)]
-struct WireUsage {
-    prompt_tokens: u64,
-    total_tokens: u64,
+pub(crate) struct TokenUsage {
+    pub(crate) prompt_tokens: u64,
+    pub(crate) total_tokens: u64,
 }
 
-pub(super) async fn execute(
+/// Posts `request` as `upstream` with `extra` merged into the body and decodes envelope `W`.
+pub(crate) async fn execute<W, E>(
     transport: Arc<Transport>,
     request: EmbeddingRequest,
     upstream: String,
+    extra: E,
+    credential: Option<CredentialHeader>,
     max_body_bytes: usize,
     label: UpstreamLabel,
-) -> Result<AdapterOutput, GatewayError> {
-    request.validate().map_err(|_| invalid_request())?;
+) -> Result<AdapterOutput, GatewayError>
+where
+    W: DeserializeOwned + Into<List>,
+    E: Serialize,
+{
     let outbound = TransportRequest::json(
         Method::POST,
         Endpoint::new(&["embeddings"])?,
@@ -53,19 +74,20 @@ pub(super) async fn execute(
             input: &request.input,
             encoding_format: "float",
             dimensions: request.dimensions,
+            extra,
         },
-        None,
+        credential,
         Some(Accept::Json),
         max_body_bytes,
         COMPLETE_RESPONSE_BYTES,
     )?;
-    let body = chat_completions::post_json(&transport, outbound, &label).await?;
-    let response = decode(&body, &request)?;
+    let body = super::post_json(&transport, outbound, &label).await?;
+    let wire: W = serde_json::from_slice(&body).map_err(|_| upstream_failure())?;
+    let response = decode(wire.into(), &request)?;
     Ok(AdapterOutput::Complete(Response::Embeddings(response)))
 }
 
-fn decode(bytes: &[u8], request: &EmbeddingRequest) -> Result<EmbeddingResponse, GatewayError> {
-    let mut wire: WireResponse = serde_json::from_slice(bytes).map_err(|_| upstream_failure())?;
+fn decode(mut wire: List, request: &EmbeddingRequest) -> Result<EmbeddingResponse, GatewayError> {
     if wire.object != "list" || wire.data.len() != request.input.len() {
         return Err(upstream_failure());
     }

@@ -48,6 +48,21 @@ struct ProviderOptions {
     allow_fallbacks: bool,
 }
 
+/// OpenRouter serves only the requested provider, never a fallback.
+const NO_FALLBACKS: ProviderOptions = ProviderOptions {
+    allow_fallbacks: false,
+};
+
+/// Extra `embeddings` body members.
+#[derive(Serialize)]
+pub(super) struct EmbeddingOptions {
+    provider: ProviderOptions,
+}
+
+pub(super) const EMBEDDING_OPTIONS: EmbeddingOptions = EmbeddingOptions {
+    provider: NO_FALLBACKS,
+};
+
 /// Assistant reasoning text is always replayed (OpenRouter "Preserving Reasoning":
 /// `message.reasoning`); encrypted reasoning is dropped.
 pub(super) fn encode(
@@ -71,9 +86,7 @@ pub(super) fn encode(
         tools: encode_tools(&chat.tools),
         tool_choice: optional_tool_choice(chat),
         stream,
-        provider: ProviderOptions {
-            allow_fallbacks: false,
-        },
+        provider: NO_FALLBACKS,
         response_format: chat
             .options
             .response_format
