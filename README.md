@@ -61,7 +61,7 @@ A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md
 - **Multi-modal aliases:** one alias can serve several operations, e.g. chat and transcription.
 - **Speech output:** exact speech routes convert bounded text into MP3/WAV with an explicit voice allowlist. See [speech output](docs/guides/speech-output.md).
 - **Image input:** declared chat routes accept bounded inline PNG/JPEG images with Ollama, vLLM or OpenRouter. See [image input](docs/guides/image-input.md) and the [vision template](config/vision.example.toml).
-- **Embeddings:** text or batches of up to 128 strings through Ollama, with float or base64 results. Embedding access has its own exact key scope. See the [embedding template](config/embeddings.example.toml).
+- **Embeddings:** text or batches of up to 128 strings through Ollama, vLLM or OpenRouter, with float or base64 results. Embedding access has its own exact key scope. See the [embedding template](config/embeddings.example.toml).
 - **Browser guide:** open `/v1` for public API documentation. Connect a key to see its permitted models, capabilities and examples on that listener. The page keeps the key only in memory; disconnect or navigate away to clear it. Examples include highlighted cURL, JavaScript, Python, Go and Rust, rendered in bundled Maple Mono. Use HTTPS outside localhost.
 - **Scoped listing:** `/v1/models` lists only what the caller's key may use, and each entry includes a `kanata` capability object.
 
@@ -70,8 +70,8 @@ A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md
 | Adapter | What it serves |
 | --- | --- |
 | **Ollama** | Chat with inline images, tools, structured output, sampling, reasoning controls and text embeddings |
-| **vLLM** | Text, inline-image and inline-audio chat with streaming and tools, native ASR, and transcription through audio chat; local, private or remote over HTTPS with an API key |
-| **OpenRouter** | Chat with inline images, sampling, structured output, reasoning and tools; inline-audio chat (also with tools) and speech-to-text |
+| **vLLM** | Text, inline-image and inline-audio chat with streaming and tools, native ASR, transcription through audio chat, and text embeddings; local, private or remote over HTTPS with an API key |
+| **OpenRouter** | Chat with inline images, sampling, structured output, reasoning and tools; inline-audio chat (also with tools), speech-to-text and text embeddings (no provider fallback) |
 | **Apple Foundation Models** | Apple's on-device model through macOS 27's `fm serve`: chat, streaming, JSON-schema output and sampling. 8,192-token context, no tools. Expect loose formatting; guardrail refusals return `finish_reason: "content_filter"` |
 | **ChatGPT** | Official OAuth integration for eligible ChatGPT plan usage (preview); private text and function chat, complete or streaming |
 | **CLIProxyAPI** | Private-only chat through a local [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) OpenAI endpoint (`kind = "cliproxy"`): streaming, tools and per-request or pinned reasoning effort, over loopback HTTP or HTTPS with a private CA. Never published, like ChatGPT and Anthropic |
@@ -208,12 +208,13 @@ curl https://kanata.example.com/v1/chat/completions \
     "trust_zone": "external",
     "context_tokens": null,
     "max_output_tokens": null,
-    "admission": { "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000, "adapter_max_in_flight": null }
+    "admission": { "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000, "adapter_max_in_flight": null,
+                   "in_flight": 0, "queued": 0, "adapter_in_flight": null, "breaker": "closed" }
   }
 }
 ```
 
-`context_tokens` is the route's declared context window, or `null` for the provider's full window (cloud models). For local Ollama models, see [context length](config/README.md#concepts). `max_output_tokens` is the route's declared output cap (`null` if none); a larger `max_tokens` is rejected, and omitted limits inherit the cap. `admission` shows the per-route limits from `[limits]` and `[timeouts]`, plus the backend's shared cap (`null` if uncapped), and appears only on the private listener. When a route or backend is full, Kanata answers `429 gateway_queue_full`, or `503 gateway_busy` if no slot frees up within `queue_ms`. Per-key limits answer `429 gateway_key_busy` or `429 gateway_key_rate_limited`, and a backend whose circuit breaker is open answers `503 upstream_unavailable` straight away. All of these carry `Retry-After` and are separate from an upstream `429 rate_limit_exceeded` or `504 upstream_timeout`. See [capacity](config/README.md#concepts).
+`context_tokens` is the route's declared context window, or `null` for the provider's full window (cloud models). For local Ollama models, see [context length](config/README.md#concepts). `max_output_tokens` is the route's declared output cap (`null` if none); a larger `max_tokens` is rejected, and omitted limits inherit the cap. `admission` shows the per-route limits from `[limits]` and `[timeouts]`, plus the backend's shared cap (`null` if uncapped), and a live snapshot of the route: `in_flight`, `queued`, the backend's `adapter_in_flight` (`null` if uncapped) and its circuit `breaker` (`closed`, `open` or `half_open`). It appears only on the private listener. When a route or backend is full, Kanata answers `429 gateway_queue_full`, or `503 gateway_busy` if no slot frees up within `queue_ms`. Per-key limits answer `429 gateway_key_busy` or `429 gateway_key_rate_limited`, and a backend whose circuit breaker is open answers `503 upstream_unavailable` straight away. All of these carry `Retry-After` and are separate from an upstream `429 rate_limit_exceeded` or `504 upstream_timeout`. See [capacity](config/README.md#concepts).
 
 Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you give keys to.
 

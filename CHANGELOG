@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- vLLM and OpenRouter adapters accept `operations = ["embeddings"]` (previously Ollama only) through the same `POST /v1/embeddings` bounds, validation and key scopes. OpenRouter embeddings use `https://openrouter.ai/api/v1/embeddings` with `provider.allow_fallbacks = false`. Other kinds still fail with `embeddings_unsupported_by_adapter_kind`. Verified against mock upstreams only.
+- The private `/v1/models` `kanata.admission` object adds a live snapshot of the listed route: `in_flight`, `queued`, `adapter_in_flight` (`null` without an adapter cap) and the backend circuit breaker as `breaker` (`closed`, `open` or `half_open`). The public listener's listing is unchanged and shows no load data.
+
 ## [1.0.0-beta.9] - 2026-10-20
 
 Removal of the deprecated Codex provider and inline keys, deployment files under `deploy/`, and a `rustls` security update.
