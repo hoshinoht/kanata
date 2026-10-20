@@ -1,25 +1,19 @@
+#[path = "support/keys.rs"]
+mod key_fixtures;
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sha2::{Digest, Sha256};
 
-static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+use key_fixtures::{EXAMPLE_INLINE_KEY, keyed_example};
+use scratch::ScratchDir;
 
-const EXAMPLE_INLINE_KEY: &str = "[[application_keys]]
-id = \"personal-client\"
-secret_ref = \"env:KANATA_CLIENT_KEY\"
-owner = true
-permissions = [
-  { model_alias = \"local-chat\", operation = \"chat\" },
-  { model_alias = \"private-chat\", operation = \"chat\" },
-  { model_alias = \"private-transcribe\", operation = \"transcription\" },
-  { model_alias = \"remote-chat\", operation = \"chat\" },
-  { model_alias = \"codex-chat\", operation = \"chat\" },
-]
-";
+const KEYS_SECTION: &str = "[keys]\nfile = \"keys/keys.toml\"\nusage_dir = \"state\"\n";
 
 #[test]
 fn embedding_scopes_can_be_created_removed_and_added_without_chat_access() {
@@ -273,49 +267,28 @@ fn route_explanations_follow_process_narrowing_scopes_and_expiry_without_secrets
 }
 
 /// Temp dir with a fixture-based `config.toml`; keys live in `keys/` (created by the CLI).
-struct Scratch(PathBuf);
+struct Scratch(ScratchDir);
 
 impl Scratch {
     fn new() -> Self {
-        Self::with(|config| {
-            config.replace(
-                EXAMPLE_INLINE_KEY,
-                "[keys]\nfile = \"keys/keys.toml\"\nusage_dir = \"state\"\n",
-            )
-        })
+        Self::from_config(keyed_example(KEYS_SECTION, false))
     }
 
     /// Adds a public listener with `local-chat` as the only public route.
     fn public() -> Self {
-        Self::with(|config| {
-            config
-                .replace(
-                    EXAMPLE_INLINE_KEY,
-                    "[keys]\nfile = \"keys/keys.toml\"\nusage_dir = \"state\"\n",
-                )
-                .replace(
-                    "[listeners.admin]",
-                    "[listeners.public]\nbind = \"172.30.0.3\"\nport = 8081\n\n[listeners.admin]",
-                )
-                .replace(
-                    "tailnet_addresses = [\"100.64.0.10\", \"fd7a:115c:a1e0::10\"]",
-                    "tailnet_addresses = [\"100.64.0.10\", \"fd7a:115c:a1e0::10\"]\npublic_routes = [{ model_alias = \"local-chat\", operation = \"chat\" }]",
-                )
-        })
+        Self::from_config(keyed_example(KEYS_SECTION, true))
     }
 
     fn with(edit: impl FnOnce(&str) -> String) -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "kanata-key-cli-{}-{}",
-            std::process::id(),
-            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir(&dir).expect("scratch dir");
         let example =
             fs::read_to_string("tests/fixtures/config/example.toml").expect("example config");
         let config = edit(&example);
         assert_ne!(config, example);
+        Self::from_config(config)
+    }
+
+    fn from_config(config: String) -> Self {
+        let dir = ScratchDir::new("key-cli");
         fs::write(dir.join("config.toml"), config).expect("config writes");
         Self(dir)
     }
@@ -371,12 +344,6 @@ impl Scratch {
         let output = self.key(&[&["new", "--id", id, "--expires", "7"], extra].concat());
         assert!(output.status.success(), "{}", stderr(&output));
         stdout(&output).trim_end().to_owned()
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 

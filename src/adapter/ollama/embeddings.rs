@@ -1,10 +1,11 @@
-use futures_util::StreamExt;
+use crate::adapter::{chat_completions, invalid_request, upstream_failure};
 use http::Method;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{EmbeddingRequest, EmbeddingResponse, Usage};
 
 use super::*;
+use crate::adapter::transport::{Accept, COMPLETE_RESPONSE_BYTES, Endpoint, TransportRequest};
 
 #[derive(Serialize)]
 struct Payload<'a> {
@@ -58,23 +59,7 @@ pub(super) async fn execute(
         max_body_bytes,
         COMPLETE_RESPONSE_BYTES,
     )?;
-    let mut response = transport.execute(outbound).await?;
-    if response.status != 200 {
-        label.status(response.status, &mut response.body).await;
-        return Err(status_error(response.status));
-    }
-    if !matches!(response.content_type, Some(ResponseContentType::Json)) {
-        label.content_type(response.status, response.media_type.as_deref());
-        return Err(upstream_failure());
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.body.next().await {
-        let chunk = chunk?;
-        if body.len().saturating_add(chunk.len()) > COMPLETE_RESPONSE_BYTES {
-            return Err(upstream_failure());
-        }
-        body.extend_from_slice(&chunk);
-    }
+    let body = chat_completions::post_json(&transport, outbound, &label).await?;
     let response = decode(&body, &request)?;
     Ok(AdapterOutput::Complete(Response::Embeddings(response)))
 }
@@ -101,6 +86,7 @@ fn decode(bytes: &[u8], request: &EmbeddingRequest) -> Result<EmbeddingResponse,
             output_tokens: 0,
             total_tokens: usage.total_tokens,
             reasoning_tokens: None,
+            cached_input_tokens: None,
         }),
     };
     if !response.valid_for(request) {

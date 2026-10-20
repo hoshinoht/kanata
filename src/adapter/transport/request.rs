@@ -48,7 +48,7 @@ pub(crate) enum Accept {
 
 pub(crate) struct CredentialHeader {
     pub(super) value: String,
-    chatgpt_account_id: Option<http::HeaderValue>,
+    extra_headers: Vec<(&'static str, http::HeaderValue)>,
 }
 
 impl TransportRequest {
@@ -238,7 +238,7 @@ impl CredentialHeader {
     pub(crate) fn authorization(value: String) -> Self {
         Self {
             value,
-            chatgpt_account_id: None,
+            extra_headers: Vec::new(),
         }
     }
 
@@ -246,18 +246,34 @@ impl CredentialHeader {
         value: String,
         account_id: &str,
     ) -> Result<Self, GatewayError> {
-        if account_id.trim().is_empty()
-            || account_id.len() > 4 * 1024
-            || !account_id.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
-        {
-            return Err(types::internal_error());
-        }
-        let mut account_id =
-            http::HeaderValue::from_str(account_id).map_err(|_| types::internal_error())?;
-        account_id.set_sensitive(true);
+        Self::authorization_with_headers(value, &[("chatgpt-account-id", account_id)])
+    }
+
+    /// Authorization plus fixed provider headers; values are printable ASCII up to 4 KiB.
+    pub(crate) fn authorization_with_headers(
+        value: String,
+        headers: &[(&'static str, &str)],
+    ) -> Result<Self, GatewayError> {
+        let extra_headers = headers
+            .iter()
+            .map(|(name, header_value)| {
+                if header_value.trim().is_empty()
+                    || header_value.len() > 4 * 1024
+                    || !header_value
+                        .bytes()
+                        .all(|byte| (0x20..=0x7e).contains(&byte))
+                {
+                    return Err(types::internal_error());
+                }
+                let mut header_value = http::HeaderValue::from_str(header_value)
+                    .map_err(|_| types::internal_error())?;
+                header_value.set_sensitive(true);
+                Ok((*name, header_value))
+            })
+            .collect::<Result<_, _>>()?;
         Ok(Self {
             value,
-            chatgpt_account_id: Some(account_id),
+            extra_headers,
         })
     }
 }
@@ -290,8 +306,8 @@ pub(super) fn build_request(
             http::HeaderValue::from_str(&credential.value).map_err(|_| types::internal_error())?;
         value.set_sensitive(true);
         builder = builder.header(header::AUTHORIZATION, value);
-        if let Some(account_id) = credential.chatgpt_account_id {
-            builder = builder.header("chatgpt-account-id", account_id);
+        for (name, value) in credential.extra_headers {
+            builder = builder.header(name, value);
         }
     }
     builder

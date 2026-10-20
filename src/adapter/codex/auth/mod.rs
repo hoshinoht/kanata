@@ -3,7 +3,6 @@ compile_error!("Codex credential storage is supported only on Linux and macOS");
 
 mod credential;
 mod error;
-mod file;
 mod keyring;
 mod login;
 #[allow(dead_code)]

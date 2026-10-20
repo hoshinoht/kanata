@@ -1,4 +1,4 @@
-# Private + public container template: use with compose.kanata.public.yml.
+# Private + public container template: use with deploy/compose/compose.kanata.public.yml.
 # kanata-api hostname -> owner-managed Cloudflare tunnel -> public listener on
 # the internal kanata_public_origin network. Nothing is host-published.
 [listeners.client]
@@ -28,7 +28,7 @@ state_dir = "/var/lib/kanata/codex"
 [[adapters]]
 id = "ollama-mac"
 kind = "ollama"
-# Needs compose.kanata.host-ollama.yml on macOS/OrbStack.
+# Needs deploy/compose/compose.kanata.host-ollama.yml on macOS/OrbStack.
 base_url = "http://host.orb.internal:11434/v1"
 trust_zone = "local"
 [adapters.capabilities]

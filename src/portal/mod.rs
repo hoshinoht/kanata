@@ -12,7 +12,7 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{MethodRouter, get, post};
 use axum::{Json, Router};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hyper_util::rt::{TokioIo, TokioTimer};
@@ -30,6 +30,7 @@ const BODY_LIMIT: usize = 32 * 1024;
 const SESSION_DURATION: Duration = Duration::from_secs(3600);
 const LOGIN_DURATION: Duration = Duration::from_secs(600);
 const REQUEST_DURATION: Duration = Duration::from_secs(10);
+const JAVASCRIPT: &str = "text/javascript; charset=utf-8";
 const STYLE: &str = include_str!("style.css");
 const SCRIPT: &str = include_str!("app.js");
 const ROUTE_GROUPS: &str = include_str!("route-groups.js");
@@ -176,11 +177,17 @@ impl Portal {
     fn router(self) -> Router {
         Router::new()
             .route("/", get(page))
-            .route("/app.js", get(script))
-            .route("/route-groups.js", get(route_groups))
-            .route("/style.css", get(style))
-            .route("/favicon.svg", get(favicon))
-            .route("/fonts/MapleMono-Regular.woff2", get(font))
+            .route("/app.js", asset(JAVASCRIPT, SCRIPT.as_bytes()))
+            .route(
+                "/route-groups.js",
+                asset(JAVASCRIPT, ROUTE_GROUPS.as_bytes()),
+            )
+            .route(
+                "/style.css",
+                asset("text/css; charset=utf-8", STYLE.as_bytes()),
+            )
+            .route("/favicon.svg", asset("image/svg+xml", FAVICON.as_bytes()))
+            .route("/fonts/MapleMono-Regular.woff2", asset("font/woff2", FONT))
             .route("/api/login", post(login))
             .route("/api/snapshot", post(snapshot))
             .route("/api/change", post(change))
@@ -286,26 +293,8 @@ async fn page() -> Html<String> {
             .replace("{{FONT_LICENSE}}", FONT_LICENSE),
     )
 }
-async fn script() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        SCRIPT,
-    )
-}
-async fn style() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], STYLE)
-}
-async fn route_groups() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        ROUTE_GROUPS,
-    )
-}
-async fn favicon() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "image/svg+xml")], FAVICON)
-}
-async fn font() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "font/woff2")], FONT)
+fn asset(content_type: &'static str, body: &'static [u8]) -> MethodRouter<Portal> {
+    get(move || async move { ([(header::CONTENT_TYPE, content_type)], body) })
 }
 
 #[derive(Deserialize)]

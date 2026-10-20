@@ -1,3 +1,6 @@
+#[macro_use]
+mod macros;
+
 pub mod adapter;
 mod api;
 pub mod auth;
@@ -11,6 +14,8 @@ pub mod routing;
 mod serve;
 pub mod server;
 mod telemetry;
+#[cfg(test)]
+mod test_support;
 
 pub const NAME: &str = env!("CARGO_PKG_NAME");
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -1,12 +1,13 @@
+use crate::adapter::{
+    chat_completions::{valid_call_id, valid_tool_name},
+    invalid_request, unsupported_operation,
+};
 use std::collections::BTreeSet;
 
 use crate::core::{
-    Capabilities, ChatContent, ChatRole, ErrorKind, GatewayError, Request, RoutedRequest,
-    ToolChoice, TrustZone,
+    Capabilities, ChatContent, ChatRole, GatewayError, Request, RoutedRequest, ToolChoice,
+    TrustZone,
 };
-
-const MAX_TOOL_CALL_ID_BYTES: usize = 128;
-const MAX_TOOL_NAME_BYTES: usize = 64;
 
 pub(super) fn validate(
     routed: &RoutedRequest,
@@ -74,7 +75,7 @@ fn validate_chat(chat: &crate::core::ChatRequest) -> Result<(), GatewayError> {
 
     let mut call_ids = BTreeSet::new();
     let mut outstanding_call_ids = BTreeSet::new();
-    for message in &chat.messages {
+    for message in chat.messages_without_reasoning() {
         if message.content.is_empty() {
             return Err(invalid_request());
         }
@@ -95,12 +96,9 @@ fn validate_chat(chat: &crate::core::ChatRequest) -> Result<(), GatewayError> {
                     }
                     outstanding_call_ids.insert(call.id.clone());
                 }
-                ChatContent::ToolResult { call_id, content } => {
+                ChatContent::ToolResult { call_id, .. } => {
                     result += 1;
-                    if !valid_call_id(call_id)
-                        || content.is_empty()
-                        || !outstanding_call_ids.remove(call_id)
-                    {
+                    if !valid_call_id(call_id) || !outstanding_call_ids.remove(call_id) {
                         return Err(invalid_request());
                     }
                 }
@@ -108,6 +106,7 @@ fn validate_chat(chat: &crate::core::ChatRequest) -> Result<(), GatewayError> {
                 ChatContent::InputAudio { .. } | ChatContent::InputImage { .. } => {
                     return Err(unsupported_operation());
                 }
+                ChatContent::Reasoning { .. } | ChatContent::ReasoningText { .. } => {}
             }
         }
         match message.role {
@@ -123,30 +122,4 @@ fn validate_chat(chat: &crate::core::ChatRequest) -> Result<(), GatewayError> {
         }
     }
     Ok(())
-}
-
-fn valid_call_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_TOOL_CALL_ID_BYTES
-        && value.bytes().all(|byte| byte.is_ascii_graphic())
-}
-
-fn valid_tool_name(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_TOOL_NAME_BYTES
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-}
-
-fn invalid_request() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
-    }
 }

@@ -1,15 +1,15 @@
+#[path = "support/keys.rs"]
+mod key_fixtures;
 #[path = "admission/support.rs"]
 mod pending;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/gateway.rs"]
 mod support;
 
 use std::fs;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::{
     body::{Body, Bytes},
@@ -19,55 +19,21 @@ use axum::{
 use kanata::config::{Plane, ValidatedConfig};
 use kanata::keys::reload::{KeyReloader, ReloadOutcome};
 use kanata::server::TwoPlaneServer;
-use sha2::{Digest as _, Sha256};
-use tracing_subscriber::fmt::MakeWriter;
 
-static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
-
-const EXAMPLE_INLINE_KEY: &str = "[[application_keys]]
-id = \"personal-client\"
-secret_ref = \"env:KANATA_CLIENT_KEY\"
-owner = true
-permissions = [
-  { model_alias = \"local-chat\", operation = \"chat\" },
-  { model_alias = \"private-chat\", operation = \"chat\" },
-  { model_alias = \"private-transcribe\", operation = \"transcription\" },
-  { model_alias = \"remote-chat\", operation = \"chat\" },
-  { model_alias = \"codex-chat\", operation = \"chat\" },
-]
-";
+use key_fixtures::{keyed_example, set_mode, token};
+use support::{Capture, ScratchDir};
 
 const LOCAL: &str = "{ model_alias = \"local-chat\", operation = \"chat\" }";
 const PRIVATE: &str = "{ model_alias = \"private-chat\", operation = \"chat\" }";
 const CODEX: &str = "{ model_alias = \"codex-chat\", operation = \"chat\" }";
 
 /// Temp dir with `config.toml` using `[keys] file = "keys.toml"`.
-struct Scratch(PathBuf);
+struct Scratch(ScratchDir);
 
 impl Scratch {
     fn new(public: bool, keys: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "kanata-key-reload-{}-{}",
-            std::process::id(),
-            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&dir).expect("scratch dir");
-        let example =
-            fs::read_to_string("tests/fixtures/config/example.toml").expect("example config");
-        let mut config = example.replace(EXAMPLE_INLINE_KEY, "[keys]\nfile = \"keys.toml\"\n");
-        assert_ne!(config, example);
-        if public {
-            config = config
-                .replace(
-                    "[listeners.admin]",
-                    "[listeners.public]\nbind = \"172.30.0.3\"\nport = 8081\n\n[listeners.admin]",
-                )
-                .replace(
-                    "tailnet_addresses = [\"100.64.0.10\", \"fd7a:115c:a1e0::10\"]",
-                    "tailnet_addresses = [\"100.64.0.10\", \"fd7a:115c:a1e0::10\"]\npublic_routes = [{ model_alias = \"local-chat\", operation = \"chat\" }]",
-                );
-            assert!(config.contains("public_routes"));
-        }
+        let dir = ScratchDir::new("key-reload");
+        let config = keyed_example("[keys]\nfile = \"keys.toml\"\n", public);
         fs::write(dir.join("config.toml"), config).expect("config writes");
         let scratch = Self(dir);
         scratch.write_keys(keys, 0o600);
@@ -88,29 +54,9 @@ impl Scratch {
     }
 }
 
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn set_mode(path: &Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt as _;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("chmod");
-}
-
-fn token(id: &str) -> String {
-    format!("kanata_sk_SYNTHETIC_{id}")
-}
-
 /// One `[[keys]]` record whose secret is `token(id)`; `extra` adds fields.
 fn record(id: &str, scopes: &[&str], extra: &str) -> String {
-    let digest: [u8; 32] = Sha256::digest(token(id).as_bytes()).into();
-    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!(
-        "[[keys]]\nid = \"{id}\"\ndigest = \"sha256:{hex}\"\ncreated_at = \"2026-01-01T00:00:00Z\"\npermissions = [{}]\n{extra}\n",
-        scopes.join(", ")
-    )
+    key_fixtures::record(id, &scopes.join(", "), extra)
 }
 
 fn keys(records: &[String]) -> String {
@@ -201,34 +147,6 @@ async fn reload_revokes_and_adds_keys_without_cancelling_in_flight_requests() {
     assert_eq!(probe.cancellations(), 0);
 }
 
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-
-impl Capture {
-    fn text(&self) -> String {
-        String::from_utf8(self.0.lock().expect("capture").clone()).expect("utf8")
-    }
-}
-
-impl<'a> MakeWriter<'a> for Capture {
-    type Writer = Capture;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
-impl Write for Capture {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.lock().expect("capture").extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 #[test]
 fn invalid_keys_files_are_rejected_once_and_keep_the_current_keys() {
     let alpha = record("alpha", &[LOCAL], "");
@@ -237,8 +155,9 @@ fn invalid_keys_files_are_rejected_once_and_keep_the_current_keys() {
     let (server, _) = support::server_with(&config, Vec::new());
     let handle = server.key_handle();
     let mut reloader = KeyReloader::new(config, Plane::All, handle.clone()).expect("reloader");
-    // Tracing caches callsite interest process-wide, so assert only on the
-    // rejection WARN, which no other test in this binary reaches.
+    // Tracing caches callsite interest process-wide; other tests' reloaders may
+    // register the rejection WARN first, so the cache is rebuilt once this
+    // subscriber is the thread default.
     let capture = Capture::default();
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
@@ -276,6 +195,7 @@ fn invalid_keys_files_are_rejected_once_and_keep_the_current_keys() {
         (valid.clone(), 0o620, "keys.file: insecure_permissions"),
     ];
     tracing::subscriber::with_default(subscriber, || {
+        tracing::callsite::rebuild_interest_cache();
         for (index, (contents, mode, error)) in cases.iter().enumerate() {
             scratch.write_keys(contents, *mode);
             assert_eq!(reloader.poll_once(), ReloadOutcome::Rejected, "{error}");

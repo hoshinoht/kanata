@@ -17,7 +17,7 @@ You should get an acknowledgement within a week. Fixes are released as soon as p
 
 ## In scope
 
-- Authentication bypass or key-scope escalation, including reaching Codex through the public listener.
+- Authentication bypass or key-scope escalation, including reaching a private-only provider (Codex, ChatGPT or CLIProxyAPI) through the public listener.
 - Leaking keys, tokens, prompts or bodies through logs, metrics or error responses.
 - Leaking configured model inventory through the public guide, broadening its exact unauthenticated `GET`/`HEAD /v1` and `/v1/` exception, or persisting bearer keys in its browser storage. The generic reference page is intentionally public; personalized model discovery remains authenticated.
 - Request validation or bounds bypasses that cause unbounded resource use.
@@ -35,3 +35,7 @@ You should get an acknowledgement within a week. Fixes are released as soon as p
 ## Sign in with ChatGPT
 
 The `chatgpt` provider is private-only. Its authentication commands run on the host with a loopback callback; no gateway or key-portal endpoint accepts account tokens. Protected account files must stay outside the repository. The public process drops this auth configuration and any key with its scopes. The provider pins OAuth and inference destinations, verifies ID-token signatures and identity claims, and does not retry inference. Live consent and account availability are separate from fixture verification.
+
+## CLIProxyAPI
+
+The `cliproxy` provider (a local CLIProxyAPI in front of account sign-ins) is private-only on the same terms as ChatGPT and Codex: listing one of its routes in `publication.public_routes` is a config error, and the public process loads neither the adapter, its CLIProxyAPI client key, nor any application key holding one of its scopes. It requires `trust_zone = "external"` and a `secret_ref`, sent only over HTTPS (optionally pinned with `ca_file`) or plain HTTP to a literal loopback IP. CLIProxyAPI itself, and the account credentials it holds, are operated by you and out of scope.

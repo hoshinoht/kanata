@@ -332,6 +332,20 @@ mod tests {
         (listener, address)
     }
 
+    async fn accept_tls(
+        listener: &TcpListener,
+        acceptor: &TlsAcceptor,
+    ) -> tokio_rustls::server::TlsStream<tokio::net::TcpStream> {
+        let (socket, _) = listener
+            .accept()
+            .await
+            .unwrap_or_else(|_| panic!("accepted connection"));
+        acceptor
+            .accept(socket)
+            .await
+            .unwrap_or_else(|_| panic!("verified fixture TLS"))
+    }
+
     fn client(
         certificate: CertificateDer<'static>,
         address: SocketAddr,
@@ -570,14 +584,7 @@ mod tests {
                 (path, content_type, expected_body, status, response_type, response_body),
             ) in responses.into_iter().enumerate()
             {
-                let (socket, _) = listener
-                    .accept()
-                    .await
-                    .unwrap_or_else(|_| panic!("accepted connection"));
-                let mut stream = acceptor
-                    .accept(socket)
-                    .await
-                    .unwrap_or_else(|_| panic!("verified fixture TLS"));
+                let mut stream = accept_tls(&listener, &acceptor).await;
                 let request = read_request(&mut stream).await;
                 assert_request(&request, path, content_type, &expected_body);
                 if (1..=3).contains(&index) {
@@ -629,14 +636,7 @@ mod tests {
             r#"{{"access_token":"{TEST_ACCESS_TOKEN}","refresh_token":"TEST_ONLY_ROTATED_REFRESH_TOKEN_NOT_SECRET_02","expires_in":3600}}"#
         );
         let server = tokio::spawn(async move {
-            let (socket, _) = listener
-                .accept()
-                .await
-                .unwrap_or_else(|_| panic!("accepted connection"));
-            let mut stream = acceptor
-                .accept(socket)
-                .await
-                .unwrap_or_else(|_| panic!("verified fixture TLS"));
+            let mut stream = accept_tls(&listener, &acceptor).await;
             let request = read_request(&mut stream).await;
             assert_request(&request, "/oauth/token", "application/json", &expected_body);
             write_response(
@@ -694,14 +694,7 @@ mod tests {
                 r#"{{"client_id":"{CODEX_CLIENT_ID}","grant_type":"refresh_token","refresh_token":"{TEST_REFRESH_TOKEN}"}}"#
             );
             let server = tokio::spawn(async move {
-                let (socket, _) = listener
-                    .accept()
-                    .await
-                    .unwrap_or_else(|_| panic!("accepted connection"));
-                let mut stream = acceptor
-                    .accept(socket)
-                    .await
-                    .unwrap_or_else(|_| panic!("verified fixture TLS"));
+                let mut stream = accept_tls(&listener, &acceptor).await;
                 let request = read_request(&mut stream).await;
                 assert_request(&request, "/oauth/token", "application/json", &expected_body);
                 write_response(
@@ -745,14 +738,7 @@ mod tests {
             let (acceptor, certificate) = tls_fixture(AUTH_HOST);
             let client = client(certificate, address, Duration::from_secs(5));
             let server = tokio::spawn(async move {
-                let (socket, _) = listener
-                    .accept()
-                    .await
-                    .unwrap_or_else(|_| panic!("accepted connection"));
-                let mut stream = acceptor
-                    .accept(socket)
-                    .await
-                    .unwrap_or_else(|_| panic!("verified fixture TLS"));
+                let mut stream = accept_tls(&listener, &acceptor).await;
                 let _request = read_request(&mut stream).await;
                 if truncated {
                     stream
@@ -788,14 +774,7 @@ mod tests {
         let (acceptor, certificate) = tls_fixture(AUTH_HOST);
         let client = client(certificate, address, Duration::from_millis(50));
         let server = tokio::spawn(async move {
-            let (socket, _) = listener
-                .accept()
-                .await
-                .unwrap_or_else(|_| panic!("accepted connection"));
-            let mut stream = acceptor
-                .accept(socket)
-                .await
-                .unwrap_or_else(|_| panic!("verified fixture TLS"));
+            let mut stream = accept_tls(&listener, &acceptor).await;
             let _request = read_request(&mut stream).await;
             wait_for_peer_close(&mut stream).await;
         });
@@ -817,14 +796,7 @@ mod tests {
         let client = client(certificate, address, Duration::from_secs(5));
         let (received_tx, received_rx) = oneshot::channel();
         let server = tokio::spawn(async move {
-            let (socket, _) = listener
-                .accept()
-                .await
-                .unwrap_or_else(|_| panic!("accepted connection"));
-            let mut stream = acceptor
-                .accept(socket)
-                .await
-                .unwrap_or_else(|_| panic!("verified fixture TLS"));
+            let mut stream = accept_tls(&listener, &acceptor).await;
             let _request = read_request(&mut stream).await;
             received_tx
                 .send(())

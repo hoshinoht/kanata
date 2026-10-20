@@ -1,117 +1,107 @@
-use std::{
-    collections::VecDeque,
-    pin::Pin,
-    task::{Context, Poll},
-};
+use crate::adapter::chat_completions::{stream_state::StreamDialect, stream_wire::UsagePayload};
 
-use futures_core::Stream;
+/// Chat-completions SSE from vLLM, directly or behind LiteLLM.
+pub(super) enum Vllm {}
 
-use crate::{
-    adapter::transport::{
-        ResponseBody,
-        sse::{SseFramer, SseRecord},
-    },
-    core::{ErrorKind, GatewayError, ModelAlias, NormalizedEvent},
-};
-
-use super::stream_state::StreamState;
-
-/// Chat-completions SSE from vLLM (directly or behind LiteLLM) as normalized events.
-pub(super) struct VllmStream {
-    body: Option<ResponseBody>,
-    framer: SseFramer,
-    state: StreamState,
-    pending: VecDeque<NormalizedEvent>,
-    terminal: bool,
+impl StreamDialect for Vllm {
+    type Usage = UsagePayload;
+    // LiteLLM repeats an empty choice on the trailing usage chunk.
+    const TRAILING_EMPTY_CHOICE: bool = true;
+    // Some gateways repeat the final usage in a trailing chunk.
+    const REPEATED_USAGE: bool = true;
 }
 
-impl VllmStream {
-    pub(super) fn new(body: ResponseBody, public_model: ModelAlias) -> Self {
-        Self {
-            body: Some(body),
-            framer: SseFramer::new(),
-            state: StreamState::new(public_model),
-            pending: VecDeque::new(),
-            terminal: false,
-        }
-    }
+#[cfg(test)]
+mod tests {
+    use crate::{
+        adapter::chat_completions::stream_state::StreamState,
+        core::{FinishReason, ModelAlias, NormalizedEvent, Usage},
+    };
 
-    fn fail(&mut self, error: GatewayError) -> Poll<Option<Result<NormalizedEvent, GatewayError>>> {
-        self.body.take();
-        self.pending.clear();
-        self.terminal = true;
-        Poll::Ready(Some(Err(error)))
-    }
+    use super::Vllm;
 
-    fn records(&mut self, records: Vec<SseRecord>) -> Result<(), GatewayError> {
+    const LITELLM_TOOL_STREAM: &str =
+        include_str!("../../../tests/fixtures/vllm/stream-litellm-tool-call.sse");
+    const REPEATED_USAGE_STREAM: &str =
+        include_str!("../../../tests/fixtures/vllm/stream-repeated-usage-tool-call.sse");
+
+    fn run(sse: &str) -> Result<Vec<NormalizedEvent>, crate::core::GatewayError> {
+        let mut state = StreamState::<Vllm>::new(ModelAlias("omni".into()));
         let mut events = Vec::new();
-        for record in records {
-            if self.terminal
-                || record
-                    .event
-                    .as_deref()
-                    .is_some_and(|event| event != "message")
-            {
-                return Err(upstream_failure());
+        for data in sse.lines().filter_map(|line| line.strip_prefix("data: ")) {
+            if data == "[DONE]" {
+                events.push(state.done()?);
+            } else {
+                events.extend(state.data(data)?);
             }
-            if record.data == "[DONE]" {
-                events.push(self.state.done()?);
-                self.body.take();
-                self.terminal = true;
-                break;
-            }
-            events.extend(self.state.data(&record.data)?);
         }
-        self.pending.extend(events);
-        Ok(())
+        Ok(events)
     }
-}
 
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
+    #[test]
+    fn litellm_tool_call_stream_with_trailing_usage_choice() {
+        let events = run(LITELLM_TOOL_STREAM).expect("stream");
+        let arguments: String = events
+            .iter()
+            .filter_map(|event| match event {
+                NormalizedEvent::ChatToolCallDelta {
+                    arguments_delta, ..
+                } => Some(arguments_delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(arguments, r#"{"city": "Singapore"}"#);
+        assert!(matches!(
+            events.first(),
+            Some(NormalizedEvent::ChatStarted { .. })
+        ));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            NormalizedEvent::ChatToolCallDelta { name: Some(name), .. } if name == "get_weather"
+        )));
+        assert_eq!(
+            events.last(),
+            Some(&NormalizedEvent::ChatCompleted {
+                finish_reason: FinishReason::ToolCalls,
+                usage: Some(Usage {
+                    input_tokens: 276,
+                    output_tokens: 26,
+                    total_tokens: 302,
+                    reasoning_tokens: Some(0),
+                    cached_input_tokens: None,
+                }),
+            })
+        );
     }
-}
 
-impl Stream for VllmStream {
-    type Item = Result<NormalizedEvent, GatewayError>;
+    #[test]
+    fn content_after_finish_is_rejected() {
+        let late = LITELLM_TOOL_STREAM.replace(
+            r#""choices":[{"index":0,"delta":{}}],"usage""#,
+            r#""choices":[{"index":0,"delta":{"content":"late"}}],"usage""#,
+        );
+        assert!(run(&late).is_err());
+    }
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        if let Some(event) = this.pending.pop_front() {
-            return Poll::Ready(Some(Ok(event)));
-        }
-        if this.terminal {
-            return Poll::Ready(None);
-        }
-        loop {
-            let Some(body) = this.body.as_mut() else {
-                return this.fail(upstream_failure());
-            };
-            match body.as_mut().poll_next(cx) {
-                Poll::Ready(Some(Ok(bytes))) => match this.framer.feed(&bytes) {
-                    Ok(records) => {
-                        if let Err(error) = this.records(records) {
-                            return this.fail(error);
-                        }
-                        if let Some(event) = this.pending.pop_front() {
-                            return Poll::Ready(Some(Ok(event)));
-                        }
-                        if this.terminal {
-                            return Poll::Ready(None);
-                        }
-                    }
-                    Err(error) => return this.fail(error),
-                },
-                Poll::Ready(Some(Err(error))) => return this.fail(error),
-                Poll::Ready(None) => {
-                    if let Err(error) = this.framer.finish() {
-                        return this.fail(error);
-                    }
-                    return this.fail(this.state.eof());
-                }
-                Poll::Pending => return Poll::Pending,
-            }
-        }
+    #[test]
+    fn identical_repeated_usage_is_accepted_and_a_conflicting_one_is_not() {
+        let events = run(REPEATED_USAGE_STREAM).expect("stream");
+        assert!(matches!(
+            events.last(),
+            Some(NormalizedEvent::ChatCompleted {
+                finish_reason: FinishReason::ToolCalls,
+                usage: Some(Usage {
+                    input_tokens: 507,
+                    output_tokens: 61,
+                    ..
+                }),
+            })
+        ));
+        let conflicting = REPEATED_USAGE_STREAM.replacen(
+            r#""choices":[],"usage":{"prompt_tokens":507"#,
+            r#""choices":[],"usage":{"prompt_tokens":508"#,
+            1,
+        );
+        assert!(run(&conflicting).is_err());
     }
 }

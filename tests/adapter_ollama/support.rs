@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
-use std::{
-    collections::BTreeMap,
-    fs,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+#[path = "../support/http.rs"]
+mod http_mock;
+use crate::scratch;
+
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use axum::body::Body;
@@ -23,11 +23,16 @@ use kanata::{
     server::TwoPlaneServer,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
     sync::oneshot,
     task::JoinHandle,
 };
+
+use http_mock::wait_for_eof;
+pub use http_mock::{RequestRecord, read_request};
+#[allow(unused_imports)]
+pub use scratch::load_text;
 
 pub const TEXT_RESPONSE: &str = include_str!("../fixtures/ollama/chat-text-response.json");
 pub const TOOLS_RESPONSE: &str = include_str!("../fixtures/ollama/chat-tools-response.json");
@@ -36,21 +41,12 @@ pub const SEPARATE_USAGE_STREAM: &str =
     include_str!("../fixtures/ollama/chat-stream-text-separate-usage.sse");
 pub const TOOLS_STREAM: &str = include_str!("../fixtures/ollama/chat-stream-tools.sse");
 
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
-
 pub struct Resolver;
 
 impl SecretResolver for Resolver {
     fn resolve(&self, _: &config::SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
         Ok(b"test-key".to_vec())
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct RequestRecord {
-    pub path: String,
-    pub headers: BTreeMap<String, String>,
-    pub body: Vec<u8>,
 }
 
 pub struct MockServer {
@@ -243,12 +239,7 @@ pub fn config_for_with_timeouts(
     if let Some(idle_ms) = idle_ms {
         contents = contents.replacen("idle_ms = 30000", &format!("idle_ms = {idle_ms}"), 1);
     }
-    let id = NEXT_CONFIG.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("kanata-ollama-{id}.toml"));
-    fs::write(&path, contents).unwrap_or_else(|_| panic!("write config"));
-    let result = config::load(&path).unwrap_or_else(|_| panic!("load config"));
-    let _ = fs::remove_file(path);
-    result
+    scratch::load_text(&contents).unwrap_or_else(|_| panic!("load config"))
 }
 
 pub fn adapter(config: &ValidatedConfig) -> OllamaAdapter {
@@ -287,6 +278,8 @@ pub fn text_request_with_stream(stream: bool) -> CoreRequest {
         stream,
         extensions: Default::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     })
 }
 
@@ -327,6 +320,8 @@ pub fn tool_request(choice: ToolChoice) -> CoreRequest {
         stream: false,
         extensions: Default::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     })
 }
 
@@ -369,75 +364,6 @@ pub async fn api_request(server: &TwoPlaneServer, body: &str) -> axum::response:
         .unwrap_or_else(|_| panic!("api response"))
 }
 
-pub async fn read_request(socket: &mut TcpStream) -> std::io::Result<RequestRecord> {
-    let mut bytes = Vec::new();
-    let head_end;
-    loop {
-        let mut chunk = [0_u8; 1024];
-        let count = socket.read(&mut chunk).await?;
-        if count == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "headers",
-            ));
-        }
-        bytes.extend_from_slice(&chunk[..count]);
-        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            head_end = index + 4;
-            break;
-        }
-        if bytes.len() > 64 * 1024 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "headers",
-            ));
-        }
-    }
-    let head = std::str::from_utf8(&bytes[..head_end - 4])
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "headers"))?;
-    let mut lines = head.split("\r\n");
-    let request_line = lines
-        .next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "request line"))?;
-    let path = request_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "path"))?
-        .to_owned();
-    let mut headers = BTreeMap::new();
-    for line in lines {
-        let Some((name, value)) = line.split_once(':') else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "header",
-            ));
-        };
-        headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
-    }
-    let length = headers
-        .get("content-length")
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "length"))?
-        .parse::<usize>()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "length"))?;
-    let mut body = bytes.split_off(head_end);
-    if body.len() > length {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "body"));
-    }
-    let already_read = body.len();
-    body.resize(length, 0);
-    if already_read < length {
-        socket
-            .read_exact(&mut body[already_read..])
-            .await
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "body"))?;
-    }
-    Ok(RequestRecord {
-        path,
-        headers,
-        body,
-    })
-}
-
 async fn write_response(
     socket: &mut TcpStream,
     spec: &ResponseSpec,
@@ -476,11 +402,6 @@ async fn write_response(
         }
         Ok(())
     }
-}
-
-async fn wait_for_eof(socket: &mut TcpStream) {
-    let mut buffer = [0_u8; 1024];
-    while socket.read(&mut buffer).await.unwrap_or(0) != 0 {}
 }
 
 pub fn route_identity() -> RouteIdentity {

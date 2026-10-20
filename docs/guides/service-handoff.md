@@ -18,7 +18,7 @@ Keep your existing Kanata base URL and bearer key. Refresh authenticated `GET /v
 
 This is an illustrative partial entry. The array contains configured, bound reasoning levels accessible to **the requesting key**. Different keys can see different arrays. Discovery describes route access; it does not establish backend health or live model availability.
 
-Services with a model picker should display one model and a separate effort selector. A label such as `GPT-6-Luna` is for display; send the exact advertised ID `gpt-6-luna`. Populate the selector from `kanata.reasoning_efforts` when `reasoning_control` is true. Some ordinary providers advertise `null` for their effort list; that means there is no enumerated list, rather than a list to invent from model names.
+Services with a model picker should display one model and a separate effort selector. A label such as `GPT-6-Luna` is for display; send the exact advertised ID `gpt-6-luna`. Populate the selector from `kanata.reasoning_efforts` when `reasoning_control` is true. This applies equally to account providers and to operator-configured effort families on vLLM, Ollama, OpenRouter or CLIProxyAPI routes (for example Claude through CLIProxyAPI). Ordinary routes without a family advertise `null` (or the provider's fixed list); `null` means there is no enumerated list, rather than a list to invent from model names.
 
 ### Chat completions
 
@@ -55,7 +55,13 @@ Use the nested effort field on `POST /v1/responses`:
 }
 ```
 
-Send full conversation history. Stored responses and reasoning summaries remain unsupported. See [Responses](responses.md) for the supported subset and terminal streaming events.
+Send full conversation history. Stored responses remain unsupported. Private routes can return operator-enabled reasoning summaries; see [Responses](responses.md) for output items, replay rules and streaming events.
+
+### Reasoning summaries for debugging
+
+Operators can enable summaries on private ChatGPT and Codex routes with `reasoning_summary = "auto"`, `"concise"` or `"detailed"`. Clients keep their request shape; `reasoning.summary` is not accepted. Chat completions return optional `message.reasoning_content`, and streams use `delta.reasoning_content`. Responses returns `type: "reasoning"` output items with `summary_text` parts and typed summary events. Replayed summary-only items are accepted and discarded; preserve the actual message and tool history because summaries do not become conversation context.
+
+Treat missing summary text as “No reasoning summary was returned for this request.” Keep missing token counts distinct from a reported `0`: requesting a summary or selecting an effort does not guarantee reasoning tokens. Raw internal reasoning and encrypted reasoning are not exposed for ChatGPT or Codex.
 
 ### Compatibility and errors
 
@@ -70,7 +76,7 @@ Send full conversation history. Stored responses and reasoning summaries remain 
 
 Configure the account provider using [Sign in with ChatGPT](sign-in-with-chatgpt.md), then add explicit private routes and grant their exact aliases to service keys. The account catalog does not create routes or permissions. Confirm inference with the selected account and model before relying on a route.
 
-Services continue to use gateway bearer keys. Account OAuth credentials stay on the Kanata host. ChatGPT and Codex routes are private-only; adding one of their scopes makes the entire key unavailable on the public listener. Use a separate key for public access.
+Services continue to use gateway bearer keys. Account OAuth credentials stay on the Kanata host. ChatGPT, Codex and CLIProxyAPI routes are private-only; adding one of their scopes makes the entire key unavailable on the public listener. Use a separate key for public access.
 
 The portal displays the configured upstream name and its API alias. For example, a route may display **GPT-6-Luna** with `API alias: chatgpt-luna`. Send the alias returned by authenticated discovery. Model and effort availability depend on the configured routes, key grants and upstream account.
 
@@ -78,14 +84,14 @@ The portal displays the configured upstream name and its API alias. For example,
 
 Operators can preserve each existing alias, operation and key grant while changing its provider. Clients can keep their URL, bearer key and model ID when the replacement supports the same request fields. Refresh authenticated discovery after the switch because supported reasoning levels and capabilities may change. Inference uses the selected ChatGPT account's plan usage and authentication.
 
-For configuration changes, replace `codex_reasoning_effort` with `reasoning_effort`, explicitly pin formerly unpinned Codex defaults to `medium`, and remove Codex summary options. Enable adapter `reasoning_control` for selectable families. Routes in a family must share the same adapter, upstream, policies and capabilities; only their effort pin differs. Validation rejects incompatible mappings with `inconsistent_reasoning_family`.
+For configuration changes, replace `codex_reasoning_effort` with `reasoning_effort`, explicitly pin formerly unpinned Codex defaults to `medium`, and replace any legacy `codex_reasoning_summary` with `reasoning_summary` using the same value. Enable adapter `reasoning_control` for selectable families. Routes in a family must share the same adapter, upstream, policies and capabilities; only their effort pin differs. Validation rejects incompatible mappings with `inconsistent_reasoning_family`.
 
-Keep the experimental Codex implementation and credentials if restoration is needed. Follow the [Docker migration and restoration procedure](../../deploy/docker/README.md#retire-the-experimental-codex-provider) to detach its credential volume and restore it later. Keep protected configuration backups outside version control. There is no automatic provider fallback.
+The legacy Codex adapter is deprecated. Keep its implementation and credentials if restoration is needed. Follow the [Docker migration and restoration procedure](../../deploy/docker/README.md#retire-the-experimental-codex-provider) to detach its credential volume and restore it later. Keep protected configuration backups outside version control. There is no automatic provider fallback.
 
 ## Operate client access
 
 - Use the [private portal](private-portal.md) to create, rotate or revoke gateway keys and grant exact models and efforts. Provider and global selection controls stage changes until **Save changes**.
-- Run `scripts/kanata.sh chatgpt status` to inspect saved sign-in metadata and `scripts/kanata.sh chatgpt models` to fetch the account catalog. Reauthenticate with `scripts/kanata.sh chatgpt login` when needed.
+- Run `deploy/scripts/kanata.sh chatgpt status` to inspect saved sign-in metadata and `deploy/scripts/kanata.sh chatgpt models` to fetch the account catalog. Reauthenticate with `deploy/scripts/kanata.sh chatgpt login` when needed.
 - Configure ChatGPT pins from `supported_reasoning_efforts` and select the desired default for the unsuffixed route. Unsupported catalog levels cannot be configured.
 - Keep the protected ChatGPT state directory writable and mounted only in the private container. See [Docker setup](../../deploy/docker/README.md#sign-in-with-chatgpt).
 - Key edits use automatic reload. Route edits follow [configuration reload](config-reload.md); binary and mount changes require rebuilding or restarting as appropriate.

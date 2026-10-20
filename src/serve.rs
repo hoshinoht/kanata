@@ -21,10 +21,8 @@ where
         + Sync
         + 'static,
 {
-    let full_config = config::load(&config_path).map_err(|error| error.to_string())?;
-    let config = full_config
-        .for_plane(plane)
-        .map_err(|error| error.to_string())?;
+    let (full_config, config) =
+        config::load_plane(&config_path, plane).map_err(|error| error.to_string())?;
     crate::telemetry::logging::install(config.logging());
     for warning in config.key_warnings(crate::keys::time::now()) {
         tracing::warn!(target: "kanata::keys", "{warning}");

@@ -229,9 +229,7 @@ mod tests {
         fail(&breaker);
         tokio::time::advance(Duration::from_millis(1_000)).await;
         let probe = breaker.admit().expect("probe").expect("ticket");
-        let rejected: Result<(), GatewayError> = Err(GatewayError {
-            kind: ErrorKind::InvalidRequest,
-        });
+        let rejected: Result<(), GatewayError> = Err(GatewayError::from(ErrorKind::InvalidRequest));
         probe.record(Outcome::of(&rejected));
         assert!(breaker.is_open());
         assert!(breaker.admit().is_ok(), "the next request probes instead");

@@ -1,5 +1,8 @@
 mod encoding;
 pub(super) mod state;
+pub(super) mod typed;
+
+use std::time::Duration;
 
 use crate::adapter::EventStream;
 use crate::core::{ModelAlias, NormalizedEvent, TimeoutPhase};
@@ -20,9 +23,26 @@ pub(super) struct StreamOutput {
     pub(super) expose_reasoning: bool,
 }
 
+/// What a committed stream body owns until its terminal frame.
 pub(super) struct StreamLifetime {
     pub(super) permit: AdmissionPermit,
     pub(super) observer: Option<Observer>,
+    /// Maximum body silence before a keepalive frame.
+    pub(super) keepalive: Duration,
+}
+
+impl StreamLifetime {
+    pub(super) fn new(
+        permit: AdmissionPermit,
+        observer: Option<Observer>,
+        keepalive_ms: u64,
+    ) -> Self {
+        Self {
+            permit,
+            observer,
+            keepalive: Duration::from_millis(keepalive_ms),
+        }
+    }
 }
 
 pub(super) async fn stream_response(
@@ -34,7 +54,11 @@ pub(super) async fn stream_response(
     idle_ms: u64,
     lifetime: StreamLifetime,
 ) -> Response {
-    let StreamLifetime { permit, observer } = lifetime;
+    let StreamLifetime {
+        permit,
+        observer,
+        keepalive,
+    } = lifetime;
     let timeout = StreamTimeout::new(deadline, first_byte_ms, idle_ms);
     match timeout.first(&mut events).await {
         Err(error) => return gateway_error_observed(error, observer.as_ref()),
@@ -58,7 +82,7 @@ pub(super) async fn stream_response(
         timeout,
         observer,
     );
-    let body = lifecycle::stream_body(state, permit);
+    let body = lifecycle::stream_body(state, permit, keepalive);
     (
         [
             (header::CONTENT_TYPE, "text/event-stream"),

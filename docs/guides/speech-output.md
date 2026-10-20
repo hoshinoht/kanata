@@ -31,7 +31,7 @@ speech_formats = ["mp3", "wav"]
 
 Each speech route requires nonempty `speech_voices` and `speech_formats` allowlists. Voice IDs use up to 64 ASCII letters, digits, underscores or hyphens; at most 128 voices can be listed. Voice blends, user-supplied voice files and per-request aliases are unsupported. These fields are rejected on other operations.
 
-Local and private-network upstreams may use unauthenticated HTTP. An external upstream requires HTTPS and `secret_ref`; any upstream with credentials requires HTTPS. Credentials are resolved through the existing secret resolver. Requests use the pinned shared transport, without redirects, retries or fallback models.
+Local and private-network upstreams may use unauthenticated HTTP. An external upstream requires HTTPS and `secret_ref`; any upstream with credentials requires HTTPS. The only exception to both rules is plain HTTP to a literal loopback IP (`127.0.0.0/8` or `[::1]`); hostnames such as `localhost` still require HTTPS. Credentials are resolved through the existing secret resolver. Requests use the pinned shared transport, without redirects, retries or fallback models.
 
 Create a scoped key:
 

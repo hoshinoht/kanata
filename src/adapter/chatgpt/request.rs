@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 pub(super) struct RouteBinding {
     identity: RouteIdentity,
     effort: Option<crate::core::ReasoningEffort>,
+    summary: Option<crate::config::ReasoningSummary>,
 }
 
 impl RouteBinding {
@@ -15,6 +16,7 @@ impl RouteBinding {
         Self {
             identity: route.identity().clone(),
             effort: route.reasoning_effort(),
+            summary: route.reasoning_summary(),
         }
     }
 }
@@ -53,12 +55,21 @@ pub(super) fn encode(
     {
         return Err(invalid());
     }
-    let mut payload = crate::adapter::codex::protocol::to_text_request(routed)?;
+    let mut payload = crate::adapter::codex::protocol::to_text_request(
+        routed,
+        crate::config::ProviderKind::Chatgpt,
+    )?;
     if let Some(effort) = binding.effort {
         if !capabilities.reasoning_control {
             return Err(invalid());
         }
         payload["reasoning"] = json!({"effort":effort});
+    }
+    if let Some(summary) = binding.summary {
+        if payload.get("reasoning").is_none() {
+            payload["reasoning"] = json!({});
+        }
+        payload["reasoning"]["summary"] = json!(summary.as_str());
     }
     if let Some(tools) = payload.get_mut("tools") {
         let mut functions = tools.take();

@@ -2,7 +2,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const SECONDS_PER_DAY: u64 = 86_400;
+pub const SECONDS_PER_DAY: u64 = 86_400;
 
 /// Current unix time in seconds; clocks before 1970 read as 0.
 pub fn now() -> u64 {

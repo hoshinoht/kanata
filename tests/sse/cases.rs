@@ -47,6 +47,7 @@ fn usage() -> Usage {
         output_tokens: 7,
         total_tokens: 18,
         reasoning_tokens: None,
+        cached_input_tokens: None,
     }
 }
 

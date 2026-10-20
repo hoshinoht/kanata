@@ -1,9 +1,14 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
+#[path = "support/keys.rs"]
+mod key_fixtures;
+#[path = "support/scratch.rs"]
+mod scratch;
 
-static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+use std::fs;
+use std::path::PathBuf;
+use std::process::{Command, Output};
+
+use key_fixtures::{EXAMPLE_INLINE_KEY, set_mode};
+use scratch::ScratchDir;
 
 fn example() -> String {
     fs::read_to_string("tests/fixtures/config/example.toml").expect("example exists")
@@ -15,16 +20,11 @@ fn personal_example() -> String {
 
 /// A unique directory holding `config.toml` and optionally `keys/keys.toml`, so
 /// relative `[keys]` paths never resolve to shared or live files.
-struct Scratch(PathBuf);
+struct Scratch(ScratchDir);
 
 impl Scratch {
     fn new(config: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "kanata-config-{}-{}",
-            std::process::id(),
-            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&dir).expect("scratch dir");
+        let dir = ScratchDir::new("config");
         fs::write(dir.join("config.toml"), config).expect("config writes");
         Self(dir)
     }
@@ -63,17 +63,6 @@ impl Scratch {
     }
 }
 
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn set_mode(path: &Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt as _;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("chmod");
-}
-
 fn check(contents: String) -> Result<kanata::config::ValidatedConfig, String> {
     Scratch::new(&contents).load()
 }
@@ -94,27 +83,12 @@ fn assert_only_missing_keys_warning(output: &Output) {
     assert!(stderr.contains(MISSING_KEYS_WARNING), "{stderr}");
 }
 
-const EXAMPLE_INLINE_KEY: &str = "[[application_keys]]
-id = \"personal-client\"
-secret_ref = \"env:KANATA_CLIENT_KEY\"
-owner = true
-permissions = [
-  { model_alias = \"local-chat\", operation = \"chat\" },
-  { model_alias = \"private-chat\", operation = \"chat\" },
-  { model_alias = \"private-transcribe\", operation = \"transcription\" },
-  { model_alias = \"remote-chat\", operation = \"chat\" },
-  { model_alias = \"codex-chat\", operation = \"chat\" },
-]
-";
-
 /// The schema fixture with its inline key replaced by `[keys]`.
 fn keyed_example() -> String {
-    let contents = example().replace(
-        EXAMPLE_INLINE_KEY,
+    key_fixtures::keyed_example(
         "[keys]\nfile = \"keys/keys.toml\"\nusage_dir = \"state\"\n",
-    );
-    assert!(contents.contains("[keys]"));
-    contents
+        false,
+    )
 }
 
 fn digest(byte: u8) -> String {
@@ -505,6 +479,38 @@ fn external_vllm_requires_a_secret_over_https_and_thinking_is_vllm_only() {
 }
 
 #[test]
+fn only_loopback_ip_http_upstreams_may_carry_credentials_or_be_external() {
+    let private = "base_url = \"http://vllm.invalid:8000\"\ntrust_zone = \"private_network\"";
+    for base_url in ["http://127.0.0.1:18317/v1", "http://[::1]:18317/v1"] {
+        check(example().replace(
+            private,
+            &format!("base_url = \"{base_url}\"\ntrust_zone = \"external\"\nsecret_ref = \"env:KANATA_VLLM_KEY\""),
+        ))
+        .unwrap_or_else(|error| panic!("{base_url} rejected: {error}"));
+    }
+    for base_url in [
+        "http://localhost:18317/v1",
+        "http://192.168.1.10:18317/v1",
+        "http://example.com/v1",
+    ] {
+        for settings in [
+            "trust_zone = \"external\"\nsecret_ref = \"env:KANATA_VLLM_KEY\"",
+            "trust_zone = \"external\"",
+            "trust_zone = \"private_network\"\nsecret_ref = \"env:KANATA_VLLM_KEY\"",
+        ] {
+            assert_eq!(
+                check(
+                    example().replace(private, &format!("base_url = \"{base_url}\"\n{settings}"),)
+                )
+                .unwrap_err(),
+                "config error at adapters[1].base_url: https_required",
+                "{base_url} with {settings}"
+            );
+        }
+    }
+}
+
+#[test]
 fn audio_capability_flags_require_their_text_and_audio_prerequisites() {
     let streaming = check(example().replace(
         "function_tools = true\n\n[[adapters]]\nid = \"openrouter-remote\"",
@@ -553,13 +559,19 @@ fn chat_option_capabilities_are_limited_to_what_each_adapter_kind_encodes() {
     ))
     .expect("codex may declare reasoning control");
 
-    let vllm = check(example().replace(
+    let vllm_reasoning = example().replace(
         "function_tools = true\n\n[[adapters]]\nid = \"openrouter-remote\"",
         "function_tools = true\nreasoning_control = true\n\n[[adapters]]\nid = \"openrouter-remote\"",
+    );
+    check(vllm_reasoning.clone()).expect("vllm may declare reasoning control");
+    // The client's effort replaces the route's chat-template thinking switch.
+    let vllm_both = check(vllm_reasoning.replace(
+        "upstream_id = \"meta-llama/Meta-Llama-3.1-8B-Instruct\"\n",
+        "upstream_id = \"meta-llama/Meta-Llama-3.1-8B-Instruct\"\nenable_thinking = false\n",
     ));
     assert_eq!(
-        vllm.unwrap_err(),
-        "config error at adapters[1].capabilities.reasoning_control: unsupported_by_adapter_kind"
+        vllm_both.unwrap_err(),
+        "config error at routes[1].enable_thinking: conflicts_with_reasoning_control"
     );
 }
 
@@ -701,6 +713,35 @@ fn timeout_bounds_are_finite_and_field_specific() {
             );
         }
     }
+}
+
+#[test]
+fn sse_keepalive_defaults_and_is_bounded_by_overall() {
+    let keepalive = |line: &str| {
+        check(example().replace("overall_ms = 60000", &format!("overall_ms = 60000\n{line}")))
+    };
+    let default = check(example()).expect("default keepalive");
+    assert_eq!(default.timeouts().sse_keepalive_ms(), 15_000);
+    // An unset keepalive never makes an otherwise valid short-overall config invalid.
+    let short_overall = check(
+        example()
+            .replace("first_byte_ms = 15000", "first_byte_ms = 8000")
+            .replace("idle_ms = 30000", "idle_ms = 8000")
+            .replace("headers_ms = 10000", "headers_ms = 8000")
+            .replace("overall_ms = 60000", "overall_ms = 8000"),
+    )
+    .expect("default keepalive under a short overall cap");
+    assert_eq!(short_overall.timeouts().sse_keepalive_ms(), 8_000);
+    let explicit = keepalive("sse_keepalive_ms = 60000").expect("keepalive at overall");
+    assert_eq!(explicit.timeouts().sse_keepalive_ms(), 60_000);
+    assert_eq!(
+        keepalive("sse_keepalive_ms = 0").unwrap_err(),
+        "config error at timeouts.sse_keepalive_ms: zero"
+    );
+    assert_eq!(
+        keepalive("sse_keepalive_ms = 60001").unwrap_err(),
+        "config error at timeouts.sse_keepalive_ms: timeout_too_large"
+    );
 }
 
 fn timeout_fixture(field: &str, default: u64, value: u64) -> String {

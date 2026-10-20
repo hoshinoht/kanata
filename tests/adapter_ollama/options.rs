@@ -1,8 +1,6 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use kanata::{
     adapter::Adapter,
-    config::{self, ValidatedConfig},
+    config::ValidatedConfig,
     core::{
         ChatOptions, JsonSchemaFormat, ReasoningEffort, Request as CoreRequest, ResponseFormat,
         SamplingOptions, Temperature, TopP,
@@ -10,10 +8,11 @@ use kanata::{
 };
 use serde_json::{Value, json};
 
-use crate::support::{MockServer, ResponseSpec, TEXT_RESPONSE, adapter, routed, text_request};
+use crate::support::{
+    MockServer, ResponseSpec, TEXT_RESPONSE, adapter, load_text, routed, text_request,
+};
 
 const OPTIONS_REQUEST: &str = include_str!("../fixtures/ollama/chat-options-request.json");
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
 
 fn options_config(address: &str) -> ValidatedConfig {
     let contents = include_str!("../fixtures/config/example.toml")
@@ -26,15 +25,7 @@ fn options_config(address: &str) -> ValidatedConfig {
             "function_tools = true\nstructured_output = true\nsampling_controls = true\nreasoning_control = true\n",
             1,
         );
-    let path = std::env::temp_dir().join(format!(
-        "kanata-ollama-options-{}-{}.toml",
-        std::process::id(),
-        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, contents).expect("config writes");
-    let result = config::load(&path);
-    let _ = std::fs::remove_file(path);
-    result.expect("options config loads")
+    load_text(&contents).expect("options config loads")
 }
 
 fn options_request() -> CoreRequest {
@@ -51,13 +42,10 @@ fn options_request() -> CoreRequest {
             )
             .expect("schema"),
         }),
-        sampling: SamplingOptions {
-            temperature: Some(Temperature::new(0.25).expect("temperature")),
-            top_p: Some(TopP::new(0.5).expect("top_p")),
-            seed: Some(42),
-        },
+        sampling: SamplingOptions { temperature: Some(Temperature::new(0.25).expect("temperature")), top_p: Some(TopP::new(0.5).expect("top_p")), seed: Some(42), stop: Vec::new(), presence_penalty: None, frequency_penalty: None },
         max_output_tokens: Some(128),
         max_output_tokens_param: Default::default(),
+        stop_param: Default::default(),
         reasoning_effort: Some(ReasoningEffort::None),
         enable_thinking: None,
     };

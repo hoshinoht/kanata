@@ -37,7 +37,7 @@ The examples use `api.example.com`; replace it with your own hostname. Pick a **
    # under [publication]
    public_routes = [{ model_alias = "qwen3-0.6b", operation = "chat" }]
    ```
-2. In `.env`, append `:compose.kanata.public.yml` to `COMPOSE_FILE`, and set `KANATA_CLOUDFLARED_TOKEN_FILE` to the token file's absolute path.
+2. In `.env`, append `:deploy/compose/compose.kanata.public.yml` to `COMPOSE_FILE`, and set `KANATA_CLOUDFLARED_TOKEN_FILE` to the token file's absolute path.
 3. Start the stack and watch the connector:
    ```sh
    docker compose up -d
@@ -74,7 +74,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "$H" https://api.example.com/nope   
 
 ## Disable or rotate
 
-- **Stop public traffic:** remove `:compose.kanata.public.yml` from `COMPOSE_FILE`, remove `[listeners.public]` and `public_routes` from the config, then run `docker compose up -d --remove-orphans`.
+- **Stop public traffic:** remove `:deploy/compose/compose.kanata.public.yml` from `COMPOSE_FILE`, remove `[listeners.public]` and `public_routes` from the config, then run `docker compose up -d --remove-orphans`.
 - **Remove the route:** delete the public hostname, or the whole tunnel, in the dashboard.
 - **Rotate the tunnel token:** refresh it in the dashboard, replace the file, then run `docker compose up -d`. Old connectors stay connected until they restart.
 

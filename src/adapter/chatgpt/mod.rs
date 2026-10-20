@@ -14,6 +14,7 @@ use super::{
         STREAM_RESPONSE_BYTES, Transport, TransportRequest,
     },
 };
+use crate::adapter::status_error;
 use crate::{
     config::{ProviderKind, ValidatedConfig},
     core::{
@@ -93,6 +94,8 @@ impl Adapter for ChatgptAdapter {
             };
             let model = chat.model.clone();
             let streaming = chat.stream;
+            let encrypted_reasoning =
+                super::codex::protocol::requests_encrypted_reasoning(chat, ProviderKind::Chatgpt);
             let deadline = tokio::time::Instant::now() + timeout;
             tokio::time::timeout(timeout, async {
                 let token = auth.access_token().await.map_err(|_| unavailable())?;
@@ -103,6 +106,7 @@ impl Adapter for ChatgptAdapter {
                         payload,
                         model,
                         streaming,
+                        encrypted_reasoning,
                         deadline,
                         label,
                         request_budget: budget,
@@ -111,10 +115,10 @@ impl Adapter for ChatgptAdapter {
                 .await
             })
             .await
-            .map_err(|_| GatewayError {
-                kind: ErrorKind::Timeout {
+            .map_err(|_| {
+                GatewayError::from(ErrorKind::Timeout {
                     phase: crate::core::TimeoutPhase::Overall,
-                },
+                })
             })?
         })
     }
@@ -124,6 +128,7 @@ struct Inference {
     payload: serde_json::Value,
     model: ModelAlias,
     streaming: bool,
+    encrypted_reasoning: bool,
     deadline: tokio::time::Instant,
     label: UpstreamLabel,
     request_budget: usize,
@@ -138,6 +143,7 @@ async fn execute_with_token(
         payload,
         model,
         streaming,
+        encrypted_reasoning,
         deadline,
         label,
         request_budget,
@@ -169,6 +175,7 @@ async fn execute_with_token(
             deadline,
             label,
             Some(NAMESPACE),
+            encrypted_reasoning,
         )))
     } else {
         let response = stream::collect_response_with_parser(
@@ -177,6 +184,7 @@ async fn execute_with_token(
             deadline,
             &label,
             Some(NAMESPACE),
+            encrypted_reasoning,
         )
         .await?;
         Ok(AdapterOutput::Complete(Response::Chat(response)))
@@ -321,34 +329,15 @@ fn decode_models(bytes: &[u8]) -> Result<Vec<Model>, ()> {
     Ok(models)
 }
 
-fn status_error(status: u16) -> GatewayError {
-    GatewayError {
-        kind: match status {
-            400 | 422 => ErrorKind::InvalidRequest,
-            404 => ErrorKind::NotFound,
-            401 | 403 | 408 | 503 | 504 => ErrorKind::UpstreamUnavailable,
-            429 => ErrorKind::RateLimited,
-            _ => ErrorKind::UpstreamFailure,
-        },
-    }
-}
 fn internal() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
-    }
+    GatewayError::from(ErrorKind::Internal)
 }
 fn invalid() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
+    GatewayError::from(ErrorKind::InvalidRequest)
 }
 fn unavailable() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamUnavailable,
-    }
+    GatewayError::from(ErrorKind::UpstreamUnavailable)
 }
 fn failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
+    GatewayError::from(ErrorKind::UpstreamFailure)
 }

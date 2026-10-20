@@ -1,10 +1,9 @@
+use crate::scratch;
+
 use std::{
     convert::Infallible,
     fs,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
 use axum::{
@@ -16,7 +15,7 @@ use futures_util::stream;
 use kanata::{
     adapter::{Adapter, AdapterFuture, AdapterOutput},
     auth::{SecretResolutionError, SecretResolver},
-    config::{SecretReference, ValidatedConfig, load},
+    config::{SecretReference, ValidatedConfig},
     core::{
         Capabilities, ChatContent, ChatMessage, ChatResponse, ChatRole, FinishReason, Operation,
         Request as CoreRequest, Response as CoreResponse, RoutedRequest, TranscriptionResponse,
@@ -30,8 +29,6 @@ pub(crate) const EXTENSIONS_JSON: &str =
 pub(crate) const BOUNDARY: &str = "extension-boundary";
 pub(crate) const MULTIPART_CONTENT_TYPE: &str =
     "multipart/form-data; boundary=\"extension-boundary\"";
-
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) struct Resolver;
 
@@ -71,6 +68,7 @@ impl Adapter for RecordingAdapter {
                 finish_reason: FinishReason::Stop,
                 usage: None,
                 reasoning: None,
+                reasoning_items: Vec::new(),
             }),
             CoreRequest::Transcription(_) => CoreResponse::Transcription(TranscriptionResponse {
                 text: "transcribed".into(),
@@ -102,15 +100,7 @@ pub(crate) fn config_contents(
 }
 
 pub(crate) fn load_contents(contents: String) -> Result<ValidatedConfig, String> {
-    let path = std::env::temp_dir().join(format!(
-        "kanata-extensions-{}-{}.toml",
-        std::process::id(),
-        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture writes");
-    let result = load(&path).map_err(|error| error.to_string());
-    fs::remove_file(path).expect("fixture removes");
-    result
+    scratch::load_text(&contents).map_err(|error| error.to_string())
 }
 
 pub(crate) fn configured(

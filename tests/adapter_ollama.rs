@@ -6,5 +6,7 @@ mod cases;
 mod options;
 #[path = "adapter_ollama/review_regressions.rs"]
 mod review_regressions;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "adapter_ollama/support.rs"]
 mod support;

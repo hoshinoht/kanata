@@ -1,0 +1,123 @@
+# Opt-in: runs CLIProxyAPI (OpenAI-compatible) in this project and lets Kanata use it over TLS.
+#   COMPOSE_FILE=...:deploy/compose/compose.kanata.cliproxy.yml
+# `cliproxy` keeps tsuna's existing config.yaml and sign-ins (CLIPROXY_CONFIG_FILE,
+# CLIPROXY_AUTH_DIR) and publishes 127.0.0.1:18317 for host clients. An nginx sidecar
+# terminates TLS with a private CA (deploy/scripts/cliproxy-tls-certs.sh) and forwards to it
+# over the internal cliproxy_upstream network. Kanata reaches only the sidecar, over
+# cliproxy_tls; the private-only `cliproxy` adapter pins that CA:
+#   kind       = "cliproxy"
+#   base_url   = "https://cliproxy-tls:8443/v1"
+#   ca_file    = "/run/secrets/cliproxy-ca.pem"
+#   secret_ref = "file:/run/secrets/cliproxy-api-key"
+#   trust_zone = "external"
+# Start or update these two without touching kanata:
+#   docker compose up -d --no-deps cliproxy cliproxy-tls
+services:
+  kanata:
+    networks:
+      cliproxy_tls:
+        ipv4_address: 172.32.0.2
+    secrets:
+      - source: cliproxy_api_key
+        target: cliproxy-api-key
+      - source: cliproxy_ca
+        target: cliproxy-ca.pem
+
+  cliproxy:
+    # CLIProxyAPI v8.0.18, the digest tsuna pinned.
+    image: eceasy/cli-proxy-api@sha256:2a7d31faf13e4f9a92112edd0d947faaed9fb1d529b5a825f9b829df98088634
+    # Runs as the image's root user: the auth dir is /root/.cli-proxy-api (in config.yaml)
+    # and /root is 0700 in the image. It writes only to the auth dir.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    cpus: 1.0
+    mem_limit: 512m
+    restart: unless-stopped
+    # No healthcheck: the image has no HTTP client, and /v1/models needs the client key.
+    tmpfs:
+      - /tmp:mode=1777,size=16m
+    ports:
+      - "127.0.0.1:18317:8317"
+    volumes:
+      - type: bind
+        source: "${CLIPROXY_CONFIG_FILE:?Set CLIPROXY_CONFIG_FILE to CLIProxyAPI's config.yaml (tsuna: .runtime/proxy/config.yaml)}"
+        target: /CLIProxyAPI/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${CLIPROXY_AUTH_DIR:?Set CLIPROXY_AUTH_DIR to CLIProxyAPI's sign-in directory (tsuna: .runtime/proxy/auth)}"
+        target: /root/.cli-proxy-api
+        bind:
+          create_host_path: false
+    networks:
+      cliproxy_upstream: {}
+      # Provider egress, and the default gateway that carries the published port.
+      cliproxy_egress: {}
+
+  cliproxy-tls:
+    image: ${CLIPROXY_TLS_IMAGE:-nginxinc/nginx-unprivileged:alpine}
+    command: ["nginx", "-c", "/etc/nginx/cliproxy.conf", "-g", "daemon off;"]
+    user: "101:101"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    cpus: 0.5
+    mem_limit: 128m
+    depends_on:
+      - cliproxy
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:mode=0700,uid=101,gid=101,size=16m
+    volumes:
+      - type: bind
+        source: ../cliproxy-tls/nginx.conf
+        target: /etc/nginx/cliproxy.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${CLIPROXY_TLS_DIR:?Set CLIPROXY_TLS_DIR to the deploy/scripts/cliproxy-tls-certs.sh output directory}/server.crt"
+        target: /etc/nginx/tls/server.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${CLIPROXY_TLS_DIR:?Set CLIPROXY_TLS_DIR to the deploy/scripts/cliproxy-tls-certs.sh output directory}/server.key"
+        target: /etc/nginx/tls/server.key
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      cliproxy_tls:
+        ipv4_address: 172.32.0.3
+        aliases:
+          - cliproxy-tls
+      cliproxy_upstream: {}
+
+secrets:
+  cliproxy_api_key:
+    file: "${KANATA_CLIPROXY_KEY_FILE:?Set KANATA_CLIPROXY_KEY_FILE to the CLIProxyAPI client key file}"
+  cliproxy_ca:
+    file: "${CLIPROXY_TLS_DIR:?Set CLIPROXY_TLS_DIR to the deploy/scripts/cliproxy-tls-certs.sh output directory}/ca.pem"
+
+networks:
+  cliproxy_tls:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.32.0.0/24
+  # Sidecar <-> CLIProxyAPI only.
+  cliproxy_upstream:
+    driver: bridge
+    internal: true
+  cliproxy_egress:
+    driver: bridge

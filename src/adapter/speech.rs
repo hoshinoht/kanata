@@ -1,3 +1,4 @@
+use crate::adapter::{status_error, upstream_failure};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
@@ -100,11 +101,7 @@ impl Adapter for SpeechAdapter {
     fn execute(&self, routed: RoutedRequest) -> AdapterFuture {
         let (context, request) = routed.into_parts();
         let Request::Speech(request) = request else {
-            return Box::pin(async {
-                Err(GatewayError {
-                    kind: ErrorKind::UnsupportedOperation,
-                })
-            });
+            return Box::pin(async { Err(GatewayError::from(ErrorKind::UnsupportedOperation)) });
         };
         let binding = self
             .routes
@@ -115,11 +112,7 @@ impl Adapter for SpeechAdapter {
             || request.validate().is_err()
             || binding.is_none_or(|(_, policy)| request.check_policy(policy).is_err())
         {
-            return Box::pin(async {
-                Err(GatewayError {
-                    kind: ErrorKind::InvalidRequest,
-                })
-            });
+            return Box::pin(async { Err(GatewayError::from(ErrorKind::InvalidRequest)) });
         }
         let transport = self.transport.clone();
         let credential = self
@@ -186,23 +179,5 @@ impl Adapter for SpeechAdapter {
 }
 
 fn internal() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
-    }
-}
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
-}
-fn status_error(status: u16) -> GatewayError {
-    GatewayError {
-        kind: match status {
-            400 | 422 => ErrorKind::InvalidRequest,
-            404 => ErrorKind::NotFound,
-            401 | 403 | 408 | 503 | 504 => ErrorKind::UpstreamUnavailable,
-            429 => ErrorKind::RateLimited,
-            _ => ErrorKind::UpstreamFailure,
-        },
-    }
+    GatewayError::from(ErrorKind::Internal)
 }

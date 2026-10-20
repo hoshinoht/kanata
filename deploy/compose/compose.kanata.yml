@@ -1,0 +1,79 @@
+# Default project name; the files live in deploy/compose, so the directory name no longer fits.
+name: kanata
+
+services:
+  kanata:
+    image: ${KANATA_IMAGE:-kanata:test}
+    pull_policy: never
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    command: ["serve", "--config", "/etc/kanata/config.toml"]
+    user: "10001:10001"
+    init: false
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    cpus: 1.0
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/kanata", "health", "--config", "/etc/kanata/config.toml"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    stop_grace_period: 35s
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:mode=1777,size=16m
+    # No host ports: a reverse proxy reaches the client listener over private_ingress.
+    # Keys dir (keys.toml, sha256 digests only) is read-only; the state dir holds usage-<plane>.json.
+    volumes:
+      - type: bind
+        source: "${KANATA_CONFIG_FILE:?Set KANATA_CONFIG_FILE to an operator-managed config file}"
+        target: /etc/kanata/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${KANATA_KEYS_DIR:?Set KANATA_KEYS_DIR to <config dir>/keys}"
+        target: /etc/kanata/keys
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${KANATA_STATE_DIR:?Set KANATA_STATE_DIR to <config dir>/state}/private"
+        target: /etc/kanata/state
+        bind:
+          create_host_path: false
+      - type: volume
+        source: codex_state
+        target: /var/lib/kanata/codex
+        volume:
+          nocopy: false
+    networks:
+      private_ingress:
+        ipv4_address: 172.30.0.2
+      backend_egress:
+        ipv4_address: 172.31.0.2
+
+volumes:
+  codex_state:
+
+networks:
+  private_ingress:
+    # Fixed name so the edge project can attach as an external network.
+    name: kanata_private_ingress
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  backend_egress:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24

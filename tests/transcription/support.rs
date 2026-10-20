@@ -1,9 +1,11 @@
+use crate::scratch;
+
 use std::{
     convert::Infallible,
     fs,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     task::Poll,
 };
@@ -46,8 +48,6 @@ pub(crate) const REDACTION_MARKERS: &[&str] = &[
     "EMPTY_FILE_MARKER",
     "TRUNCATED_MARKER",
 ];
-
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) struct Resolver;
 impl SecretResolver for Resolver {
@@ -217,15 +217,7 @@ pub(crate) fn config_with_limits(max_body: usize, max_audio: usize) -> Validated
             "max_audio_bytes = 26214400",
             &format!("max_audio_bytes = {max_audio}"),
         );
-    let path = std::env::temp_dir().join(format!(
-        "kanata-transcription-{}-{}.toml",
-        std::process::id(),
-        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture writes");
-    let result = load(&path);
-    fs::remove_file(path).expect("fixture removes");
-    result.expect("bounded config")
+    scratch::load_text(&contents).expect("bounded config")
 }
 
 pub(crate) fn public_config(public_routes: &str) -> ValidatedConfig {
@@ -241,15 +233,7 @@ pub(crate) fn public_config(public_routes: &str) -> ValidatedConfig {
                 "tailnet_addresses = [\"100.64.0.10\", \"fd7a:115c:a1e0::10\"]\npublic_routes = {public_routes}"
             ),
         );
-    let path = std::env::temp_dir().join(format!(
-        "kanata-transcription-public-{}-{}.toml",
-        std::process::id(),
-        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture writes");
-    let result = load(&path);
-    fs::remove_file(path).expect("fixture removes");
-    result.expect("public config")
+    scratch::load_text(&contents).expect("public config")
 }
 
 pub(crate) async fn response_body(response: axum::response::Response) -> Bytes {

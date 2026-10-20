@@ -1,10 +1,11 @@
+use crate::adapter::{invalid_request, unsupported_operation};
 use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 
-use crate::config::{CodexReasoningEffort, CodexReasoningSummary};
+use crate::config::{CodexReasoningEffort, CodexReasoningSummary, ProviderKind};
 use crate::core::{
-    ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, GatewayError, Request,
+    ChatContent, ChatMessage, ChatRequest, ChatRole, GatewayError, ReasoningItem, Request,
     RoutedRequest, ToolChoice, TrustZone,
 };
 
@@ -26,7 +27,7 @@ pub(super) fn to_responses_request(
     reasoning_effort: CodexReasoningEffort,
     reasoning_summary: Option<CodexReasoningSummary>,
 ) -> Result<Value, GatewayError> {
-    let mut payload = to_text_request(routed)?;
+    let mut payload = to_text_request(routed, ProviderKind::Codex)?;
     payload["reasoning"] = json!({ "effort": reasoning_effort.as_str() });
     if let Some(summary) = reasoning_summary {
         payload["reasoning"]["summary"] = json!(summary.as_str());
@@ -34,7 +35,16 @@ pub(super) fn to_responses_request(
     Ok(payload)
 }
 
-pub(crate) fn to_text_request(routed: &RoutedRequest) -> Result<Value, GatewayError> {
+/// Whether the upstream is asked for encrypted reasoning, so its parser should keep it.
+pub(crate) fn requests_encrypted_reasoning(chat: &ChatRequest, kind: ProviderKind) -> bool {
+    chat.include_encrypted_reasoning && kind.replays_encrypted_reasoning()
+}
+
+/// `kind` decides whether the cache key and encrypted reasoning reach the upstream.
+pub(crate) fn to_text_request(
+    routed: &RoutedRequest,
+    kind: ProviderKind,
+) -> Result<Value, GatewayError> {
     let context = routed.context();
     let request = routed.request();
     if context.trust_zone != TrustZone::External {
@@ -53,13 +63,24 @@ pub(crate) fn to_text_request(routed: &RoutedRequest) -> Result<Value, GatewayEr
 
     validate_chat(chat)?;
 
-    let (input, instructions) = map_messages(chat);
+    let replay = kind.replays_encrypted_reasoning();
+    let (input, instructions) = map_messages(chat, replay);
     let mut payload = json!({
         "model": context.route.upstream_id,
         "input": input,
         "store": false,
         "stream": true,
     });
+    if let Some(key) = chat
+        .prompt_cache_key
+        .as_ref()
+        .filter(|_| kind.forwards_prompt_cache_key())
+    {
+        payload["prompt_cache_key"] = json!(key.as_str());
+    }
+    if requests_encrypted_reasoning(chat, kind) {
+        payload["include"] = json!(["reasoning.encrypted_content"]);
+    }
     if !instructions.is_empty() {
         payload["instructions"] = json!(instructions.join("\n\n"));
     }
@@ -124,6 +145,7 @@ fn validate_chat(chat: &ChatRequest) -> Result<(), GatewayError> {
         let mut has_nonempty_text = false;
         let mut calls = 0;
         let mut results = 0;
+        let mut reasoning = 0;
         for content in &message.content {
             match content {
                 ChatContent::Text { text } => {
@@ -140,18 +162,19 @@ fn validate_chat(chat: &ChatRequest) -> Result<(), GatewayError> {
                     }
                     outstanding_call_ids.insert(call.id.as_str());
                 }
-                ChatContent::ToolResult { call_id, content } => {
+                ChatContent::ToolResult { call_id, .. } => {
                     results += 1;
-                    if !valid_call_id(call_id)
-                        || content.is_empty()
-                        || !outstanding_call_ids.remove(call_id.as_str())
-                    {
+                    // Empty tool output is legal on the Responses wire.
+                    if !valid_call_id(call_id) || !outstanding_call_ids.remove(call_id.as_str()) {
                         return Err(invalid_request());
                     }
                 }
                 ChatContent::InputAudio { .. } | ChatContent::InputImage { .. } => {
                     return Err(unsupported_operation());
                 }
+                ChatContent::Reasoning { .. } => reasoning += 1,
+                // Codex replays only encrypted reasoning; plaintext replay is dropped.
+                ChatContent::ReasoningText { .. } => {}
             }
         }
 
@@ -164,7 +187,9 @@ fn validate_chat(chat: &ChatRequest) -> Result<(), GatewayError> {
             ChatRole::User if calls != 0 || results != 0 || !has_nonempty_text => {
                 return Err(invalid_request());
             }
-            ChatRole::Assistant if results != 0 || (!has_nonempty_text && calls == 0) => {
+            ChatRole::Assistant
+                if results != 0 || (!has_nonempty_text && calls == 0 && reasoning == 0) =>
+            {
                 return Err(invalid_request());
             }
             ChatRole::Tool if calls != 0 || results != 1 || text_count != 0 => {
@@ -176,7 +201,9 @@ fn validate_chat(chat: &ChatRequest) -> Result<(), GatewayError> {
     Ok(())
 }
 
-fn map_messages(chat: &ChatRequest) -> (Vec<Value>, Vec<String>) {
+/// `replay` keeps encrypted reasoning as `reasoning` input items in transcript order;
+/// otherwise it is skipped like summary-only reasoning.
+fn map_messages(chat: &ChatRequest, replay: bool) -> (Vec<Value>, Vec<String>) {
     let mut input = Vec::new();
     let mut instructions = Vec::new();
     for message in &chat.messages {
@@ -206,6 +233,13 @@ fn map_messages(chat: &ChatRequest) -> (Vec<Value>, Vec<String>) {
                         | ChatContent::InputImage { .. } => {
                             unreachable!("validated before mapping")
                         }
+                        ChatContent::Reasoning { item } => {
+                            if replay {
+                                push_assistant_text(&mut input, &mut pending_text);
+                                input.push(reasoning_input(item));
+                            }
+                        }
+                        ChatContent::ReasoningText { .. } => {}
                     }
                 }
                 push_assistant_text(&mut input, &mut pending_text);
@@ -233,6 +267,18 @@ fn text_content(message: &ChatMessage) -> String {
         }
     }
     text
+}
+
+fn reasoning_input(item: &ReasoningItem) -> Value {
+    let mut value = json!({
+        "type": "reasoning",
+        "summary": [],
+        "encrypted_content": item.encrypted_content(),
+    });
+    if let Some(id) = item.id() {
+        value["id"] = json!(id);
+    }
+    value
 }
 
 fn push_assistant_text(input: &mut Vec<Value>, text: &mut String) {
@@ -267,16 +313,4 @@ fn valid_tool_name(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-}
-
-fn invalid_request() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
-    }
 }

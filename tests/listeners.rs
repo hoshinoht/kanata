@@ -1,7 +1,9 @@
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use std::{
     convert::Infallible,
     fs,
-    future::Future,
     pin::Pin,
     sync::{
         Arc,
@@ -22,8 +24,6 @@ use kanata::config::{self, SecretReference};
 use kanata::core::{Capabilities, ErrorKind, GatewayError, RoutedRequest};
 use kanata::server::{Readiness, ServerPlan, TwoPlaneServer};
 use tokio::sync::{Notify, Semaphore};
-
-static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
 struct MemoryResolver;
 
@@ -145,15 +145,7 @@ fn public_config_with_client_bind(
             &format!("max_in_flight = {max_in_flight}"),
         )
         .replace("queue_ms = 1000", &format!("queue_ms = {queue_ms}"));
-    let path = std::env::temp_dir().join(format!(
-        "kanata-listeners-public-{}-{}.toml",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture writes");
-    let result = config::load(&path);
-    fs::remove_file(path).expect("fixture removes");
-    result.expect("public config validates")
+    scratch::load_text(&contents).expect("public config validates")
 }
 
 async fn reserved_listener_pair() -> (tokio::net::TcpListener, tokio::net::TcpListener) {
@@ -177,15 +169,7 @@ fn wildcard_client_config(client_port: u16, admin_port: u16) -> config::Validate
         .expect("example config reads")
         .replace("port = 8080", &format!("port = {client_port}"))
         .replace("port = 9090", &format!("port = {admin_port}"));
-    let path = std::env::temp_dir().join(format!(
-        "kanata-listeners-wildcard-{}-{}.toml",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("wildcard config fixture writes");
-    let result = config::load(&path);
-    fs::remove_file(path).expect("wildcard config fixture removes");
-    result.expect("wildcard config remains schema-valid")
+    scratch::load_text(&contents).expect("wildcard config remains schema-valid")
 }
 
 fn assert_wildcard_bind_rejected(error: std::io::Error) {
@@ -242,14 +226,7 @@ fn restricted_server() -> (TwoPlaneServer, Readiness) {
         "permissions = [\n  { model_alias = \"local-chat\", operation = \"chat\" },\n  { model_alias = \"private-chat\", operation = \"chat\" },\n  { model_alias = \"private-transcribe\", operation = \"transcription\" },\n  { model_alias = \"remote-chat\", operation = \"chat\" },\n  { model_alias = \"codex-chat\", operation = \"chat\" },\n]",
         "permissions = [{ model_alias = \"local-chat\", operation = \"chat\" }]",
     );
-    let path = std::env::temp_dir().join(format!(
-        "kanata-listeners-{}-{}.toml",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture writes");
-    let config = config::load(&path).expect("restricted config validates");
-    fs::remove_file(path).expect("fixture removes");
+    let config = scratch::load_text(&contents).expect("restricted config validates");
     server_from_config(config)
 }
 
@@ -365,7 +342,7 @@ async fn client_models_are_authenticated_and_permission_filtered() {
                 .to_vec()
         )
         .expect("utf8"),
-        "{\"data\":[{\"created\":0,\"id\":\"codex-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"external\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"local-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"local\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"private-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"private_network\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"private-transcribe\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":false,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"operations\":[\"transcription\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"sampling_controls\":false,\"streaming\":false,\"structured_output\":false,\"trust_zone\":\"private_network\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"remote-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":false,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":false,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"external\"},\"object\":\"model\",\"owned_by\":\"kanata\"}],\"object\":\"list\"}"
+        "{\"data\":[{\"created\":0,\"id\":\"codex-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"messages\":{\"endpoint\":\"/v1/messages\",\"function_tools\":true,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"external\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"local-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"messages\":{\"endpoint\":\"/v1/messages\",\"function_tools\":true,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"local\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"private-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"messages\":{\"endpoint\":\"/v1/messages\",\"function_tools\":true,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"private_network\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"private-transcribe\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":false,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"operations\":[\"transcription\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"sampling_controls\":false,\"streaming\":false,\"structured_output\":false,\"trust_zone\":\"private_network\"},\"object\":\"model\",\"owned_by\":\"kanata\"},{\"created\":0,\"id\":\"remote-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":false,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"messages\":{\"endpoint\":\"/v1/messages\",\"function_tools\":false,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":false,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"external\"},\"object\":\"model\",\"owned_by\":\"kanata\"}],\"object\":\"list\"}"
     );
 
     let (restricted, _) = restricted_server();
@@ -384,7 +361,7 @@ async fn client_models_are_authenticated_and_permission_filtered() {
         to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body"),
-        "{\"data\":[{\"created\":0,\"id\":\"local-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"local\"},\"object\":\"model\",\"owned_by\":\"kanata\"}],\"object\":\"list\"}"
+        "{\"data\":[{\"created\":0,\"id\":\"local-chat\",\"kanata\":{\"admission\":{\"adapter_max_in_flight\":null,\"max_in_flight\":8,\"max_queue\":32,\"queue_ms\":1000},\"context_tokens\":null,\"function_tools\":true,\"images\":null,\"input_audio\":false,\"input_images\":false,\"max_output_tokens\":null,\"messages\":{\"endpoint\":\"/v1/messages\",\"function_tools\":true,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"operations\":[\"chat\"],\"reasoning_control\":false,\"reasoning_efforts\":null,\"responses\":{\"endpoint\":\"/v1/responses\",\"function_tools\":true,\"input\":[\"text\"],\"max_output_bytes\":8388608,\"operation\":\"chat\",\"stateless\":true,\"streaming\":true},\"sampling_controls\":false,\"streaming\":true,\"structured_output\":false,\"trust_zone\":\"local\"},\"object\":\"model\",\"owned_by\":\"kanata\"}],\"object\":\"list\"}"
     );
 }
 

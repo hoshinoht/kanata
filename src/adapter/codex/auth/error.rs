@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::adapter::auth_files::FileError;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreError {
     InvalidStateDirectory,
@@ -35,3 +37,16 @@ impl fmt::Display for StoreError {
 }
 
 impl std::error::Error for StoreError {}
+
+impl From<FileError> for StoreError {
+    fn from(error: FileError) -> Self {
+        match error {
+            FileError::InvalidPath => Self::InvalidStateDirectory,
+            FileError::Unsafe => Self::UnsafeStoragePath,
+            FileError::Io => Self::StorageIo,
+            FileError::TooLarge => Self::RecordTooLarge,
+            FileError::LockTimeout => Self::LockTimeout,
+            FileError::LockFailure => Self::LockFailure,
+        }
+    }
+}

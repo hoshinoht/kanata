@@ -1,5 +1,7 @@
 #[path = "support/gateway.rs"]
 mod gateway;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "adapter_ollama/support.rs"]
 mod upstream;
 
@@ -52,14 +54,7 @@ fn config(address: &str, public: bool, permission: bool) -> ValidatedConfig {
     }
     contents.push_str("\n[[routes]]\nid = \"ollama-embed\"\nmodel_alias = \"local-embed\"\noperation = \"embeddings\"\nadapter_id = \"ollama-local\"\nupstream_id = \"embedding-upstream\"\nrequires_streaming_chat = false\nrequires_function_tools = false\n");
     assert_ne!(original, contents);
-    let path = std::env::temp_dir().join(format!(
-        "kanata-embedding-{:016x}.toml",
-        getrandom::u64().unwrap()
-    ));
-    std::fs::write(&path, contents).unwrap();
-    let config = kanata::config::load(&path).expect("embedding config");
-    std::fs::remove_file(path).unwrap();
-    config
+    gateway::load_valid(&contents)
 }
 
 fn server(config: &ValidatedConfig, adapter: Arc<dyn Adapter>) -> TwoPlaneServer {
@@ -149,6 +144,7 @@ impl Adapter for Recording {
                         output_tokens: 0,
                         total_tokens: 3,
                         reasoning_tokens: None,
+                        cached_input_tokens: None,
                     }),
                 },
             )))
@@ -356,28 +352,15 @@ async fn missing_auth_and_oversized_uploads_never_dispatch() {
 
 #[tokio::test]
 async fn reported_and_missing_embedding_usage_are_persisted() {
-    use sha2::{Digest, Sha256};
-    use std::os::unix::fs::PermissionsExt;
-    let dir = std::env::temp_dir().join(format!(
-        "kanata-embedding-usage-{:016x}",
-        getrandom::u64().unwrap()
-    ));
-    std::fs::create_dir(&dir).unwrap();
-    std::fs::create_dir(dir.join("keys")).unwrap();
-    std::fs::create_dir(dir.join("state")).unwrap();
-    let digest = Sha256::digest(b"test-key");
-    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    let key = format!(
-        "version = 1\n[[keys]]\nid = \"search\"\ndigest = \"sha256:{hex}\"\ncreated_at = \"2026-01-01T00:00:00Z\"\npermissions = [{{ model_alias = \"local-embed\", operation = \"embeddings\" }}]\n"
-    );
-    let path = dir.join("keys/keys.toml");
-    std::fs::write(&path, key).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     let original = include_str!("../config/embeddings.example.toml");
     let contents = original.replace("ollama-embeddings", "ollama-local");
     assert_ne!(original, contents);
-    std::fs::write(dir.join("config.toml"), contents).unwrap();
-    let config = kanata::config::load(dir.join("config.toml")).unwrap();
+    let (dir, config) = gateway::test_key_dir(
+        "embedding-usage",
+        "search",
+        "permissions = [{ model_alias = \"local-embed\", operation = \"embeddings\" }]",
+        &contents,
+    );
     let (server, _) = recording(&config);
     let usage = server.open_usage(kanata::config::Plane::Private).unwrap();
     for input in ["reported", "missing"] {
@@ -398,5 +381,4 @@ async fn reported_and_missing_embedding_usage_are_persisted() {
     assert_eq!(recorded["search"].tokens.output_tokens, 0);
     assert_eq!(recorded["search"].tokens.reported, 1);
     assert_eq!(recorded["search"].tokens.missing, 1);
-    std::fs::remove_dir_all(dir).unwrap();
 }

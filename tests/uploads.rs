@@ -1,3 +1,5 @@
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "admission/support.rs"]
 mod support;
 use axum::{

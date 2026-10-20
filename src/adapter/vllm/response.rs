@@ -1,25 +1,29 @@
-use std::collections::BTreeSet;
-
-use serde::{Deserialize, de::IgnoredAny};
-
-use crate::core::{
-    ChatContent, ChatMessage, ChatResponse, ChatRole, ErrorKind, FinishReason, GatewayError,
-    ModelAlias, ToolCall, TranscriptionResponse, Usage,
+use crate::adapter::{
+    chat_completions::response::{
+        self as wire, CompletionTokensDetails, FunctionCallPayload, PromptTokensDetails,
+    },
+    upstream_failure,
 };
 
-pub(super) const MAX_TOOL_CALLS: usize = 64;
-const MAX_TOOL_CALL_ID_BYTES: usize = 128;
-const MAX_TOOL_NAME_BYTES: usize = 64;
+use serde::{
+    Deserialize,
+    de::{DeserializeOwned, IgnoredAny},
+};
 
+use crate::core::{
+    ChatResponse, FinishReason, GatewayError, ModelAlias, TranscriptionResponse, Usage,
+};
+
+/// A completion whose message is `M`: the chat reply or the audio-chat transcript.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CompletionPayload {
+struct CompletionPayload<M> {
     id: String,
     object: String,
     #[serde(rename = "created")]
     _created: u64,
     model: String,
-    choices: Vec<ChoicePayload>,
+    choices: Vec<ChoicePayload<M>>,
     #[serde(default)]
     usage: Option<UsagePayload>,
     #[serde(default)]
@@ -43,9 +47,9 @@ struct CompletionPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ChoicePayload {
+struct ChoicePayload<M> {
     index: u64,
-    message: MessagePayload,
+    message: M,
     finish_reason: String,
     #[serde(default, rename = "logprobs")]
     _logprobs: Option<IgnoredAny>,
@@ -72,13 +76,13 @@ struct MessagePayload {
     reasoning: Option<String>,
     #[serde(default)]
     reasoning_content: Option<String>,
-    // A refusal or audio without text content still fails as an empty reply.
-    #[serde(default, rename = "refusal")]
-    _refusal: Option<IgnoredAny>,
+    // A refusal or audio without text content is not an empty answer; it still fails.
+    #[serde(default)]
+    refusal: Option<IgnoredAny>,
     #[serde(default, rename = "annotations")]
     _annotations: Option<IgnoredAny>,
-    #[serde(default, rename = "audio")]
-    _audio: Option<IgnoredAny>,
+    #[serde(default)]
+    audio: Option<IgnoredAny>,
     #[serde(default, rename = "function_call")]
     _function_call: Option<IgnoredAny>,
     #[serde(default, rename = "provider_specific_fields")]
@@ -91,65 +95,22 @@ struct UsagePayload {
     prompt_tokens: u64,
     completion_tokens: u64,
     total_tokens: u64,
-    #[serde(default, rename = "prompt_tokens_details")]
-    _prompt_tokens_details: Option<IgnoredAny>,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
     #[serde(default)]
     completion_tokens_details: Option<CompletionTokensDetails>,
 }
 
-#[derive(Deserialize)]
-struct CompletionTokensDetails {
-    #[serde(default)]
-    reasoning_tokens: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TranscriptionCompletionPayload {
-    id: String,
-    object: String,
-    #[serde(rename = "created")]
-    _created: u64,
-    model: String,
-    choices: Vec<TranscriptionChoicePayload>,
-    #[serde(default)]
-    usage: Option<UsagePayload>,
-    #[serde(default)]
-    system_fingerprint: Option<String>,
-    // Recent vLLM metadata; accepted and not forwarded.
-    #[serde(default, rename = "service_tier")]
-    _service_tier: Option<IgnoredAny>,
-    #[serde(default, rename = "prompt_logprobs")]
-    _prompt_logprobs: Option<IgnoredAny>,
-    #[serde(default, rename = "prompt_token_ids")]
-    _prompt_token_ids: Option<IgnoredAny>,
-    #[serde(default, rename = "prompt_text")]
-    _prompt_text: Option<IgnoredAny>,
-    #[serde(default, rename = "kv_transfer_params")]
-    _kv_transfer_params: Option<IgnoredAny>,
-    #[serde(default, rename = "ec_transfer_params")]
-    _ec_transfer_params: Option<IgnoredAny>,
-    #[serde(default, rename = "metrics")]
-    _metrics: Option<IgnoredAny>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TranscriptionChoicePayload {
-    index: u64,
-    message: TranscriptionMessagePayload,
-    finish_reason: String,
-    #[serde(default, rename = "logprobs")]
-    _logprobs: Option<IgnoredAny>,
-    #[serde(default, rename = "stop_reason")]
-    _stop_reason: Option<IgnoredAny>,
-    #[serde(default, rename = "token_ids")]
-    _token_ids: Option<IgnoredAny>,
-    #[serde(default, rename = "routed_experts")]
-    _routed_experts: Option<IgnoredAny>,
-    // LiteLLM proxy metadata.
-    #[serde(default, rename = "provider_specific_fields")]
-    _provider_specific_fields: Option<IgnoredAny>,
+impl UsagePayload {
+    fn normalize(self) -> Result<Usage, GatewayError> {
+        wire::checked_usage(
+            self.prompt_tokens,
+            self.completion_tokens,
+            self.total_tokens,
+            self.prompt_tokens_details,
+            self.completion_tokens_details,
+        )
+    }
 }
 
 #[derive(Deserialize)]
@@ -186,118 +147,66 @@ struct ToolCallPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FunctionCallPayload {
-    name: String,
-    arguments: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct NativeTranscriptionPayload {
     text: String,
     #[serde(default, rename = "usage")]
     _usage: Option<IgnoredAny>,
 }
 
-pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatResponse, GatewayError> {
-    let payload: CompletionPayload =
+/// The completion's only choice, at index 0, and its usage.
+fn decode_choice<M: DeserializeOwned>(
+    bytes: &[u8],
+) -> Result<(ChoicePayload<M>, Option<UsagePayload>), GatewayError> {
+    let payload: CompletionPayload<M> =
         serde_json::from_slice(bytes).map_err(|_| upstream_failure())?;
-    if payload.id.is_empty()
-        || payload.object != "chat.completion"
-        || payload.model.trim().is_empty()
-        || payload
-            .system_fingerprint
-            .as_ref()
-            .is_some_and(String::is_empty)
-        || payload.choices.len() != 1
-    {
+    let choice = wire::only_choice(
+        &payload.id,
+        &payload.object,
+        &payload.model,
+        payload.system_fingerprint.as_deref(),
+        payload.choices,
+    )?;
+    if choice.index != 0 {
         return Err(upstream_failure());
     }
+    Ok((choice, payload.usage))
+}
 
-    let choice = payload
-        .choices
-        .into_iter()
-        .next()
-        .ok_or_else(upstream_failure)?;
-    if choice.index != 0 || choice.message.role != "assistant" {
+pub(super) fn decode(bytes: &[u8], public_model: ModelAlias) -> Result<ChatResponse, GatewayError> {
+    let (choice, usage) = decode_choice::<MessagePayload>(bytes)?;
+    let message = choice.message;
+    if message.role != "assistant" {
         return Err(upstream_failure());
     }
-    let finish_reason = parse_finish_reason(&choice.finish_reason)?;
-    let reasoning = choice
-        .message
+    let finish_reason = wire::parse_finish_reason(&choice.finish_reason)?;
+    let reasoning = message
         .reasoning
-        .or(choice.message.reasoning_content)
+        .or(message.reasoning_content)
         .filter(|text| !text.is_empty());
-    let mut content = Vec::new();
-    if let Some(text) = choice.message.content.filter(|text| !text.is_empty()) {
-        content.push(ChatContent::Text { text });
-    }
-    let calls = choice.message.tool_calls.unwrap_or_default();
-    if calls.len() > MAX_TOOL_CALLS {
-        return Err(upstream_failure());
-    }
-    let mut ids = BTreeSet::new();
-    for call in calls {
-        if call.kind != "function"
-            || !valid_call_id(&call.id)
-            || !ids.insert(call.id.clone())
-            || !valid_tool_name(&call.function.name)
-        {
-            return Err(upstream_failure());
-        }
-        content.push(ChatContent::ToolCall {
-            call: ToolCall {
-                id: call.id,
-                name: call.function.name,
-                arguments: call.function.arguments,
-            },
-        });
-    }
-    let has_tool_calls = !ids.is_empty();
-    // A length stop may carry no visible output.
-    if (content.is_empty() && finish_reason != FinishReason::Length)
-        || (finish_reason == FinishReason::ToolCalls) != has_tool_calls
-    {
-        return Err(upstream_failure());
-    }
+    let calls = message
+        .tool_calls
+        .unwrap_or_default()
+        .into_iter()
+        .map(|call| call.function.into_call(call.kind, call.id));
+    let (content, has_tool_calls) = wire::assistant_content(message.content, calls)?;
+    let unrepresented = message.refusal.is_some() || message.audio.is_some();
+    wire::check_finish(finish_reason, &content, has_tool_calls, unrepresented)?;
 
-    let usage = payload.usage.map(normalize_usage).transpose()?;
-    Ok(ChatResponse {
-        model: public_model,
-        message: ChatMessage {
-            role: ChatRole::Assistant,
-            content,
-        },
+    let usage = usage.map(UsagePayload::normalize).transpose()?;
+    Ok(wire::chat_response(
+        public_model,
+        content,
         finish_reason,
         usage,
         reasoning,
-    })
+    ))
 }
 
 pub(super) fn decode_transcription(bytes: &[u8]) -> Result<TranscriptionResponse, GatewayError> {
-    let payload: TranscriptionCompletionPayload =
-        serde_json::from_slice(bytes).map_err(|_| upstream_failure())?;
-    if payload.id.is_empty()
-        || payload.object != "chat.completion"
-        || payload.model.trim().is_empty()
-        || payload
-            .system_fingerprint
-            .as_ref()
-            .is_some_and(String::is_empty)
-        || payload.choices.len() != 1
+    let (choice, usage) = decode_choice::<TranscriptionMessagePayload>(bytes)?;
+    if choice.message.role != "assistant"
+        || wire::parse_finish_reason(&choice.finish_reason)? != FinishReason::Stop
     {
-        return Err(upstream_failure());
-    }
-
-    let choice = payload
-        .choices
-        .into_iter()
-        .next()
-        .ok_or_else(upstream_failure)?;
-    if choice.index != 0 || choice.message.role != "assistant" {
-        return Err(upstream_failure());
-    }
-    if parse_finish_reason(&choice.finish_reason)? != FinishReason::Stop {
         return Err(upstream_failure());
     }
     let Some(text) = choice
@@ -308,7 +217,7 @@ pub(super) fn decode_transcription(bytes: &[u8]) -> Result<TranscriptionResponse
         return Err(upstream_failure());
     };
 
-    payload.usage.map(normalize_usage).transpose()?;
+    usage.map(UsagePayload::normalize).transpose()?;
     Ok(TranscriptionResponse {
         text: text.trim().to_owned(),
     })
@@ -326,50 +235,6 @@ pub(super) fn decode_native_transcription(
     Ok(TranscriptionResponse {
         text: text.to_owned(),
     })
-}
-
-fn normalize_usage(usage: UsagePayload) -> Result<Usage, GatewayError> {
-    if usage.prompt_tokens.checked_add(usage.completion_tokens) != Some(usage.total_tokens) {
-        return Err(upstream_failure());
-    }
-    Ok(Usage {
-        input_tokens: usage.prompt_tokens,
-        output_tokens: usage.completion_tokens,
-        total_tokens: usage.total_tokens,
-        reasoning_tokens: usage
-            .completion_tokens_details
-            .and_then(|details| details.reasoning_tokens),
-    })
-}
-
-fn parse_finish_reason(value: &str) -> Result<FinishReason, GatewayError> {
-    match value {
-        "stop" => Ok(FinishReason::Stop),
-        "length" => Ok(FinishReason::Length),
-        "tool_calls" => Ok(FinishReason::ToolCalls),
-        "content_filter" => Ok(FinishReason::ContentFilter),
-        _ => Err(upstream_failure()),
-    }
-}
-
-pub(super) fn valid_call_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_TOOL_CALL_ID_BYTES
-        && value.bytes().all(|byte| byte.is_ascii_graphic())
-}
-
-pub(super) fn valid_tool_name(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_TOOL_NAME_BYTES
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
 }
 
 #[cfg(test)]

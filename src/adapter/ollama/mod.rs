@@ -2,35 +2,27 @@ mod apple_fm;
 mod embeddings;
 mod request;
 mod response;
-mod sse;
 mod stream;
-mod stream_state;
-mod stream_wire;
 mod validation;
 
+use crate::adapter::{internal_error, invalid_request, status_error, unsupported_operation};
 use std::{fmt, sync::Arc};
-
-use futures_util::StreamExt;
-use http::Method;
 
 use crate::adapter::diagnostics::UpstreamLabel;
 
 use crate::{
-    adapter::{Adapter, AdapterFuture, AdapterOutput},
+    adapter::{Adapter, AdapterFuture, AdapterOutput, chat_completions},
     config::{
         ProviderKind, ValidatedAdapter, ValidatedConfig, ValidatedLimits, ValidatedRoute,
         ValidatedTimeouts,
     },
     core::{
-        Capabilities, ErrorKind, GatewayError, Operation, Request, Response, RoutedRequest,
+        Capabilities, GatewayError, ModelAlias, Operation, Request, Response, RoutedRequest,
         TrustZone,
     },
 };
 
-use super::transport::{
-    Accept, COMPLETE_RESPONSE_BYTES, Endpoint, ResponseContentType, STREAM_RESPONSE_BYTES,
-    Transport, TransportRequest,
-};
+use super::transport::Transport;
 
 pub struct OllamaAdapter {
     id: String,
@@ -158,108 +150,45 @@ impl OllamaAdapter {
         &self.id
     }
 
-    async fn execute_nonstream(
+    async fn execute_chat(
         transport: Arc<Transport>,
         payload: request::ChatPayload,
-        public_model: crate::core::ModelAlias,
+        public_model: ModelAlias,
         max_body_bytes: usize,
         label: UpstreamLabel,
         apple_fm: bool,
+        streaming: bool,
     ) -> Result<AdapterOutput, GatewayError> {
-        let endpoint = Endpoint::new(&["chat", "completions"])?;
-        let request = TransportRequest::json(
-            Method::POST,
-            endpoint,
-            &payload,
-            None,
-            Some(Accept::Json),
-            max_body_bytes,
-            COMPLETE_RESPONSE_BYTES,
-        )?;
-        let mut response = transport.execute(request).await?;
-        if response.status != 200 {
-            if apple_fm {
-                let error = label
-                    .status_error(response.status, &mut response.body)
-                    .await;
-                return match apple_fm::classify(response.status, &error) {
-                    Some(apple_fm::Failure::Guardrail) => Ok(AdapterOutput::Complete(
-                        Response::Chat(apple_fm::filtered_reply(public_model)),
-                    )),
-                    Some(apple_fm::Failure::ContextOverflow) => Err(invalid_request()),
-                    None => Err(status_error(response.status)),
-                };
-            }
-            label.status(response.status, &mut response.body).await;
-            return Err(status_error(response.status));
-        }
-        if !matches!(response.content_type, Some(ResponseContentType::Json)) {
-            label.content_type(response.status, response.media_type.as_deref());
-            return Err(upstream_failure());
-        }
-
-        let mut body = Vec::new();
-        while let Some(chunk) = response.body.next().await {
-            let chunk = chunk?;
-            let Some(next) = body.len().checked_add(chunk.len()) else {
-                return Err(upstream_failure());
+        let request = chat_completions::chat_request(&payload, None, streaming, max_body_bytes)?;
+        let mut upstream = transport.execute(request).await?;
+        if upstream.status != 200 && apple_fm {
+            let error = label
+                .status_error(upstream.status, &mut upstream.body)
+                .await;
+            return match apple_fm::classify(upstream.status, &error) {
+                Some(apple_fm::Failure::Guardrail) if streaming => {
+                    Ok(AdapterOutput::Events(Box::pin(futures_util::stream::iter(
+                        apple_fm::filtered_events(public_model),
+                    ))))
+                }
+                Some(apple_fm::Failure::Guardrail) => Ok(AdapterOutput::Complete(Response::Chat(
+                    apple_fm::filtered_reply(public_model),
+                ))),
+                Some(apple_fm::Failure::ContextOverflow) => Err(invalid_request()),
+                None => Err(status_error(upstream.status)),
             };
-            if next > COMPLETE_RESPONSE_BYTES {
-                return Err(upstream_failure());
-            }
-            body.extend_from_slice(&chunk);
         }
+        if streaming {
+            let body = chat_completions::event_body(upstream, &label).await?;
+            return Ok(AdapterOutput::Events(stream::event_stream(
+                body,
+                public_model,
+                apple_fm,
+            )));
+        }
+        let body = chat_completions::json_body(upstream, &label).await?;
         let response = response::decode(&body, public_model)?;
         Ok(AdapterOutput::Complete(Response::Chat(response)))
-    }
-
-    async fn execute_stream(
-        transport: Arc<Transport>,
-        payload: request::ChatPayload,
-        public_model: crate::core::ModelAlias,
-        max_body_bytes: usize,
-        label: UpstreamLabel,
-        apple_fm: bool,
-    ) -> Result<AdapterOutput, GatewayError> {
-        let endpoint = Endpoint::new(&["chat", "completions"])?;
-        let request = TransportRequest::json(
-            Method::POST,
-            endpoint,
-            &payload,
-            None,
-            Some(Accept::EventStream),
-            max_body_bytes,
-            STREAM_RESPONSE_BYTES,
-        )?;
-        let mut response = transport.execute(request).await?;
-        if response.status != 200 {
-            if apple_fm {
-                let error = label
-                    .status_error(response.status, &mut response.body)
-                    .await;
-                return match apple_fm::classify(response.status, &error) {
-                    Some(apple_fm::Failure::Guardrail) => Ok(AdapterOutput::Events(Box::pin(
-                        futures_util::stream::iter(apple_fm::filtered_events(public_model)),
-                    ))),
-                    Some(apple_fm::Failure::ContextOverflow) => Err(invalid_request()),
-                    None => Err(status_error(response.status)),
-                };
-            }
-            label.status(response.status, &mut response.body).await;
-            return Err(status_error(response.status));
-        }
-        if !matches!(
-            response.content_type,
-            Some(ResponseContentType::EventStream)
-        ) {
-            label.content_type(response.status, response.media_type.as_deref());
-            return Err(upstream_failure());
-        }
-        Ok(AdapterOutput::Events(Box::pin(stream::OllamaStream::new(
-            response.body,
-            public_model,
-            apple_fm,
-        ))))
     }
 }
 
@@ -295,74 +224,31 @@ impl Adapter for OllamaAdapter {
         };
         let public_model = context.route.selector.model_alias.clone();
         let apple_fm = self.kind == ProviderKind::AppleFm;
-        let payload =
-            match request::encode(&chat, &context.route.upstream_id, chat.stream, apple_fm) {
-                Ok(payload) => payload,
-                Err(error) => return Box::pin(async move { Err(error) }),
-            };
+        let payload = match request::encode(
+            &chat,
+            &context.route.upstream_id,
+            chat.stream,
+            apple_fm,
+            self.kind.replays_reasoning_text(),
+        ) {
+            Ok(payload) => payload,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
         let transport = self.transport.clone();
         let max_body_bytes = self.max_body_bytes;
         let label = UpstreamLabel::new(&self.id, self.kind.label());
-        if chat.stream {
-            Box::pin(async move {
-                Self::execute_stream(
-                    transport,
-                    payload,
-                    public_model,
-                    max_body_bytes,
-                    label,
-                    apple_fm,
-                )
-                .await
-            })
-        } else {
-            Box::pin(async move {
-                Self::execute_nonstream(
-                    transport,
-                    payload,
-                    public_model,
-                    max_body_bytes,
-                    label,
-                    apple_fm,
-                )
-                .await
-            })
-        }
-    }
-}
-
-fn status_error(status: u16) -> GatewayError {
-    let kind = match status {
-        400 | 422 => ErrorKind::InvalidRequest,
-        404 => ErrorKind::NotFound,
-        401 | 403 | 408 | 503 | 504 => ErrorKind::UpstreamUnavailable,
-        429 => ErrorKind::RateLimited,
-        500..=599 => ErrorKind::UpstreamFailure,
-        _ => ErrorKind::UpstreamFailure,
-    };
-    GatewayError { kind }
-}
-
-fn invalid_request() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
-}
-
-fn internal_error() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
-    }
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
+        let streaming = chat.stream;
+        Box::pin(async move {
+            Self::execute_chat(
+                transport,
+                payload,
+                public_model,
+                max_body_bytes,
+                label,
+                apple_fm,
+                streaming,
+            )
+            .await
+        })
     }
 }

@@ -102,9 +102,7 @@ where
 }
 
 pub(super) fn timeout(phase: TimeoutPhase) -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Timeout { phase },
-    }
+    GatewayError::from(ErrorKind::Timeout { phase })
 }
 
 #[cfg(test)]

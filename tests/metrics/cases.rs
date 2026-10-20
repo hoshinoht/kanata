@@ -178,6 +178,33 @@ async fn scrape_has_fixed_zero_state_and_tracks_client_lifecycle() {
 }
 
 #[tokio::test]
+async fn messages_requests_use_the_messages_label() {
+    let server = chat_server(support::chat_outcome("synthetic output"));
+    assert!(
+        scrape(&server)
+            .await
+            .contains("kanata_requests_started_total{endpoint=\"messages\"} 0")
+    );
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/messages?beta=true")
+        .header(header::AUTHORIZATION, "Bearer test-key")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            r#"{"model":"private-chat","max_tokens":8,"messages":[]}"#,
+        ))
+        .expect("messages request");
+    let response = server.client_oneshot(request).await.expect("response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    drain(response).await;
+    let metrics = scrape(&server).await;
+    assert!(metrics.contains("kanata_requests_started_total{endpoint=\"messages\"} 1"));
+    assert!(metrics.contains(
+        "kanata_requests_finished_total{endpoint=\"messages\",outcome=\"client_error\",status_class=\"4xx\",timeout_phase=\"none\"} 1"
+    ));
+}
+
+#[tokio::test]
 async fn explicit_timeout_phase_is_preserved_without_dynamic_labels() {
     let config = support::config();
     let (server, _) = support::server_with(

@@ -1,11 +1,14 @@
+#[path = "support/keys.rs"]
+mod key_fixtures;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/gateway.rs"]
 mod support;
 
 use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -17,55 +20,22 @@ use kanata::config::{Plane, ValidatedConfig};
 use kanata::keys::usage::{FlushOutcome, KeyUsage, read_merged};
 use kanata::server::TwoPlaneServer;
 use serde_json::Value;
-use sha2::{Digest as _, Sha256};
-use tracing_subscriber::fmt::MakeWriter;
 
-static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
-
-const EXAMPLE_INLINE_KEY: &str = "[[application_keys]]
-id = \"personal-client\"
-secret_ref = \"env:KANATA_CLIENT_KEY\"
-owner = true
-permissions = [
-  { model_alias = \"local-chat\", operation = \"chat\" },
-  { model_alias = \"private-chat\", operation = \"chat\" },
-  { model_alias = \"private-transcribe\", operation = \"transcription\" },
-  { model_alias = \"remote-chat\", operation = \"chat\" },
-  { model_alias = \"codex-chat\", operation = \"chat\" },
-]
-";
+use key_fixtures::{keyed_example, set_mode, token};
+use support::{Capture, ScratchDir};
 
 /// Temp dir with `config.toml` (`[keys] file = "keys.toml"`, `usage_dir = "state"`),
 /// keys `alpha`, `beta` and an expired key.
-struct Scratch(PathBuf);
+struct Scratch(ScratchDir);
 
 impl Scratch {
     fn new(public: bool) -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "kanata-key-usage-{}-{}",
-            std::process::id(),
-            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
-        ));
+        let dir = ScratchDir::new("key-usage");
         fs::create_dir_all(dir.join("state")).expect("scratch dir");
-        let example =
-            fs::read_to_string("tests/fixtures/config/example.toml").expect("example config");
-        let mut config = example.replace(
-            EXAMPLE_INLINE_KEY,
+        let config = keyed_example(
             "[keys]\nfile = \"keys.toml\"\nusage_dir = \"state\"\n",
+            public,
         );
-        assert_ne!(config, example);
-        if public {
-            config = config
-                .replace(
-                    "[listeners.admin]",
-                    "[listeners.public]\nbind = \"172.30.0.3\"\nport = 8081\n\n[listeners.admin]",
-                )
-                .replace(
-                    "tailnet_addresses = [\"100.64.0.10\", \"fd7a:115c:a1e0::10\"]",
-                    "tailnet_addresses = [\"100.64.0.10\", \"fd7a:115c:a1e0::10\"]\npublic_routes = [{ model_alias = \"local-chat\", operation = \"chat\" }]",
-                );
-            assert!(config.contains("public_routes"));
-        }
         fs::write(dir.join("config.toml"), config).expect("config writes");
         let keys = format!(
             "version = 1\n\n{}\n{}\n{}",
@@ -89,26 +59,17 @@ impl Scratch {
 }
 
 impl Drop for Scratch {
+    // Restores a traversable state dir so `ScratchDir` can remove it.
     fn drop(&mut self) {
         set_mode(&self.state(), 0o700);
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
-fn set_mode(path: &Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt as _;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("chmod");
-}
-
-fn token(id: &str) -> String {
-    format!("kanata_sk_SYNTHETIC_{id}")
-}
-
 fn record(id: &str, extra: &str) -> String {
-    let digest: [u8; 32] = Sha256::digest(token(id).as_bytes()).into();
-    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!(
-        "[[keys]]\nid = \"{id}\"\ndigest = \"sha256:{hex}\"\ncreated_at = \"2026-01-01T00:00:00Z\"\npermissions = [{{ model_alias = \"local-chat\", operation = \"chat\" }}]\n{extra}\n"
+    key_fixtures::record(
+        id,
+        "{ model_alias = \"local-chat\", operation = \"chat\" }",
+        extra,
     )
 }
 
@@ -133,40 +94,12 @@ fn usage_file(path: &Path) -> Value {
     serde_json::from_slice(&fs::read(path).expect("usage file")).expect("usage json")
 }
 
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-
-impl Capture {
-    fn text(&self) -> String {
-        String::from_utf8(self.0.lock().expect("capture").clone()).expect("utf8")
-    }
-
-    fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync + 'static {
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::WARN)
-            .with_ansi(false)
-            .with_writer(self.clone())
-            .finish()
-    }
-}
-
-impl<'a> MakeWriter<'a> for Capture {
-    type Writer = Capture;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
-impl Write for Capture {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.lock().expect("capture").extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
+fn warn_subscriber(capture: &Capture) -> impl tracing::Subscriber + Send + Sync + 'static {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(capture.clone())
+        .finish()
 }
 
 #[tokio::test]
@@ -258,7 +191,7 @@ async fn corrupt_state_starts_fresh_and_write_failures_warn_once() {
     // Tracing caches callsite interest process-wide; assert only on WARNs
     // that no other test in this binary reaches.
     let capture = Capture::default();
-    let _guard = tracing::subscriber::set_default(capture.subscriber());
+    let _guard = tracing::subscriber::set_default(warn_subscriber(&capture));
     let scratch = Scratch::new(false);
     let path = scratch.state().join("usage-all.json");
     fs::write(&path, "{not json").expect("corrupt write");
@@ -369,6 +302,7 @@ async fn tokens_are_recorded_for_complete_and_streamed_replies_with_missing_usag
                 output_tokens: 3,
                 total_tokens: 13,
                 reasoning_tokens: Some(2),
+                cached_input_tokens: None,
             });
             Box::pin(async move {
                 if stream {
@@ -391,6 +325,7 @@ async fn tokens_are_recorded_for_complete_and_streamed_replies_with_missing_usag
                         finish_reason: FinishReason::Stop,
                         usage,
                         reasoning: None,
+                        reasoning_items: Vec::new(),
                     })))
                 }
             })

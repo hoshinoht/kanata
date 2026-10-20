@@ -96,6 +96,7 @@ fn origin_prefix_and_ipv6_authority_are_serialized_without_escape() {
             .to_string(),
         "http://[::1]:11434/base/v1/chat"
     );
+    assert!(origin.permits_credentials());
 }
 
 #[test]

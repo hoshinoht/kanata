@@ -1,12 +1,12 @@
 # Kanata API quickstart
 
-Kanata exposes an OpenAI-compatible API. Use the base URL and gateway key supplied by your operator with an OpenAI SDK or any client that supports a custom base URL.
+Kanata exposes an OpenAI-compatible API and a stateless subset of the Anthropic Messages API. Use the base URL and gateway key supplied by your operator with an OpenAI SDK or any client that supports a custom base URL.
 
 | | |
 | --- | --- |
 | Base URL | `https://api.example.com/v1` |
-| Auth | `Authorization: Bearer <your key>` (keys start with `kanata_sk_`) |
-| Endpoints | `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/audio/transcriptions` (models with speech input) |
+| Auth | `Authorization: Bearer <your key>` or `x-api-key: <your key>` (keys start with `kanata_sk_`; if both headers are sent, each must occur once with the same value) |
+| Endpoints | `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `POST /v1/messages`, `POST /v1/audio/transcriptions` (models with speech input) |
 | Models | The aliases returned by authenticated `GET /v1/models` |
 
 ## Your key
@@ -26,7 +26,7 @@ Choose **View my access** after entering a bearer key to load its permitted mode
 
 The page stores the key only in memory, clears the input after submission, and clears the key and model details on **Disconnect**, reload or navigation away. **Refresh access** rechecks permissions; failed refreshes clear the session. Examples always use `$KANATA_API_KEY`, never the entered secret. Keys are not accepted from query strings or fragments. Use HTTPS; browser key entry is disabled over plain HTTP except on localhost/loopback for development. Browser extensions and scripts that compromise the page can still read an in-memory key.
 
-Only `GET`/`HEAD` at the exact `/v1` and `/v1/` paths are unauthenticated. All discovery and inference endpoints retain bearer authentication. Guide and model-list responses carry `Cache-Control: no-store`; reverse proxies must honor this and must not inject third-party scripts or weaken the page's Content Security Policy. Cloudflare Access, when configured, still applies before the guide is reached.
+Only `GET`/`HEAD` at the exact `/v1` and `/v1/` paths are unauthenticated. All discovery and inference endpoints accept `Authorization: Bearer` or `x-api-key`. Guide and model-list responses carry `Cache-Control: no-store`; reverse proxies must honor this and must not inject third-party scripts or weaken the page's Content Security Policy. Cloudflare Access, when configured, still applies before the guide is reached.
 
 ## 1. Check access
 
@@ -126,7 +126,7 @@ Embedding permissions are separate from chat permissions. `/v1/models` lists `em
 
 ## What is supported
 
-- **Request fields:** `model`, `messages` (`system` / `user` / `assistant` / `tool` roles with text content, plus assistant `tool_calls` and user `input_audio` parts), `stream`, `stream_options.include_usage`, and `tools` / `tool_choice` on models that support tools.
+- **Request fields:** `model`, `messages` (`system` / `user` / `assistant` / `tool` roles with text content, plus assistant `tool_calls` and `reasoning_content` and user `input_audio` parts), `stream`, `stream_options.include_usage`, and `tools` / `tool_choice` on models that support tools.
 - **Generation options,** where the model's route supports them:
 
   | Option | Accepted values |
@@ -138,9 +138,9 @@ Embedding permissions are separate from chat permissions. `/v1/models` lists `em
   | `response_format` | `{"type":"json_object"}` or `{"type":"json_schema","json_schema":{"name":…,"schema":{…},"strict":true}}` (schema ≤ 64 KiB, nesting ≤ 32 levels) |
   | `reasoning_effort` | On reasoning-enabled models, choose from `kanata.reasoning_efforts` when enumerated. Grouped models use one base ID with a separate effort; see [client integration and migration](service-handoff.md) |
   | `chat_template_kwargs` | only `{"enable_thinking": true\|false}`, on vLLM-served models (e.g. `omnilion`) |
-- **Strictness:** Kanata returns `400 invalid_request` for fields it doesn't support or a model can't honour, rather than silently ignoring them. The error's `param` names the field.
-- **Reasoning:** private listeners can return backend reasoning text as `reasoning_content`; public listeners never return it. `usage.completion_tokens_details.reasoning_tokens` is included when the backend reports it.
-- **Responses:** `/v1/responses` supports stateless text, function calls/results and typed SSE through chat routes and scopes. Send full history with `store: false`. See the [supported subset](responses.md).
+- **Validation:** unknown fields and unsupported options return `400 invalid_request` with the rejected JSON path in `param` (capped at 128 bytes). Non-JSON bodies, non-object roots and unsafe top-level keys can have `param: null`.
+- **Messages:** `POST /v1/messages` is a stateless Anthropic Messages subset over chat routes and scopes. See the [agent harness guide](agent-harnesses.md) for supported blocks, tool limits and error mapping.
+- **Responses:** `/v1/responses` supports stateless text, function calls/results and typed SSE through chat routes and scopes. Send full history with `store: false`; see the [supported subset](responses.md), including the encrypted reasoning and prompt-cache fields.
 - **Not available:** stored Responses/conversations, Assistants, fine-tuning and files.
 
 ## Speech output
@@ -172,6 +172,8 @@ When `/v1/models` declares `kanata.input_images`, user messages can include inli
 | 408 | `request_upload_timeout` | The request body did not arrive before the upload deadline |
 | 504 | `upstream_timeout` | The model took too long |
 | 5xx page from Cloudflare | — | If Cloudflare is configured, the gateway or tunnel may be unavailable |
+
+`/v1/messages` uses an Anthropic-style error envelope, `{ "type": "error", "error": { "type", "message", "code", "param" } }`, for route-level errors; HTTP status and existing error codes are mapped to the corresponding Anthropic error types, so the error table above has no new codes. Public-listener authentication failures happen before route selection and keep the OpenAI error envelope. `GET /v1/messages` returns `405 Allow: POST`; `/v1/messages/count_tokens` is not implemented (`404`).
 
 ## Good to know
 

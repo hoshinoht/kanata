@@ -24,10 +24,7 @@ pub(super) fn run(arguments: &[String]) -> Result<String, String> {
     let dir = args
         .one("--usage-dir")?
         .map(PathBuf::from)
-        .or_else(|| match config.as_ref().map(ValidatedConfig::key_source) {
-            Some(KeySource::File { usage_dir, .. }) => usage_dir.clone(),
-            _ => None,
-        })
+        .or_else(|| config.as_ref().and_then(usage_dir).map(Path::to_path_buf))
         .ok_or("usage reports require --usage-dir or [keys] usage_dir")?;
     let planes = match args.one("--plane")? {
         Some(value) => vec![Plane::parse(value).ok_or("invalid --plane")?],

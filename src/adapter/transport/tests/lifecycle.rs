@@ -8,81 +8,46 @@ use crate::core::{ErrorKind, TimeoutPhase};
 
 use super::super::ResponseContentType;
 use super::super::types;
-use super::fixture;
+use super::fixture::{self, SECOND};
+
+async fn collect_body(mut body: types::ResponseBody) -> Vec<u8> {
+    let mut collected = Vec::new();
+    while let Some(chunk) = body.next().await {
+        collected.extend_from_slice(&chunk.unwrap_or_else(|_| panic!("body")));
+    }
+    collected
+}
 
 #[tokio::test]
 async fn request_reads_complete_headers_and_drains_the_response() {
     let (listener, address) = fixture::listener().await;
-    let server_address = address.clone();
-    let server = fixture::server_task(listener, |mut socket| async move {
-        let request = fixture::read_headers(&mut socket)
-            .await
-            .unwrap_or_else(|_| panic!("request headers"));
-        fixture::assert_request_headers(&request, &server_address);
-        socket
-            .write_all(
-                b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\ncontent-type: application/json; charset=utf-8\r\n\r\nok",
-            )
-            .await
-            .unwrap_or_else(|_| panic!("response"));
-    });
+    let server = fixture::reply(listener, Some(&address), b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\ncontent-type: application/json; charset=utf-8\r\n\r\nok".to_vec());
 
-    let request = fixture::request(Bytes::from_static(b"{}"), 1024);
-    let mut response = fixture::transport(
-        address,
-        fixture::timeouts(
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        ),
-    )
-    .execute(request)
-    .await
-    .unwrap_or_else(|_| panic!("response"));
+    let response = fixture::respond(address, fixture::uniform_timeouts()).await;
     assert_eq!(response.status, 200);
     assert!(matches!(
         response.content_type,
         Some(ResponseContentType::Json)
     ));
-    let mut body = Vec::new();
-    while let Some(chunk) = response.body.next().await {
-        body.extend_from_slice(&chunk.unwrap_or_else(|_| panic!("body")));
-    }
-    assert_eq!(body, b"ok");
+    assert_eq!(collect_body(response.body).await, b"ok");
     server.await.unwrap_or_else(|_| panic!("server"));
 }
 
 #[tokio::test]
 async fn dropping_waiting_headers_closes_the_socket() {
     let (listener, address) = fixture::listener().await;
-    let server_address = address.clone();
     let (headers_tx, headers_rx) = fixture::signal_pair();
     let (closed_tx, closed_rx) = fixture::signal_pair();
-    let server = fixture::server_task(listener, |mut socket| async move {
-        let request = fixture::read_headers(&mut socket)
-            .await
-            .unwrap_or_else(|_| panic!("request headers"));
-        fixture::assert_request_headers(&request, &server_address);
+    let server = fixture::serve_checked(listener, &address, |socket| async move {
         headers_tx
             .send(())
             .unwrap_or_else(|_| panic!("headers signal"));
-        fixture::wait_for_close(socket)
-            .await
-            .unwrap_or_else(|_| panic!("close"));
-        closed_tx
-            .send(())
-            .unwrap_or_else(|_| panic!("close signal"));
+        fixture::signal_close(socket, closed_tx).await;
     });
 
     let transport = fixture::transport(
         address,
-        fixture::timeouts(
-            Duration::from_secs(1),
-            Duration::from_secs(5),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        ),
+        fixture::timeouts(SECOND, Duration::from_secs(5), SECOND, SECOND),
     );
     let mut execute =
         Box::pin(transport.execute(fixture::request(Bytes::from_static(b"{}"), 1024)));
@@ -98,39 +63,18 @@ async fn dropping_waiting_headers_closes_the_socket() {
 #[tokio::test]
 async fn dropping_active_body_closes_the_socket() {
     let (listener, address) = fixture::listener().await;
-    let server_address = address.clone();
     let (body_tx, body_rx) = fixture::signal_pair();
     let (closed_tx, closed_rx) = fixture::signal_pair();
-    let server = fixture::server_task(listener, |mut socket| async move {
-        let request = fixture::read_headers(&mut socket)
-            .await
-            .unwrap_or_else(|_| panic!("request headers"));
-        fixture::assert_request_headers(&request, &server_address);
+    let server = fixture::serve_checked(listener, &address, |mut socket| async move {
         socket
             .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\na")
             .await
             .unwrap_or_else(|_| panic!("response"));
         body_tx.send(()).unwrap_or_else(|_| panic!("body signal"));
-        fixture::wait_for_close(socket)
-            .await
-            .unwrap_or_else(|_| panic!("close"));
-        closed_tx
-            .send(())
-            .unwrap_or_else(|_| panic!("close signal"));
+        fixture::signal_close(socket, closed_tx).await;
     });
 
-    let mut response = fixture::transport(
-        address,
-        fixture::timeouts(
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        ),
-    )
-    .execute(fixture::request(Bytes::from_static(b"{}"), 1024))
-    .await
-    .unwrap_or_else(|_| panic!("response"));
+    let mut response = fixture::respond(address, fixture::uniform_timeouts()).await;
     fixture::bounded_wait(body_rx).await;
     assert_eq!(
         response.body.next().await,
@@ -144,37 +88,20 @@ async fn dropping_active_body_closes_the_socket() {
 #[tokio::test(flavor = "current_thread")]
 async fn first_byte_timeout_fuses_body_and_releases_socket_before_drop() {
     let (listener, address) = fixture::listener().await;
-    let server_address = address.clone();
     let (closed_tx, closed_rx) = fixture::signal_pair();
-    let server = fixture::server_task(listener, |mut socket| async move {
-        let request = fixture::read_headers(&mut socket)
-            .await
-            .unwrap_or_else(|_| panic!("request headers"));
-        fixture::assert_request_headers(&request, &server_address);
+    let server = fixture::serve_checked(listener, &address, |mut socket| async move {
         socket
             .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 1\r\n\r\n")
             .await
             .unwrap_or_else(|_| panic!("response"));
-        fixture::wait_for_close(socket)
-            .await
-            .unwrap_or_else(|_| panic!("close"));
-        closed_tx
-            .send(())
-            .unwrap_or_else(|_| panic!("close signal"));
+        fixture::signal_close(socket, closed_tx).await;
     });
 
-    let mut body = fixture::transport(
+    let mut body = fixture::respond(
         address,
-        fixture::timeouts(
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_millis(5),
-            Duration::from_secs(1),
-        ),
+        fixture::timeouts(SECOND, SECOND, Duration::from_millis(5), SECOND),
     )
-    .execute(fixture::request(Bytes::from_static(b"{}"), 1024))
     .await
-    .unwrap_or_else(|error| panic!("response: {error:?}"))
     .body;
     tokio::time::pause();
     let (item_tx, item_rx) = oneshot::channel();
@@ -217,13 +144,8 @@ async fn first_byte_timeout_fuses_body_and_releases_socket_before_drop() {
 #[tokio::test(flavor = "current_thread")]
 async fn idle_timeout_follows_data_and_does_not_repeat() {
     let (listener, address) = fixture::listener().await;
-    let server_address = address.clone();
     let (done_tx, done_rx) = oneshot::channel();
-    let server = fixture::server_task(listener, |mut socket| async move {
-        let request = fixture::read_headers(&mut socket)
-            .await
-            .unwrap_or_else(|_| panic!("request headers"));
-        fixture::assert_request_headers(&request, &server_address);
+    let server = fixture::serve_checked(listener, &address, |mut socket| async move {
         socket
             .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\na")
             .await
@@ -234,18 +156,11 @@ async fn idle_timeout_follows_data_and_does_not_repeat() {
         drop(socket);
     });
 
-    let mut body = fixture::transport(
+    let mut body = fixture::respond(
         address,
-        fixture::timeouts(
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_millis(5),
-        ),
+        fixture::timeouts(SECOND, SECOND, SECOND, Duration::from_millis(5)),
     )
-    .execute(fixture::request(Bytes::from_static(b"{}"), 1024))
     .await
-    .unwrap_or_else(|error| panic!("response: {error:?}"))
     .body;
     assert_eq!(body.next().await, Some(Ok(Bytes::from_static(b"a"))));
     tokio::time::pause();
@@ -280,39 +195,26 @@ async fn idle_timeout_follows_data_and_does_not_repeat() {
     server.await.unwrap_or_else(|_| panic!("server"));
 }
 
+fn sized_response(byte: u8, len: usize) -> Vec<u8> {
+    let mut response = format!("HTTP/1.1 200 OK\r\ncontent-length: {len}\r\n\r\n").into_bytes();
+    response.resize(response.len() + len, byte);
+    response
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn downstream_pause_does_not_age_ready_buffered_data() {
     let (listener, address) = fixture::listener().await;
-    let server_address = address.clone();
-    let server = fixture::server_task(listener, |mut socket| async move {
-        let request = fixture::read_headers(&mut socket)
-            .await
-            .unwrap_or_else(|_| panic!("request headers"));
-        fixture::assert_request_headers(&request, &server_address);
-        let body = vec![b'x'; types::MAX_CHUNK_BYTES + 1];
-        let response = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len());
-        socket
-            .write_all(response.as_bytes())
-            .await
-            .unwrap_or_else(|_| panic!("response headers"));
-        socket
-            .write_all(&body)
-            .await
-            .unwrap_or_else(|_| panic!("response body"));
-    });
+    let server = fixture::reply(
+        listener,
+        Some(&address),
+        sized_response(b'x', types::MAX_CHUNK_BYTES + 1),
+    );
 
-    let mut body = fixture::transport(
+    let mut body = fixture::respond(
         address,
-        fixture::timeouts(
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_millis(5),
-        ),
+        fixture::timeouts(SECOND, SECOND, SECOND, Duration::from_millis(5)),
     )
-    .execute(fixture::request(Bytes::from_static(b"{}"), 1024))
     .await
-    .unwrap_or_else(|error| panic!("response: {error:?}"))
     .body;
     let first = body.next().await.unwrap_or_else(|| panic!("first chunk"));
     assert!(
@@ -332,109 +234,38 @@ async fn downstream_pause_does_not_age_ready_buffered_data() {
 #[tokio::test]
 async fn completed_connection_does_not_drop_buffered_multi_chunk_body() {
     let (listener, address) = fixture::listener().await;
-    let server_address = address.clone();
-    let server = fixture::server_task(listener, |mut socket| async move {
-        let request = fixture::read_headers(&mut socket)
-            .await
-            .unwrap_or_else(|_| panic!("request headers"));
-        fixture::assert_request_headers(&request, &server_address);
-        let body = vec![b'z'; types::MAX_CHUNK_BYTES * 2 + 7];
-        let response = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len());
-        socket
-            .write_all(response.as_bytes())
-            .await
-            .unwrap_or_else(|_| panic!("response headers"));
-        socket
-            .write_all(&body)
-            .await
-            .unwrap_or_else(|_| panic!("response body"));
-    });
+    let len = types::MAX_CHUNK_BYTES * 2 + 7;
+    let server = fixture::reply(listener, Some(&address), sized_response(b'z', len));
 
-    let mut response = fixture::transport(
-        address,
-        fixture::timeouts(
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        ),
-    )
-    .execute(fixture::request(Bytes::from_static(b"{}"), 1024))
-    .await
-    .unwrap_or_else(|_| panic!("response"));
-    let mut body = Vec::new();
-    while let Some(chunk) = response.body.next().await {
-        body.extend_from_slice(&chunk.unwrap_or_else(|_| panic!("body")));
-    }
-    assert_eq!(body.len(), types::MAX_CHUNK_BYTES * 2 + 7);
+    let response = fixture::respond(address, fixture::uniform_timeouts()).await;
+    let body = collect_body(response.body).await;
+    assert_eq!(body.len(), len);
     assert!(body.iter().all(|byte| *byte == b'z'));
     server.await.unwrap_or_else(|_| panic!("server"));
 }
 
 #[tokio::test]
 async fn eof_is_fused_and_truncated_body_errors_once() {
-    let (listener, address) = fixture::listener().await;
-    let server_address = address.clone();
-    let server = fixture::server_task(listener, |mut socket| async move {
-        let request = fixture::read_headers(&mut socket)
+    for (response, truncated) in [
+        (&b"HTTP/1.1 200 OK\r\ncontent-length: 1\r\n\r\nx"[..], false),
+        (b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nx", true),
+    ] {
+        let (listener, address) = fixture::listener().await;
+        let server = fixture::reply(listener, Some(&address), response.to_vec());
+        let mut body = fixture::respond(address, fixture::uniform_timeouts())
             .await
-            .unwrap_or_else(|_| panic!("request headers"));
-        fixture::assert_request_headers(&request, &server_address);
-        socket
-            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 1\r\n\r\nx")
-            .await
-            .unwrap_or_else(|_| panic!("response"));
-    });
-    let mut body = fixture::transport(
-        address,
-        fixture::timeouts(
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        ),
-    )
-    .execute(fixture::request(Bytes::from_static(b"{}"), 1024))
-    .await
-    .unwrap_or_else(|_| panic!("response"))
-    .body;
-    assert_eq!(body.next().await, Some(Ok(Bytes::from_static(b"x"))));
-    assert!(body.next().await.is_none());
-    assert!(body.next().await.is_none());
-    server.await.unwrap_or_else(|_| panic!("server"));
-
-    let (listener, address) = fixture::listener().await;
-    let server_address = address.clone();
-    let server = fixture::server_task(listener, |mut socket| async move {
-        let request = fixture::read_headers(&mut socket)
-            .await
-            .unwrap_or_else(|_| panic!("request headers"));
-        fixture::assert_request_headers(&request, &server_address);
-        socket
-            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nx")
-            .await
-            .unwrap_or_else(|_| panic!("response"));
-    });
-    let mut body = fixture::transport(
-        address,
-        fixture::timeouts(
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        ),
-    )
-    .execute(fixture::request(Bytes::from_static(b"{}"), 1024))
-    .await
-    .unwrap_or_else(|_| panic!("response"))
-    .body;
-    assert_eq!(body.next().await, Some(Ok(Bytes::from_static(b"x"))));
-    let error = body
-        .next()
-        .await
-        .unwrap_or_else(|| panic!("truncated error"))
-        .unwrap_err();
-    assert_eq!(error.kind, ErrorKind::UpstreamFailure);
-    assert!(body.next().await.is_none());
-    server.await.unwrap_or_else(|_| panic!("server"));
+            .body;
+        assert_eq!(body.next().await, Some(Ok(Bytes::from_static(b"x"))));
+        if truncated {
+            let error = body
+                .next()
+                .await
+                .unwrap_or_else(|| panic!("truncated error"))
+                .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::UpstreamFailure);
+        }
+        assert!(body.next().await.is_none());
+        assert!(body.next().await.is_none());
+        server.await.unwrap_or_else(|_| panic!("server"));
+    }
 }

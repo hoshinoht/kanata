@@ -38,11 +38,18 @@ pub(super) fn format_daily_quota(quota: Option<crate::keys::quota::DailyQuota>) 
     )
 }
 
-pub(super) fn rate_limit_json(limit: Option<KeyRateLimit>) -> Value {
+pub(crate) fn rate_limit_json(limit: Option<KeyRateLimit>) -> Value {
     limit.map_or(
         Value::Null,
         |limit| json!({"requests": limit.requests, "per_ms": limit.per_ms}),
     )
+}
+
+pub(crate) fn scope_json<'a>(scopes: impl IntoIterator<Item = &'a RouteSelector>) -> Value {
+    scopes
+        .into_iter()
+        .map(|scope| json!({"model_alias": scope.model_alias.0, "operation": scope.operation.as_str()}))
+        .collect()
 }
 
 pub(super) fn scope_list(scopes: &[RouteSelector]) -> String {
@@ -53,7 +60,7 @@ pub(super) fn usage_for(usage_dir: Option<&Path>) -> Option<BTreeMap<String, Key
     usage_dir.map(usage::read_merged)
 }
 
-pub(super) fn key_json(
+pub(crate) fn key_json(
     record: &StoredKey,
     usage: Option<&BTreeMap<String, KeyUsage>>,
     now: u64,
@@ -62,10 +69,7 @@ pub(super) fn key_json(
     let Value::Object(object) = json!({
         "id": record.id(),
         "owner": record.is_owner(),
-        "scopes": record.permissions().iter().map(|scope| json!({
-            "model_alias": scope.model_alias.0,
-            "operation": operation_name(scope.operation),
-        })).collect::<Vec<_>>(),
+        "scopes": scope_json(record.permissions()),
         "created_at": time::format(record.created_at()),
         "expires_at": record.expires_at().map(time::format),
         "expired": record.is_expired(now),
@@ -82,18 +86,13 @@ pub(super) fn key_json(
 }
 
 /// Scopes whose route is not in `config`.
-pub(super) fn missing_routes_json(record: &StoredKey, config: &ValidatedConfig) -> Value {
-    record
-        .permissions()
-        .iter()
-        .filter(|scope| !route_exists(config, scope))
-        .map(|scope| {
-            json!({
-                "model_alias": scope.model_alias.0,
-                "operation": operation_name(scope.operation),
-            })
-        })
-        .collect()
+pub(crate) fn missing_routes_json(record: &StoredKey, config: &ValidatedConfig) -> Value {
+    scope_json(
+        record
+            .permissions()
+            .iter()
+            .filter(|scope| !route_exists(config, scope)),
+    )
 }
 
 pub(super) fn list(arguments: &[String]) -> Result<String, String> {

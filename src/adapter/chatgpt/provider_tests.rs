@@ -17,7 +17,9 @@ use tokio_rustls::{
 };
 
 use super::*;
-use crate::core::{ChatContent, FinishReason, NormalizedEvent, ToolCall, Usage};
+use crate::core::{
+    ChatContent, FinishReason, NormalizedEvent, PromptCacheKey, ReasoningItem, ToolCall, Usage,
+};
 
 const TOKEN: &str = "TEST_ONLY_CHATGPT_ACCESS_TOKEN_NOT_SECRET";
 const TEXT: &str = "Fixture answer";
@@ -186,6 +188,13 @@ fn tools(namespace: Option<&str>) -> String {
 fn inference(config: &ValidatedConfig, streaming: bool) -> Inference {
     let mut chat = tests::chat();
     chat.stream = streaming;
+    inference_for(config, chat)
+}
+
+fn inference_for(config: &ValidatedConfig, chat: crate::core::ChatRequest) -> Inference {
+    let streaming = chat.stream;
+    let encrypted_reasoning =
+        crate::adapter::codex::protocol::requests_encrypted_reasoning(&chat, ProviderKind::Chatgpt);
     let routed = tests::routed(config, chat);
     let payload = request::encode(
         &routed,
@@ -197,6 +206,7 @@ fn inference(config: &ValidatedConfig, streaming: bool) -> Inference {
         payload,
         model: ModelAlias("chatgpt-chat".into()),
         streaming,
+        encrypted_reasoning,
         deadline: tokio::time::Instant::now() + Duration::from_secs(2),
         label: UpstreamLabel::new("fixture", "chatgpt"),
         request_budget: 65536,
@@ -221,7 +231,8 @@ async fn namespaced_functions_round_trip_through_pinned_tls() {
             input_tokens: 4,
             output_tokens: 3,
             total_tokens: 7,
-            reasoning_tokens: None
+            reasoning_tokens: None,
+            cached_input_tokens: None,
         })
     );
     assert_eq!(
@@ -577,5 +588,169 @@ async fn pinned_reasoning_effort_reaches_responses_with_complete_and_stream_outp
         assert_eq!(record.body["stream"], true);
         assert_eq!(record.body["store"], false);
         fixture.server.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn summaries_and_reported_reasoning_counts_survive_complete_and_stream_output() {
+    const SUMMARY: &str = "SYNTHETIC_SUMMARY_MARKER";
+    let config = tests::config_with_summary("auto");
+    for reasoning_tokens in [0, 2] {
+        for streaming in [false, true] {
+            let events = started_text()
+                + &record(json!({"type":"response.reasoning_summary_text.delta",
+                    "item_id":"reasoning_fixture", "summary_index":0, "delta":SUMMARY}))
+                + &record(
+                    json!({"type":"response.completed", "response":{"id":"response_fixture",
+                    "usage":{"input_tokens":4, "output_tokens":3, "total_tokens":7,
+                        "output_tokens_details":{"reasoning_tokens":reasoning_tokens}}}}),
+                );
+            let fixture = fixture(&config, 200, events, None).await;
+            let output =
+                execute_with_token(&fixture.transport, TOKEN, inference(&config, streaming))
+                    .await
+                    .unwrap();
+            let expected = Usage {
+                input_tokens: 4,
+                output_tokens: 3,
+                total_tokens: 7,
+                reasoning_tokens: Some(reasoning_tokens),
+                cached_input_tokens: None,
+            };
+            match output {
+                AdapterOutput::Complete(Response::Chat(response)) => {
+                    assert!(!streaming);
+                    assert_eq!(response.reasoning.as_deref(), Some(SUMMARY));
+                    assert_eq!(response.usage, Some(expected));
+                    assert_eq!(
+                        response.message.content,
+                        vec![ChatContent::Text { text: TEXT.into() }]
+                    );
+                }
+                AdapterOutput::Events(mut events) => {
+                    assert!(streaming);
+                    let mut summary = String::new();
+                    let mut usage = None;
+                    while let Some(event) = events.next().await {
+                        match event.unwrap() {
+                            NormalizedEvent::ChatReasoningDelta { text } => summary.push_str(&text),
+                            NormalizedEvent::ChatCompleted {
+                                usage: reported, ..
+                            } => usage = reported,
+                            _ => {}
+                        }
+                    }
+                    assert_eq!(summary, SUMMARY);
+                    assert_eq!(usage, Some(expected));
+                }
+                _ => panic!("chat response"),
+            }
+            let record = fixture.request.await.unwrap();
+            assert_eq!(
+                record.body["reasoning"],
+                json!({"effort":"medium", "summary":"auto"})
+            );
+            fixture.server.await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn cache_key_and_encrypted_reasoning_round_trip_only_when_requested() {
+    const ENCRYPTED: &str = "SYNTHETIC_ENCRYPTED_REASONING";
+    let config = tests::config();
+    let upstream = || {
+        record(json!({"type":"response.created","response":{"id":"response_fixture"}}))
+            + &record(json!({"type":"response.output_item.done","output_index":0,
+                "item":{"type":"reasoning","id":"rs_fixture_next","summary":[],
+                    "encrypted_content":ENCRYPTED}}))
+            + &record(json!({"type":"response.output_text.delta","delta":TEXT}))
+            + &record(
+                json!({"type":"response.completed","response":{"id":"response_fixture",
+                "usage":{"input_tokens":2048,"output_tokens":3,"total_tokens":2051,
+                    "input_tokens_details":{"cached_tokens":1024}}}}),
+            )
+    };
+    for requested in [true, false] {
+        for streaming in [false, true] {
+            let mut chat = tests::chat();
+            chat.stream = streaming;
+            chat.messages[2].content.insert(
+                0,
+                ChatContent::Reasoning {
+                    item: ReasoningItem::new(Some("rs_fixture_prior".into()), "PRIOR".into())
+                        .unwrap(),
+                },
+            );
+            chat.messages[3].content = vec![ChatContent::ToolResult {
+                call_id: "call_1".into(),
+                content: String::new(),
+            }];
+            if requested {
+                chat.prompt_cache_key =
+                    Some(PromptCacheKey::new("cache-key-fixture".into()).unwrap());
+                chat.include_encrypted_reasoning = true;
+            }
+            let fixture = fixture(&config, 200, upstream(), None).await;
+            let output =
+                execute_with_token(&fixture.transport, TOKEN, inference_for(&config, chat))
+                    .await
+                    .unwrap();
+            let (items, usage) = match output {
+                AdapterOutput::Complete(Response::Chat(response)) => {
+                    (response.reasoning_items, response.usage)
+                }
+                AdapterOutput::Events(mut events) => {
+                    let (mut items, mut usage) = (Vec::new(), None);
+                    while let Some(event) = events.next().await {
+                        match event.unwrap() {
+                            NormalizedEvent::ChatReasoningItem { item } => items.push(item),
+                            NormalizedEvent::ChatCompleted {
+                                usage: reported, ..
+                            } => {
+                                usage = reported;
+                            }
+                            _ => {}
+                        }
+                    }
+                    (items, usage)
+                }
+                _ => panic!("chat response"),
+            };
+            assert_eq!(
+                usage.and_then(|usage| usage.cached_input_tokens),
+                Some(1024)
+            );
+            let body = fixture.request.await.unwrap().body;
+            // Replay happens whenever the transcript carries reasoning; only the cache key
+            // and the request for new reasoning depend on what the client asked for.
+            assert_eq!(
+                body["input"][1],
+                json!({"type":"reasoning","id":"rs_fixture_prior","summary":[],
+                    "encrypted_content":"PRIOR"})
+            );
+            assert_eq!(body["input"][2]["type"], "function_call");
+            assert_eq!(
+                body["input"][3],
+                json!({"type":"function_call_output",
+                "call_id":"call_1","output":""})
+            );
+            if requested {
+                assert_eq!(body["prompt_cache_key"], "cache-key-fixture");
+                assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+                assert_eq!(
+                    items,
+                    vec![
+                        ReasoningItem::new(Some("rs_fixture_next".into()), ENCRYPTED.into())
+                            .unwrap()
+                    ]
+                );
+            } else {
+                assert!(body.get("prompt_cache_key").is_none());
+                assert!(body.get("include").is_none());
+                assert!(items.is_empty());
+            }
+            fixture.server.await.unwrap();
+        }
     }
 }

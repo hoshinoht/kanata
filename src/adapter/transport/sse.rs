@@ -1,6 +1,7 @@
+use crate::adapter::upstream_failure;
 use std::str;
 
-use crate::core::{ErrorKind, GatewayError};
+use crate::core::GatewayError;
 
 pub(crate) const MAX_LINE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_EVENT_BYTES: usize = 128 * 1024;
@@ -177,11 +178,5 @@ impl SseFramer {
             data: state.data.join("\n"),
             event: state.event.filter(|event| !event.is_empty()),
         }))
-    }
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
     }
 }

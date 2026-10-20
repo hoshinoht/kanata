@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn validate(
     raw: RawConfig,
     config_dir: &Path,
-    read_keys_file: bool,
+    read_files: bool,
 ) -> Result<ValidatedConfig, ConfigError> {
     let mut publication = validate_publication(&raw.publication)?;
     let listeners = validate_listeners(&raw.listeners, publication.tailnet_addresses())?;
@@ -20,7 +20,8 @@ pub(super) fn validate(
             ));
         }
         let base_url = validate_url(&adapter, &path)?;
-        let secret_ref = if adapter.kind.is_private_only() {
+        let ca_bundle = validate_ca_file(&adapter, &base_url, &path, index)?;
+        let secret_ref = if matches!(adapter.kind, ProviderKind::Codex | ProviderKind::Chatgpt) {
             if adapter.secret_ref.is_some() {
                 return Err(ConfigError::new(
                     format!("{path}.secret_ref"),
@@ -38,17 +39,21 @@ pub(super) fn validate(
                 &format!("{path}.secret_ref"),
                 false,
             )?)
-        } else if adapter.kind == ProviderKind::Openrouter
-            || (matches!(adapter.kind, ProviderKind::Vllm | ProviderKind::Speech)
-                && adapter.trust_zone == TrustZone::External)
+        } else if matches!(
+            adapter.kind,
+            ProviderKind::Openrouter | ProviderKind::Cliproxy | ProviderKind::Anthropic
+        ) || (matches!(adapter.kind, ProviderKind::Vllm | ProviderKind::Speech)
+            && adapter.trust_zone == TrustZone::External)
         {
             return Err(ConfigError::new(format!("{path}.secret_ref"), "required"));
         } else {
             None
         };
-        if matches!(adapter.kind, ProviderKind::Vllm | ProviderKind::Speech)
-            && secret_ref.is_some()
-            && base_url.scheme() != "https"
+        if matches!(
+            adapter.kind,
+            ProviderKind::Vllm | ProviderKind::Speech | ProviderKind::Cliproxy
+        ) && secret_ref.is_some()
+            && !url_permits_credentials(&base_url)
         {
             return Err(ConfigError::new(
                 format!("{path}.base_url"),
@@ -144,6 +149,35 @@ pub(super) fn validate(
                 "codex_chat_only",
             ));
         }
+        if adapter.kind == ProviderKind::Cliproxy {
+            if operations != BTreeSet::from([Operation::Chat]) {
+                return Err(ConfigError::new(
+                    format!("{path}.capabilities.operations"),
+                    "cliproxy_chat_only",
+                ));
+            }
+            // Inline audio chat is a vLLM model feature, unverified through CLIProxyAPI.
+            if adapter.capabilities.input_audio {
+                return Err(ConfigError::new(
+                    format!("{path}.capabilities.input_audio"),
+                    "unsupported_by_adapter_kind",
+                ));
+            }
+        }
+        let anthropic = validate_anthropic(
+            adapter.kind,
+            adapter.anthropic,
+            adapter.capabilities.input_audio,
+            &operations,
+            &base_url,
+            &path,
+        )?;
+        if adapter.kind == ProviderKind::Anthropic && !extension_allowlist.is_empty() {
+            return Err(ConfigError::new(
+                format!("{path}.extension_allowlist"),
+                "unsupported_by_adapter_kind",
+            ));
+        }
         let transcription_mode = match (adapter.kind, adapter.transcription_mode) {
             (ProviderKind::Vllm, Some(_)) if !operations.contains(&Operation::Transcription) => {
                 return Err(ConfigError::new(
@@ -180,7 +214,11 @@ pub(super) fn validate(
         if adapter.capabilities.input_images {
             if !matches!(
                 adapter.kind,
-                ProviderKind::Ollama | ProviderKind::Vllm | ProviderKind::Openrouter
+                ProviderKind::Ollama
+                    | ProviderKind::Vllm
+                    | ProviderKind::Openrouter
+                    | ProviderKind::Cliproxy
+                    | ProviderKind::Anthropic
             ) {
                 return Err(ConfigError::new(
                     format!("{path}.capabilities.input_images"),
@@ -275,6 +313,8 @@ pub(super) fn validate(
             },
             max_in_flight,
             circuit_breaker,
+            ca_bundle,
+            anthropic,
         });
     }
     if adapters.is_empty() {
@@ -411,7 +451,7 @@ pub(super) fn validate(
                         "codex_only",
                     ));
                 }
-                if alias_effort.is_some() {
+                if alias_effort.is_some() && route.reasoning_effort.is_none() {
                     return Err(ConfigError::new(
                         format!("{path}.model_alias"),
                         "codex_effort_alias_only",
@@ -420,31 +460,53 @@ pub(super) fn validate(
                 None
             }
         };
-        if adapter.kind == ProviderKind::Chatgpt {
-            if let Some(effort) = route.reasoning_effort {
-                if route.operation != Operation::Chat || !adapter.capabilities.reasoning_control {
-                    return Err(ConfigError::new(
-                        format!("{path}.reasoning_effort"),
-                        "unsupported_by_adapter",
-                    ));
-                }
-                if alias_effort.is_some_and(|alias| alias != effort) {
-                    return Err(ConfigError::new(
-                        format!("{path}.reasoning_effort"),
-                        "does_not_match_alias",
-                    ));
-                }
-            } else if alias_effort.is_some() || adapter.capabilities.reasoning_control {
+        // ChatGPT always runs at a pinned effort; other reasoning-control adapters pin
+        // optionally (effort families) and otherwise forward the client's effort.
+        if let Some(effort) = route.reasoning_effort {
+            if adapter.kind == ProviderKind::Codex
+                || route.operation != Operation::Chat
+                || !adapter.capabilities.reasoning_control
+            {
                 return Err(ConfigError::new(
                     format!("{path}.reasoning_effort"),
-                    "required",
+                    "unsupported_by_adapter",
                 ));
             }
-        } else if route.reasoning_effort.is_some() {
+            if !adapter.kind.accepts_reasoning_effort(effort) {
+                return Err(ConfigError::new(
+                    format!("{path}.reasoning_effort"),
+                    "unsupported_effort",
+                ));
+            }
+            if alias_effort.is_some_and(|alias| alias != effort) {
+                return Err(ConfigError::new(
+                    format!("{path}.reasoning_effort"),
+                    "does_not_match_alias",
+                ));
+            }
+        } else if adapter.kind == ProviderKind::Chatgpt
+            && (alias_effort.is_some() || adapter.capabilities.reasoning_control)
+        {
             return Err(ConfigError::new(
                 format!("{path}.reasoning_effort"),
-                "chatgpt_only",
+                "required",
             ));
+        }
+        if route.reasoning_summary.is_some() {
+            if !matches!(adapter.kind, ProviderKind::Chatgpt | ProviderKind::Codex)
+                || route.operation != Operation::Chat
+            {
+                return Err(ConfigError::new(
+                    format!("{path}.reasoning_summary"),
+                    "unsupported_by_adapter",
+                ));
+            }
+            if route.codex_reasoning_summary.is_some() {
+                return Err(ConfigError::new(
+                    format!("{path}.reasoning_summary"),
+                    "conflicting_summary_options",
+                ));
+            }
         }
         if route.codex_reasoning_summary.is_some() {
             if adapter.kind != ProviderKind::Codex {
@@ -562,6 +624,14 @@ pub(super) fn validate(
                     "requires_chat_template",
                 ));
             }
+            // A chat route on a reasoning-control adapter takes the client's effort instead;
+            // sending both switches would leave the backend to pick one.
+            if route.operation == Operation::Chat && adapter.capabilities.reasoning_control {
+                return Err(ConfigError::new(
+                    format!("{path}.enable_thinking"),
+                    "conflicts_with_reasoning_control",
+                ));
+            }
         }
         let speech = if route.operation == Operation::Speech {
             let voices: BTreeSet<_> = route.speech_voices.iter().cloned().collect();
@@ -607,6 +677,7 @@ pub(super) fn validate(
             adapter_id: route.adapter_id,
             codex_reasoning_effort,
             reasoning_effort: route.reasoning_effort,
+            reasoning_summary: route.reasoning_summary,
             codex_reasoning_summary: route.codex_reasoning_summary,
             extension_allowlist,
             requires_streaming_chat: route.requires_streaming_chat,
@@ -648,7 +719,7 @@ pub(super) fn validate(
                 || route.requires_function_tools != other.requires_function_tools
                 || route.context_tokens != other.context_tokens
                 || route.max_output_tokens != other.max_output_tokens
-                || route.codex_reasoning_summary != other.codex_reasoning_summary
+                || route.reasoning_summary() != other.reasoning_summary()
             {
                 return Err(ConfigError::new(
                     format!("routes[{index}]"),
@@ -668,7 +739,7 @@ pub(super) fn validate(
         Some(_) if !raw.application_keys.is_empty() => {
             return Err(ConfigError::new("keys", "conflicting_key_sources"));
         }
-        Some(keys) => load_key_file(&keys, config_dir, &routes, read_keys_file)?,
+        Some(keys) => load_key_file(&keys, config_dir, &routes, read_files)?,
         None => (
             validate_application_keys(raw.application_keys, &routes)?,
             KeySource::Inline,
@@ -685,6 +756,7 @@ pub(super) fn validate(
         key_source,
         limits,
         timeouts,
+        route_sources: Default::default(),
         logging: ValidatedLogging {
             level: raw.logging.level,
             format: raw.logging.format,
@@ -930,10 +1002,11 @@ pub(super) fn validate_public_routes(
         if adapter.kind.is_private_only() {
             return Err(ConfigError::new(
                 path,
-                if adapter.kind == ProviderKind::Codex {
-                    "codex_not_public"
-                } else {
-                    "chatgpt_not_public"
+                match adapter.kind {
+                    ProviderKind::Codex => "codex_not_public",
+                    ProviderKind::Cliproxy => "cliproxy_not_public",
+                    ProviderKind::Anthropic => "anthropic_not_public",
+                    _ => "chatgpt_not_public",
                 },
             ));
         }
@@ -972,7 +1045,7 @@ pub(super) fn validate_url(adapter: &RawAdapter, path: &str) -> Result<Url, Conf
             "query_forbidden",
         ));
     }
-    if adapter.trust_zone == TrustZone::External && url.scheme() != "https" {
+    if adapter.trust_zone == TrustZone::External && !url_permits_credentials(&url) {
         return Err(ConfigError::new(
             format!("{path}.base_url"),
             "https_required",
@@ -981,11 +1054,113 @@ pub(super) fn validate_url(adapter: &RawAdapter, path: &str) -> Result<Url, Conf
     Ok(url)
 }
 
+/// Largest accepted `ca_file`; a private CA bundle holds a few certificates.
+const MAX_CA_FILE_BYTES: usize = 64 * 1024;
+
+/// `adapters[].ca_file`: PEM certificates that replace the platform roots for one adapter.
+/// Only the path is checked here; [`ValidatedConfig::load_ca_bundles`] reads the file, so a
+/// plane process never needs the bundle of an adapter it drops.
+pub(super) fn validate_ca_file(
+    adapter: &RawAdapter,
+    base_url: &Url,
+    path: &str,
+    index: usize,
+) -> Result<Option<CaBundle>, ConfigError> {
+    let Some(file) = &adapter.ca_file else {
+        return Ok(None);
+    };
+    let field = format!("{path}.ca_file");
+    // Only kinds that dial their configured base_url: ChatGPT and Codex pin public origins,
+    // and `fm serve` speaks plain HTTP.
+    if !matches!(
+        adapter.kind,
+        ProviderKind::Ollama
+            | ProviderKind::Vllm
+            | ProviderKind::Openrouter
+            | ProviderKind::Speech
+            | ProviderKind::Cliproxy
+    ) {
+        return Err(ConfigError::new(field, "unsupported_by_adapter_kind"));
+    }
+    if base_url.scheme() != "https" {
+        return Err(ConfigError::new(field, "https_base_url_required"));
+    }
+    let file = validate_key_path(file, &field)?;
+    if !file.is_absolute() {
+        return Err(ConfigError::new(field, "absolute_path_required"));
+    }
+    Ok(Some(CaBundle {
+        path: file.to_owned(),
+        index,
+        certificates: std::sync::Arc::from([]),
+    }))
+}
+
+impl ValidatedConfig {
+    /// Reads and parses every remaining adapter's `ca_file`. Errors name the adapter's index in
+    /// the original config, which [`ValidatedConfig::for_plane`] may since have narrowed.
+    pub(super) fn load_ca_bundles(mut self) -> Result<Self, ConfigError> {
+        for bundle in self
+            .adapters
+            .iter_mut()
+            .filter_map(|adapter| adapter.ca_bundle.as_mut())
+        {
+            bundle.certificates = read_ca_file(&bundle.path).map_err(|class| {
+                ConfigError::new(format!("adapters[{}].ca_file", bundle.index), class)
+            })?;
+        }
+        Ok(self)
+    }
+}
+
+fn read_ca_file(
+    file: &Path,
+) -> Result<std::sync::Arc<[rustls::pki_types::CertificateDer<'static>]>, &'static str> {
+    use rustls::pki_types::{
+        CertificateDer,
+        pem::{PemObject as _, SectionKind},
+    };
+    use std::io::Read as _;
+
+    let mut bytes = Vec::new();
+    std::fs::File::open(file)
+        .and_then(|opened| {
+            opened
+                .take(MAX_CA_FILE_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|_| "read_error")?;
+    if bytes.len() > MAX_CA_FILE_BYTES {
+        return Err("too_large");
+    }
+    let mut roots = rustls::RootCertStore::empty();
+    let mut certificates = Vec::new();
+    for section in <(SectionKind, Vec<u8>)>::pem_slice_iter(&bytes) {
+        let (kind, der) = section.map_err(|_| "invalid_pem")?;
+        // A key or CSR in a trust bundle is a mistake worth failing on, not skipping.
+        if !matches!(kind, SectionKind::Certificate) {
+            return Err("certificates_only");
+        }
+        let certificate = CertificateDer::from(der);
+        // Parse as a trust anchor now so a bad bundle fails here, not on the first request.
+        roots
+            .add(certificate.clone())
+            .map_err(|_| "invalid_certificate")?;
+        certificates.push(certificate);
+    }
+    if certificates.is_empty() {
+        return Err("no_certificates");
+    }
+    Ok(certificates.into())
+}
+
 pub(super) fn validate_provider_zone(adapter: &RawAdapter, path: &str) -> Result<(), ConfigError> {
     let valid = match adapter.kind {
-        ProviderKind::Openrouter | ProviderKind::Codex | ProviderKind::Chatgpt => {
-            adapter.trust_zone == TrustZone::External
-        }
+        ProviderKind::Openrouter
+        | ProviderKind::Codex
+        | ProviderKind::Chatgpt
+        | ProviderKind::Cliproxy
+        | ProviderKind::Anthropic => adapter.trust_zone == TrustZone::External,
         ProviderKind::Vllm | ProviderKind::Speech => true,
         ProviderKind::Ollama | ProviderKind::AppleFm => matches!(
             adapter.trust_zone,
@@ -1000,6 +1175,73 @@ pub(super) fn validate_provider_zone(adapter: &RawAdapter, path: &str) -> Result
             "provider_zone_mismatch",
         ))
     }
+}
+
+/// Chat-only kind pinned to the Claude API origin; `[adapters.anthropic]` belongs to it alone.
+pub(super) fn validate_anthropic(
+    kind: ProviderKind,
+    settings: Option<RawAnthropicSettings>,
+    input_audio: bool,
+    operations: &BTreeSet<Operation>,
+    base_url: &Url,
+    path: &str,
+) -> Result<Option<ValidatedAnthropicSettings>, ConfigError> {
+    if kind != ProviderKind::Anthropic {
+        return match settings {
+            Some(_) => Err(ConfigError::new(
+                format!("{path}.anthropic"),
+                "anthropic_only",
+            )),
+            None => Ok(None),
+        };
+    }
+    if *operations != BTreeSet::from([Operation::Chat]) {
+        return Err(ConfigError::new(
+            format!("{path}.capabilities.operations"),
+            "anthropic_chat_only",
+        ));
+    }
+    if input_audio {
+        return Err(ConfigError::new(
+            format!("{path}.capabilities.input_audio"),
+            "unsupported_by_adapter_kind",
+        ));
+    }
+    if base_url.as_str() != "https://api.anthropic.com/v1" {
+        return Err(ConfigError::new(
+            format!("{path}.base_url"),
+            "anthropic_pinned_origin_required",
+        ));
+    }
+    let settings = settings.unwrap_or(RawAnthropicSettings {
+        workspace_id: None,
+        default_max_output_tokens: None,
+    });
+    if let Some(workspace_id) = &settings.workspace_id {
+        let valid = workspace_id.len() <= 128
+            && workspace_id.strip_prefix("wrkspc_").is_some_and(|rest| {
+                !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            });
+        if !valid {
+            return Err(ConfigError::new(
+                format!("{path}.anthropic.workspace_id"),
+                "invalid_workspace_id",
+            ));
+        }
+    }
+    let default_max_output_tokens = settings
+        .default_max_output_tokens
+        .unwrap_or(DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS);
+    if !(1..=crate::core::MAX_OUTPUT_TOKENS).contains(&default_max_output_tokens) {
+        return Err(ConfigError::new(
+            format!("{path}.anthropic.default_max_output_tokens"),
+            "out_of_range",
+        ));
+    }
+    Ok(Some(ValidatedAnthropicSettings {
+        workspace_id: settings.workspace_id,
+        default_max_output_tokens,
+    }))
 }
 
 pub(super) fn validate_application_keys(
@@ -1415,6 +1657,18 @@ pub(super) fn validate_bounds(
     if upload_ms == 0 || upload_ms > timeouts.overall_ms {
         return Err(ConfigError::new("timeouts.upload_ms", "out_of_range"));
     }
+    let sse_keepalive_ms = timeouts
+        .sse_keepalive_ms
+        .unwrap_or(15_000.min(timeouts.overall_ms));
+    if sse_keepalive_ms == 0 {
+        return Err(ConfigError::new("timeouts.sse_keepalive_ms", "zero"));
+    }
+    if sse_keepalive_ms > timeouts.overall_ms {
+        return Err(ConfigError::new(
+            "timeouts.sse_keepalive_ms",
+            "timeout_too_large",
+        ));
+    }
     Ok((
         ValidatedLimits {
             max_uploads,
@@ -1434,6 +1688,7 @@ pub(super) fn validate_bounds(
             first_byte_ms: timeouts.first_byte_ms,
             idle_ms: timeouts.idle_ms,
             overall_ms: timeouts.overall_ms,
+            sse_keepalive_ms,
         },
     ))
 }

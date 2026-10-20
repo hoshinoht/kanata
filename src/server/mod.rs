@@ -82,24 +82,28 @@ pub(crate) struct ClientState {
     first_byte_ms: u64,
     idle_ms: u64,
     overall_ms: u64,
+    sse_keepalive_ms: u64,
     request_sequence: Arc<std::sync::atomic::AtomicU64>,
     telemetry: Arc<crate::telemetry::Telemetry>,
     listener: crate::telemetry::Listener,
 }
 
 impl ClientState {
-    pub(crate) fn uploads(&self) -> &Arc<crate::routing::uploads::Uploads> {
-        &self.uploads
-    }
-    pub(crate) fn upload_ms(&self) -> u64 {
-        self.upload_ms
-    }
-    pub(crate) fn registry(&self) -> &Registry {
-        &self.registry
-    }
-
-    pub(crate) fn admission(&self) -> &Admission {
-        &self.admission
+    getters! {
+        pub(crate) uploads: &Arc<crate::routing::uploads::Uploads>,
+        pub(crate) upload_ms: u64,
+        pub(crate) registry: &Registry,
+        pub(crate) admission: &Admission,
+        pub(crate) max_body_bytes: usize,
+        pub(crate) max_audio_chat_body_bytes: usize,
+        pub(crate) max_audio_bytes: usize,
+        pub(crate) max_extension_bytes: usize,
+        pub(crate) first_byte_ms: u64,
+        pub(crate) idle_ms: u64,
+        pub(crate) overall_ms: u64,
+        pub(crate) sse_keepalive_ms: u64,
+        pub(crate) telemetry: &Arc<crate::telemetry::Telemetry>,
+        pub(crate) listener: crate::telemetry::Listener,
     }
 
     pub(crate) fn adapter(&self, id: &str) -> Option<Arc<dyn Adapter>> {
@@ -108,40 +112,11 @@ impl ClientState {
     pub(crate) fn route_is_bound(&self, route: &crate::routing::RouteEntry) -> bool {
         self.adapters.contains_key(&route.adapter_id)
     }
-    pub(crate) fn max_body_bytes(&self) -> usize {
-        self.max_body_bytes
-    }
-    pub(crate) fn max_audio_chat_body_bytes(&self) -> usize {
-        self.max_audio_chat_body_bytes
-    }
-    pub(crate) fn max_audio_bytes(&self) -> usize {
-        self.max_audio_bytes
-    }
-    pub(crate) fn max_extension_bytes(&self) -> usize {
-        self.max_extension_bytes
-    }
-    pub(crate) fn first_byte_ms(&self) -> u64 {
-        self.first_byte_ms
-    }
-    pub(crate) fn idle_ms(&self) -> u64 {
-        self.idle_ms
-    }
-    pub(crate) fn overall_ms(&self) -> u64 {
-        self.overall_ms
-    }
     pub(crate) fn next_request_id(&self) -> String {
         format!(
             "req_{:016x}",
             self.request_sequence.fetch_add(1, Ordering::Relaxed)
         )
-    }
-
-    pub(crate) fn telemetry(&self) -> &Arc<crate::telemetry::Telemetry> {
-        &self.telemetry
-    }
-
-    pub(crate) fn listener(&self) -> crate::telemetry::Listener {
-        self.listener
     }
 }
 
@@ -314,6 +289,7 @@ impl TwoPlaneServer {
             first_byte_ms: config.timeouts().first_byte_ms(),
             idle_ms: config.timeouts().idle_ms(),
             overall_ms: config.timeouts().overall_ms(),
+            sse_keepalive_ms: config.timeouts().sse_keepalive_ms(),
             request_sequence: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             telemetry: telemetry.clone(),
             listener: crate::telemetry::Listener::Private,
@@ -351,18 +327,15 @@ impl TwoPlaneServer {
         })
     }
 
-    pub fn plan(&self) -> ServerPlan {
-        self.plan
+    getters! {
+        pub plan: ServerPlan,
+        pub(crate) configuration_handle(configuration): reload::ConfigurationHandle = clone,
     }
 
     /// Handle to the live key set, for the keys-file reloader.
     #[doc(hidden)]
     pub fn key_handle(&self) -> KeyHandle {
         self.configuration.keys()
-    }
-
-    pub(crate) fn configuration_handle(&self) -> reload::ConfigurationHandle {
-        self.configuration.clone()
     }
 
     /// Loads `usage-<plane>.json` and starts recording; `None` without `[keys] usage_dir`.
@@ -638,6 +611,11 @@ async fn list_models(auth: Authenticated, State(state): State<ClientState>) -> R
                     "input": ["text"], "function_tools": route.capabilities.function_tools,
                     "streaming": route.capabilities.streaming_chat, "max_output_bytes": 8 * 1024 * 1024,
                 });
+                kanata["messages"] = json!({
+                    "endpoint": "/v1/messages", "operation": "chat", "stateless": true,
+                    "function_tools": route.capabilities.function_tools,
+                    "streaming": route.capabilities.streaming_chat,
+                });
             }
             if routes.iter().any(|route| {
                 route.identity.selector.operation == crate::core::Operation::Embeddings
@@ -778,16 +756,37 @@ pub(crate) fn error_response(
     error_type: &'static str,
     code: &'static str,
 ) -> Response {
+    error_response_with_param(status, message, error_type, code, None)
+}
+
+/// Fields of a JSON error kept beside its body, so an endpoint can re-shape the envelope.
+#[derive(Clone)]
+pub(crate) struct ErrorDetails {
+    pub(crate) message: &'static str,
+    pub(crate) param: Option<String>,
+}
+
+/// The one builder of JSON error bodies; `param` names the offending request member.
+pub(crate) fn error_response_with_param(
+    status: StatusCode,
+    message: &'static str,
+    error_type: &'static str,
+    code: &'static str,
+    param: Option<&str>,
+) -> Response {
     let mut response = (
         status,
         Json(
-            json!({"error": {"message": message, "type": error_type, "param": null, "code": code}}),
+            json!({"error": {"message": message, "type": error_type, "param": param, "code": code}}),
         ),
     )
         .into_response();
-    response
-        .extensions_mut()
-        .insert(crate::telemetry::ErrorCode(code));
+    let extensions = response.extensions_mut();
+    extensions.insert(crate::telemetry::ErrorCode(code));
+    extensions.insert(ErrorDetails {
+        message,
+        param: param.map(str::to_owned),
+    });
     response
 }
 

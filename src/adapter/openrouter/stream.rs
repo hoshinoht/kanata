@@ -1,3 +1,4 @@
+use crate::adapter::upstream_failure;
 use std::{
     collections::VecDeque,
     pin::Pin,
@@ -14,7 +15,7 @@ use crate::{
             sse::{SseFramer, SseRecord},
         },
     },
-    core::{ErrorKind, GatewayError, ModelAlias, NormalizedEvent},
+    core::{GatewayError, ModelAlias, NormalizedEvent},
 };
 
 use super::stream_state::StreamState;
@@ -114,12 +115,6 @@ impl Stream for OpenRouterStream {
                 Poll::Pending => return Poll::Pending,
             }
         }
-    }
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
     }
 }
 

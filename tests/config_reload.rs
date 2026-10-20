@@ -107,6 +107,99 @@ fn wait_status(port: u16, attempts: u64) -> Value {
 }
 
 #[test]
+fn fragment_reload_publishes_complete_catalogs_and_retains_generation_on_failure() {
+    let directory = std::env::temp_dir().join(format!(
+        "kanata-catalog-reload-process-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(directory.join("keys")).unwrap();
+    let client = TcpListener::bind("127.0.0.1:0").unwrap();
+    let client_port = client.local_addr().unwrap().port();
+    let admin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let admin_port = admin.local_addr().unwrap().port();
+    let mut root: toml::Value =
+        toml::from_str(include_str!("../config/embeddings.example.toml")).unwrap();
+    root["listeners"]["client"]["port"] = toml::Value::Integer(client_port.into());
+    root["listeners"]["admin"]["port"] = toml::Value::Integer(admin_port.into());
+    root.as_table_mut().unwrap().remove("routes");
+    root.as_table_mut().unwrap().insert(
+        "include".into(),
+        toml::Value::Array(vec!["catalog.toml".into()]),
+    );
+    let root = toml::to_string(&root).unwrap();
+    let fragment = |alias: &str| {
+        format!(
+            r#"
+        [route_profiles.embedding]
+        adapter_id = "ollama-embeddings"
+        [models.embeddings.{alias}]
+        profile = "embedding"
+        id = "retained-route-id"
+        upstream_id = "fixture-embedding"
+    "#
+        )
+    };
+    fs::write(directory.join("config.toml"), &root).unwrap();
+    fs::write(directory.join("catalog.toml"), fragment("before")).unwrap();
+    fs::write(directory.join("keys/keys.toml"), keys("before", "test-key")).unwrap();
+    drop(client);
+    drop(admin);
+    let child = Command::new(env!("CARGO_BIN_EXE_kanata"))
+        .args(["serve", "--config"])
+        .arg(directory.join("config.toml"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut fixture = Fixture { directory, child };
+    wait_status(admin_port, 0);
+    let mut session = connect(client_port);
+    assert_eq!(
+        get(&mut session, "/v1/models", Some("test-key")).1["data"][0]["id"],
+        "before"
+    );
+    fs::write(fixture.directory.join("catalog.toml"), fragment("after")).unwrap();
+    fs::write(
+        fixture.directory.join("keys/keys.toml"),
+        keys("after", "test-key"),
+    )
+    .unwrap();
+    signal(&fixture.child, "-HUP");
+    let status = wait_status(admin_port, 1);
+    assert_eq!(status["configuration_reload"]["generation"], 2);
+    assert_eq!(status["configuration_reload"]["healthy"], true);
+    assert_eq!(
+        get(&mut session, "/v1/models", Some("test-key")).1["data"][0]["id"],
+        "after"
+    );
+    fs::write(
+        fixture.directory.join("catalog.toml"),
+        fragment("after").replace("embedding\"", "missing\""),
+    )
+    .unwrap();
+    signal(&fixture.child, "-HUP");
+    let status = wait_status(admin_port, 2);
+    assert_eq!(status["configuration_reload"]["generation"], 2);
+    assert_eq!(status["configuration_reload"]["healthy"], false);
+    assert!(
+        status["configuration_reload"]["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("include[0].models.embeddings.after.profile")
+    );
+    assert_eq!(
+        get(&mut session, "/v1/models", Some("test-key")).1["data"][0]["id"],
+        "after"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.directory.join("config.toml")).unwrap(),
+        root
+    );
+    signal(&fixture.child, "-TERM");
+    assert!(fixture.child.wait().unwrap().success());
+}
+
+#[test]
 fn signal_reload_updates_keepalive_requests_rejects_invalid_changes_and_retargets_key_polls() {
     let directory = std::env::temp_dir().join(format!(
         "kanata-config-reload-process-{}",

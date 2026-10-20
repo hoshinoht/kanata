@@ -98,18 +98,20 @@ impl StreamState {
                 Some(events) => self.timeout.next(events).await,
                 None => return None,
             };
-            if let Ok(Some(Ok(NormalizedEvent::ChatReasoningDelta { text }))) = next {
-                match self.reasoning(text) {
-                    Some(frame) => return Some((Ok(frame), self)),
-                    None if self.timeout.expired() => {
-                        let frame =
-                            self.fail(super::super::deadline::timeout(TimeoutPhase::Overall));
+            match next {
+                Ok(Some(Ok(NormalizedEvent::ChatReasoningDelta { text }))) => {
+                    if let Some(frame) = self.reasoning(text) {
                         return Some((Ok(frame), self));
                     }
-                    None => continue,
                 }
+                // Chat completions have no field for encrypted reasoning.
+                Ok(Some(Ok(NormalizedEvent::ChatReasoningItem { .. }))) => {}
+                next => return Some((Ok(self.frame(next)), self)),
             }
-            return Some((Ok(self.frame(next)), self));
+            if self.timeout.expired() {
+                let frame = self.fail(super::super::deadline::timeout(TimeoutPhase::Overall));
+                return Some((Ok(frame), self));
+            }
         }
     }
 
@@ -123,9 +125,7 @@ impl StreamState {
                 Err(error) => self.fail(error),
             },
             Ok(Some(Err(error))) => self.fail(error),
-            Ok(None) => self.fail(GatewayError {
-                kind: ErrorKind::UpstreamFailure,
-            }),
+            Ok(None) => self.fail(GatewayError::from(ErrorKind::UpstreamFailure)),
             Err(error) => self.fail(error),
         }
     }
@@ -173,7 +173,8 @@ impl StreamState {
                 usage,
             } => self.completed(finish_reason, usage),
             NormalizedEvent::ChatStarted { .. } => Err(upstream_failure()),
-            NormalizedEvent::ChatReasoningDelta { .. } => Err(upstream_failure()),
+            NormalizedEvent::ChatReasoningDelta { .. }
+            | NormalizedEvent::ChatReasoningItem { .. } => Err(upstream_failure()),
         }
     }
 
@@ -234,9 +235,7 @@ impl StreamState {
             return Err(upstream_failure());
         }
         let Some(reason) = finish(finish_reason) else {
-            return Err(GatewayError {
-                kind: ErrorKind::Cancelled,
-            });
+            return Err(GatewayError::from(ErrorKind::Cancelled));
         };
         if let Some(observer) = &self.observer {
             observer.record_usage(usage.clone());
@@ -268,9 +267,7 @@ impl StreamState {
 }
 
 fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
+    GatewayError::from(ErrorKind::UpstreamFailure)
 }
 
 fn valid_call_id(value: &str) -> bool {

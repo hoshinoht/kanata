@@ -1,6 +1,5 @@
 use std::{
-    collections::BTreeMap,
-    fs, io,
+    io,
     path::PathBuf,
     sync::{
         Arc,
@@ -9,29 +8,21 @@ use std::{
     time::Duration,
 };
 
-use rcgen::generate_simple_self_signed;
 use serde_json::{Value, json};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
-    sync::oneshot,
-};
-use tokio_rustls::{
-    TlsAcceptor,
-    rustls::{
-        ServerConfig,
-        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
-    },
-};
+use tokio::{io::AsyncWriteExt, net::TcpListener, sync::oneshot, task::JoinHandle};
+use tokio_rustls::TlsAcceptor;
 
 use crate::{
-    adapter::{Adapter, AdapterOutput},
+    adapter::{Adapter, AdapterFuture, AdapterOutput},
     auth::{SecretResolutionError, SecretResolver, canonical_bearer_token},
-    config::{self, SecretReference, ValidatedConfig},
+    config::{SecretReference, ValidatedConfig},
     core::{
         ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, Extensions, FinishReason,
         ModelAlias, Request as CoreRequest, RequestContext, RoutedRequest, ToolChoice, TrustZone,
         Usage,
+    },
+    test_support::{
+        RequestRecord, load_config, loopback_listener, read_request, tls_fixture, wait_for_close,
     },
 };
 
@@ -48,8 +39,6 @@ const RESPONSE: &str = include_str!("../../../tests/fixtures/openrouter/chat-com
 #[path = "tests/stream.rs"]
 mod stream;
 
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
-
 struct SyntheticResolver;
 
 impl SecretResolver for SyntheticResolver {
@@ -63,29 +52,26 @@ impl SecretResolver for SyntheticResolver {
     }
 }
 
-struct RequestRecord {
-    method: String,
-    path: String,
-    headers: BTreeMap<String, String>,
-    body: Vec<u8>,
-}
-
-fn config_for(host: &str, port: u16) -> ValidatedConfig {
-    config_with_streaming(host, port, false)
-}
-
-fn config_with_streaming(host: &str, port: u16, streaming_chat: bool) -> ValidatedConfig {
-    config_with_images(host, port, streaming_chat, false, false)
-}
-
-fn config_with_images(
-    host: &str,
-    port: u16,
+#[derive(Clone, Copy, Default)]
+struct Features {
     streaming_chat: bool,
     input_images: bool,
     allows_input_images: bool,
-) -> ValidatedConfig {
-    let contents = format!(
+}
+
+const STREAMING: Features = Features {
+    streaming_chat: true,
+    input_images: false,
+    allows_input_images: false,
+};
+
+fn config_text(host: &str, port: u16, features: Features) -> String {
+    let Features {
+        streaming_chat,
+        input_images,
+        allows_input_images,
+    } = features;
+    format!(
         r#"
 [listeners.client]
 bind = "127.0.0.1"
@@ -144,44 +130,52 @@ first_byte_ms = 1000
 idle_ms = 1000
 overall_ms = 5000
 "#
-    );
-    let id = NEXT_CONFIG.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("kanata-openrouter-tls-{id}.toml"));
-    fs::write(&path, contents).unwrap_or_else(|_| panic!("write fixture config"));
-    let config = config::load(&path).unwrap_or_else(|error| panic!("fixture config: {error}"));
-    let _ = fs::remove_file(path);
-    config
-}
-
-fn tls_fixture() -> (CertificateDer<'static>, TlsAcceptor) {
-    let certified = generate_simple_self_signed(vec![FIXTURE_HOST.to_owned()])
-        .unwrap_or_else(|_| panic!("fixture certificate"));
-    let certificate = CertificateDer::from(certified.cert.der().to_vec());
-    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-        certified.signing_key.serialize_der(),
-    ));
-    let server_config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![certificate.clone()], key)
-        .unwrap_or_else(|_| panic!("server tls config"));
-    let acceptor = TlsAcceptor::from(Arc::new(server_config));
-    (certificate, acceptor)
-}
-
-fn adapter_for(
-    config: &ValidatedConfig,
-    certificate: CertificateDer<'static>,
-    address: std::net::SocketAddr,
-) -> OpenRouterAdapter {
-    OpenRouterAdapter::from_config_with_tls_fixture(
-        config,
-        ADAPTER_ID,
-        ROUTE_ID,
-        &SyntheticResolver,
-        certificate,
-        address,
     )
-    .unwrap_or_else(|error| panic!("OpenRouter fixture adapter: {error:?}"))
+}
+
+/// An adapter whose configured `host` resolves to a loopback TLS fixture for `FIXTURE_HOST`.
+struct Client {
+    config: ValidatedConfig,
+    adapter: OpenRouterAdapter,
+}
+
+impl Client {
+    async fn new(host: &str, features: Features) -> (Self, TcpListener, TlsAcceptor) {
+        let (listener, address) = loopback_listener().await;
+        let (certificate, acceptor) = tls_fixture(FIXTURE_HOST);
+        let config = load_config(&config_text(host, address.port(), features));
+        let adapter = OpenRouterAdapter::from_config_with_tls_fixture(
+            &config,
+            ADAPTER_ID,
+            ROUTE_ID,
+            &SyntheticResolver,
+            certificate,
+            address,
+        )
+        .unwrap_or_else(|error| panic!("OpenRouter fixture adapter: {error:?}"));
+        (Self { config, adapter }, listener, acceptor)
+    }
+
+    /// A non-streaming client whose upstream answers once with `status`.
+    async fn responding(
+        status: u16,
+        content_type: &'static str,
+        body: &[u8],
+    ) -> (Self, JoinHandle<io::Result<RequestRecord>>) {
+        let (client, listener, acceptor) = Self::new(FIXTURE_HOST, Features::default()).await;
+        let server = tokio::spawn(serve_response(
+            listener,
+            acceptor,
+            status,
+            content_type,
+            body.to_vec(),
+        ));
+        (client, server)
+    }
+
+    fn execute(&self, request: CoreRequest) -> AdapterFuture {
+        self.adapter.execute(routed(&self.config, request))
+    }
 }
 
 fn routed(config: &ValidatedConfig, request: CoreRequest) -> RoutedRequest {
@@ -202,37 +196,25 @@ fn text_request() -> CoreRequest {
 }
 
 fn text_request_with_stream(stream: bool) -> CoreRequest {
+    let message = |role, text: &str| ChatMessage {
+        role,
+        content: vec![ChatContent::Text { text: text.into() }],
+    };
     CoreRequest::Chat(ChatRequest {
         model: ModelAlias(PUBLIC_MODEL.into()),
         messages: vec![
-            ChatMessage {
-                role: ChatRole::System,
-                content: vec![ChatContent::Text {
-                    text: "Be concise.".into(),
-                }],
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                content: vec![ChatContent::Text {
-                    text: "What is 1 + 1?".into(),
-                }],
-            },
-            ChatMessage {
-                role: ChatRole::Assistant,
-                content: vec![ChatContent::Text { text: "2".into() }],
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                content: vec![ChatContent::Text {
-                    text: "Say hello".into(),
-                }],
-            },
+            message(ChatRole::System, "Be concise."),
+            message(ChatRole::User, "What is 1 + 1?"),
+            message(ChatRole::Assistant, "2"),
+            message(ChatRole::User, "Say hello"),
         ],
         tools: Vec::new(),
         tool_choice: ToolChoice::Auto,
         stream,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     })
 }
 
@@ -242,6 +224,84 @@ fn error_kind(result: Result<AdapterOutput, crate::core::GatewayError>) -> Error
         Ok(AdapterOutput::Complete(_)) | Ok(AdapterOutput::Events(_)) => {
             panic!("unexpected adapter success")
         }
+    }
+}
+
+async fn recorded(server: JoinHandle<io::Result<RequestRecord>>) -> RequestRecord {
+    server
+        .await
+        .unwrap_or_else(|_| panic!("fixture server task"))
+        .unwrap_or_else(|_| panic!("fixture request"))
+}
+
+/// An upstream that answers with `head` and an unfinished body, then waits for the client to close.
+struct Stalled {
+    request: oneshot::Receiver<RequestRecord>,
+    closed: oneshot::Receiver<()>,
+    accepted: Arc<AtomicUsize>,
+    server: JoinHandle<()>,
+}
+
+impl Stalled {
+    fn serve(listener: TcpListener, acceptor: TlsAcceptor, head: &'static [u8]) -> Self {
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let accepted_for_server = accepted.clone();
+        let (request_tx, request) = oneshot::channel();
+        let (closed_tx, closed) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener
+                .accept()
+                .await
+                .unwrap_or_else(|_| panic!("fixture accept"));
+            accepted_for_server.fetch_add(1, Ordering::SeqCst);
+            let mut socket = acceptor
+                .accept(socket)
+                .await
+                .unwrap_or_else(|_| panic!("fixture TLS accept"));
+            let record = read_request(&mut socket)
+                .await
+                .unwrap_or_else(|_| panic!("fixture request"));
+            socket
+                .write_all(head)
+                .await
+                .unwrap_or_else(|_| panic!("partial response"));
+            request_tx
+                .send(record)
+                .unwrap_or_else(|_| panic!("request signal"));
+            wait_for_close(&mut socket).await;
+            let _ = closed_tx.send(());
+            if let Ok(Ok((socket, _))) =
+                tokio::time::timeout(Duration::from_millis(100), listener.accept()).await
+            {
+                accepted_for_server.fetch_add(1, Ordering::SeqCst);
+                drop(socket);
+            }
+        });
+        Self {
+            request,
+            closed,
+            accepted,
+            server,
+        }
+    }
+
+    async fn request(&mut self) -> RequestRecord {
+        tokio::time::timeout(Duration::from_secs(3), &mut self.request)
+            .await
+            .unwrap_or_else(|_| panic!("fixture request timeout"))
+            .unwrap_or_else(|_| panic!("fixture request signal"))
+    }
+
+    /// Asserts the upstream saw the close and no replayed connection.
+    async fn assert_closed_without_replay(self) {
+        tokio::time::timeout(Duration::from_secs(2), self.closed)
+            .await
+            .unwrap_or_else(|_| panic!("upstream remained open"))
+            .unwrap_or_else(|_| panic!("close signal"));
+        self.server
+            .await
+            .unwrap_or_else(|_| panic!("fixture server task"));
+        assert_eq!(self.accepted.load(Ordering::SeqCst), 1);
     }
 }
 
@@ -304,14 +364,20 @@ fn current_response_metadata_fields_are_accepted() {
 }
 
 #[test]
-fn empty_content_is_accepted_only_for_a_length_stop() {
+fn empty_content_is_an_empty_reply_unless_filtered_or_refused() {
     let mut payload: Value =
         serde_json::from_str(RESPONSE).unwrap_or_else(|_| panic!("response fixture"));
     payload["choices"][0]["message"]["content"] = json!("");
     payload["choices"][0]["message"]["reasoning"] = json!("thinking");
     payload["choices"][0]["message"]["reasoning_details"] = json!([{"type": "reasoning.text"}]);
-    for (upstream, ok) in [("length", true), ("stop", false)] {
+    for (upstream, refusal, ok) in [
+        ("length", Value::Null, true),
+        ("stop", Value::Null, true),
+        ("stop", json!("I can't help with that."), false),
+        ("content_filter", Value::Null, false),
+    ] {
         payload["choices"][0]["finish_reason"] = json!(upstream);
+        payload["choices"][0]["message"]["refusal"] = refusal;
         let bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| panic!("response json"));
         let result = super::response::decode(&bytes, ModelAlias(PUBLIC_MODEL.into()));
         match result {
@@ -339,31 +405,14 @@ fn malformed_required_usage_still_fails_with_known_metadata_present() {
 
 #[tokio::test]
 async fn verified_https_chat_sends_explicit_model_no_fallback_and_normalizes_fixture() {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap_or_else(|_| panic!("fixture listener"));
-    let address = listener
-        .local_addr()
-        .unwrap_or_else(|_| panic!("fixture address"));
-    let (certificate, acceptor) = tls_fixture();
-    let config = config_for(FIXTURE_HOST, address.port());
-    let adapter = adapter_for(&config, certificate, address);
-    assert!(!format!("{adapter:?}").contains(TOKEN));
-    let server = tokio::spawn(serve_response(
-        listener,
-        acceptor,
-        200,
-        "application/json; charset=utf-8",
-        RESPONSE.as_bytes().to_vec(),
-    ));
+    let (client, server) =
+        Client::responding(200, "application/json; charset=utf-8", RESPONSE.as_bytes()).await;
+    assert!(!format!("{:?}", client.adapter).contains(TOKEN));
 
-    let output = tokio::time::timeout(
-        Duration::from_secs(3),
-        adapter.execute(routed(&config, text_request())),
-    )
-    .await
-    .unwrap_or_else(|_| panic!("OpenRouter fixture timeout"))
-    .unwrap_or_else(|error| panic!("OpenRouter fixture response: {error:?}"));
+    let output = tokio::time::timeout(Duration::from_secs(3), client.execute(text_request()))
+        .await
+        .unwrap_or_else(|_| panic!("OpenRouter fixture timeout"))
+        .unwrap_or_else(|error| panic!("OpenRouter fixture response: {error:?}"));
     let response = match output {
         AdapterOutput::Complete(crate::core::Response::Chat(response)) => response,
         AdapterOutput::Complete(_) | AdapterOutput::Events(_) => panic!("wrong output operation"),
@@ -384,13 +433,11 @@ async fn verified_https_chat_sends_explicit_model_no_fallback_and_normalizes_fix
             output_tokens: 7,
             total_tokens: 18,
             reasoning_tokens: Some(0),
+            cached_input_tokens: Some(2),
         })
     );
 
-    let record = server
-        .await
-        .unwrap_or_else(|_| panic!("fixture server task"))
-        .unwrap_or_else(|_| panic!("fixture request"));
+    let record = recorded(server).await;
     assert_eq!(record.method, "POST");
     assert_eq!(record.path, "/api/v1/chat/completions");
     assert_eq!(record.headers["authorization"], format!("Bearer {TOKEN}"));
@@ -419,15 +466,8 @@ async fn verified_https_chat_sends_explicit_model_no_fallback_and_normalizes_fix
 
 #[tokio::test]
 async fn mismatched_fixture_hostname_is_rejected_by_tls_verification() {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap_or_else(|_| panic!("fixture listener"));
-    let address = listener
-        .local_addr()
-        .unwrap_or_else(|_| panic!("fixture address"));
-    let (certificate, acceptor) = tls_fixture();
-    let config = config_for("wrong.openrouter.fixture", address.port());
-    let adapter = adapter_for(&config, certificate, address);
+    let (client, listener, acceptor) =
+        Client::new("wrong.openrouter.fixture", Features::default()).await;
     let server = tokio::spawn(async move {
         let (socket, _) = listener
             .accept()
@@ -437,7 +477,7 @@ async fn mismatched_fixture_hostname_is_rejected_by_tls_verification() {
     });
 
     assert_eq!(
-        error_kind(adapter.execute(routed(&config, text_request())).await),
+        error_kind(client.execute(text_request()).await),
         ErrorKind::UpstreamUnavailable
     );
     assert!(
@@ -449,131 +489,47 @@ async fn mismatched_fixture_hostname_is_rejected_by_tls_verification() {
 
 #[tokio::test]
 async fn upstream_status_and_malformed_body_are_redacted_and_never_retried() {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap_or_else(|_| panic!("fixture listener"));
-    let address = listener
-        .local_addr()
-        .unwrap_or_else(|_| panic!("fixture address"));
-    let (certificate, acceptor) = tls_fixture();
-    let config = config_for(FIXTURE_HOST, address.port());
-    let adapter = adapter_for(&config, certificate, address);
-    let server = tokio::spawn(serve_response(
-        listener,
-        acceptor,
-        429,
-        "application/json",
-        br#"{"error":"fixture-upstream-secret"}"#.to_vec(),
-    ));
-
-    let error = match adapter.execute(routed(&config, text_request())).await {
-        Err(error) => error,
-        Ok(AdapterOutput::Complete(_)) | Ok(AdapterOutput::Events(_)) => {
-            panic!("unexpected status success")
-        }
-    };
-    assert_eq!(error.kind, ErrorKind::RateLimited);
-    assert!(!format!("{error:?}").contains("fixture-upstream-secret"));
-    let record = server
-        .await
-        .unwrap_or_else(|_| panic!("fixture server task"))
-        .unwrap_or_else(|_| panic!("fixture request"));
-    assert_eq!(record.path, "/api/v1/chat/completions");
-
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap_or_else(|_| panic!("fixture listener"));
-    let address = listener
-        .local_addr()
-        .unwrap_or_else(|_| panic!("fixture address"));
-    let (certificate, acceptor) = tls_fixture();
-    let config = config_for(FIXTURE_HOST, address.port());
-    let adapter = adapter_for(&config, certificate, address);
-    let server = tokio::spawn(serve_response(
-        listener,
-        acceptor,
-        200,
-        "application/json",
-        br#"{"id":"fixture","object":"chat.completion","created":0,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"private":"fixture-response-secret"}"#.to_vec(),
-    ));
-    let error = match adapter.execute(routed(&config, text_request())).await {
-        Err(error) => error,
-        Ok(AdapterOutput::Complete(_)) | Ok(AdapterOutput::Events(_)) => {
-            panic!("unexpected malformed response success")
-        }
-    };
-    assert_eq!(error.kind, ErrorKind::UpstreamFailure);
-    assert!(!format!("{error:?}").contains("fixture-response-secret"));
-    server
-        .await
-        .unwrap_or_else(|_| panic!("fixture server task"))
-        .unwrap_or_else(|_| panic!("fixture request"));
+    for (status, body, kind, secret) in [
+        (
+            429,
+            &br#"{"error":"fixture-upstream-secret"}"#[..],
+            ErrorKind::RateLimited,
+            "fixture-upstream-secret",
+        ),
+        (
+            200,
+            br#"{"id":"fixture","object":"chat.completion","created":0,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"private":"fixture-response-secret"}"#,
+            ErrorKind::UpstreamFailure,
+            "fixture-response-secret",
+        ),
+    ] {
+        let (client, server) = Client::responding(status, "application/json", body).await;
+        let error = match client.execute(text_request()).await {
+            Err(error) => error,
+            Ok(AdapterOutput::Complete(_)) | Ok(AdapterOutput::Events(_)) => {
+                panic!("unexpected success for status {status}")
+            }
+        };
+        assert_eq!(error.kind, kind);
+        assert!(!format!("{error:?}").contains(secret));
+        assert_eq!(recorded(server).await.path, "/api/v1/chat/completions");
+    }
 }
 
 #[tokio::test]
 async fn cancelling_an_inflight_https_request_closes_it_without_replay() {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap_or_else(|_| panic!("fixture listener"));
-    let address = listener
-        .local_addr()
-        .unwrap_or_else(|_| panic!("fixture address"));
-    let (certificate, acceptor) = tls_fixture();
-    let config = config_for(FIXTURE_HOST, address.port());
-    let adapter = adapter_for(&config, certificate, address);
-    let accepted = Arc::new(AtomicUsize::new(0));
-    let accepted_for_server = accepted.clone();
-    let (request_tx, request_rx) = oneshot::channel();
-    let (closed_tx, closed_rx) = oneshot::channel();
-    let server = tokio::spawn(async move {
-        let (socket, _) = listener
-            .accept()
-            .await
-            .unwrap_or_else(|_| panic!("fixture accept"));
-        accepted_for_server.fetch_add(1, Ordering::SeqCst);
-        let mut socket = acceptor
-            .accept(socket)
-            .await
-            .unwrap_or_else(|_| panic!("fixture tls accept"));
-        let record = read_request_inner(&mut socket)
-            .await
-            .unwrap_or_else(|_| panic!("fixture request"));
-        socket
-            .write_all(
-                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 4096\r\nconnection: close\r\n\r\n{",
-            )
-            .await
-            .unwrap_or_else(|_| panic!("partial response"));
-        request_tx
-            .send(record)
-            .unwrap_or_else(|_| panic!("request signal"));
-        wait_for_close(&mut socket).await;
-        let _ = closed_tx.send(());
-        if let Ok(Ok((socket, _))) =
-            tokio::time::timeout(Duration::from_millis(100), listener.accept()).await
-        {
-            accepted_for_server.fetch_add(1, Ordering::SeqCst);
-            drop(socket);
-        }
-    });
+    let (client, listener, acceptor) = Client::new(FIXTURE_HOST, Features::default()).await;
+    let mut upstream = Stalled::serve(
+        listener,
+        acceptor,
+        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 4096\r\nconnection: close\r\n\r\n{",
+    );
 
-    let request = routed(&config, text_request());
-    let task = tokio::spawn(async move { adapter.execute(request).await });
-    let record = tokio::time::timeout(Duration::from_secs(3), request_rx)
-        .await
-        .unwrap_or_else(|_| panic!("fixture request timeout"))
-        .unwrap_or_else(|_| panic!("fixture request signal"));
-    assert_eq!(record.path, "/api/v1/chat/completions");
+    let task = tokio::spawn(async move { client.execute(text_request()).await });
+    assert_eq!(upstream.request().await.path, "/api/v1/chat/completions");
     task.abort();
     let _ = task.await;
-    tokio::time::timeout(Duration::from_secs(2), closed_rx)
-        .await
-        .unwrap_or_else(|_| panic!("upstream remained open after cancellation"))
-        .unwrap_or_else(|_| panic!("close signal"));
-    server
-        .await
-        .unwrap_or_else(|_| panic!("fixture server task"));
-    assert_eq!(accepted.load(Ordering::SeqCst), 1);
+    upstream.assert_closed_without_replay().await;
 }
 
 async fn serve_response(
@@ -585,7 +541,7 @@ async fn serve_response(
 ) -> io::Result<RequestRecord> {
     let (socket, _) = listener.accept().await?;
     let mut socket = acceptor.accept(socket).await.map_err(io::Error::other)?;
-    let record = read_request_inner(&mut socket).await?;
+    let record = read_request(&mut socket).await?;
     let reason = if status == 200 {
         "OK"
     } else {
@@ -598,82 +554,6 @@ async fn serve_response(
     socket.write_all(response.as_bytes()).await?;
     socket.write_all(&body).await?;
     Ok(record)
-}
-
-async fn read_request_inner<S: AsyncRead + Unpin>(socket: &mut S) -> io::Result<RequestRecord> {
-    let mut bytes = Vec::new();
-    let head_end = loop {
-        let mut chunk = [0_u8; 2048];
-        let count = socket.read(&mut chunk).await?;
-        if count == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "request headers",
-            ));
-        }
-        bytes.extend_from_slice(&chunk[..count]);
-        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break index + 4;
-        }
-        if bytes.len() > 64 * 1024 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "headers too large",
-            ));
-        }
-    };
-    let head = std::str::from_utf8(&bytes[..head_end - 4])
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "headers"))?;
-    let mut lines = head.split("\r\n");
-    let mut request_parts = lines
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "request line"))?
-        .split_whitespace();
-    let method = request_parts
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "method"))?
-        .to_owned();
-    let path = request_parts
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "path"))?
-        .to_owned();
-    let mut headers = BTreeMap::new();
-    for line in lines {
-        let Some((name, value)) = line.split_once(':') else {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "header"));
-        };
-        headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
-    }
-    let length = headers
-        .get("content-length")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "content length"))?
-        .parse::<usize>()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "content length"))?;
-    let mut body = bytes.split_off(head_end);
-    if body.len() > length {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "request body"));
-    }
-    let already_read = body.len();
-    body.resize(length, 0);
-    if already_read < length {
-        socket.read_exact(&mut body[already_read..]).await?;
-    }
-    Ok(RequestRecord {
-        method,
-        path,
-        headers,
-        body,
-    })
-}
-
-async fn wait_for_close<S: AsyncRead + Unpin>(socket: &mut S) {
-    let mut buffer = [0_u8; 1024];
-    loop {
-        match socket.read(&mut buffer).await {
-            Ok(0) | Err(_) => return,
-            Ok(_) => {}
-        }
-    }
 }
 
 #[test]
@@ -708,13 +588,19 @@ fn chat_options_encode_with_reasoning_as_an_effort_object() {
                 temperature: Some(Temperature::new(0.7).expect("temperature")),
                 top_p: Some(TopP::new(0.9).expect("top_p")),
                 seed: Some(-1),
+                stop: Vec::new(),
+                presence_penalty: None,
+                frequency_penalty: None,
             },
             max_output_tokens: Some(64),
             max_output_tokens_param: Default::default(),
+            stop_param: Default::default(),
             reasoning_effort: Some(ReasoningEffort::Max),
             enable_thinking: None,
         },
         extensions: Extensions::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     };
     let payload = super::request::encode(&chat, UPSTREAM_MODEL, false).expect("encodes");
     let expected: Value = serde_json::from_str(include_str!(
@@ -722,6 +608,19 @@ fn chat_options_encode_with_reasoning_as_an_effort_object() {
     ))
     .expect("fixture json");
     assert_eq!(serde_json::to_value(payload).expect("serializes"), expected);
+
+    let mut chat = chat;
+    chat.options.sampling.stop = vec!["END".into(), "STOP".into()];
+    chat.options.sampling.presence_penalty = Some(crate::core::Penalty::new(1.5).expect("penalty"));
+    chat.options.sampling.frequency_penalty =
+        Some(crate::core::Penalty::new(-2.0).expect("penalty"));
+    let payload = serde_json::to_value(
+        super::request::encode(&chat, UPSTREAM_MODEL, false).expect("encodes"),
+    )
+    .expect("serializes");
+    assert_eq!(payload["stop"], json!(["END", "STOP"]));
+    assert_eq!(payload["presence_penalty"], 1.5);
+    assert_eq!(payload["frequency_penalty"], -2.0);
 }
 
 #[test]
@@ -754,6 +653,8 @@ fn input_audio_encodes_as_content_parts_and_text_stays_a_string() {
         stream: false,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     };
     let payload = serde_json::to_value(
         super::request::encode(&chat, "mistralai/voxtral-small-24b-2507", false).expect("encodes"),
@@ -838,6 +739,9 @@ fn tools_and_tool_history_encode() {
             ChatMessage {
                 role: ChatRole::Assistant,
                 content: vec![
+                    ChatContent::ReasoningText {
+                        text: "check the forecast".into(),
+                    },
                     ChatContent::Text {
                         text: String::new(),
                     },
@@ -869,6 +773,8 @@ fn tools_and_tool_history_encode() {
         stream: true,
         options: Default::default(),
         extensions: Extensions::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     };
     let payload = super::request::encode(&chat, UPSTREAM_MODEL, true).expect("encodes");
     assert_eq!(
@@ -877,7 +783,7 @@ fn tools_and_tool_history_encode() {
             "model": UPSTREAM_MODEL,
             "messages": [
                 {"role": "user", "content": "weather?"},
-                {"role": "assistant", "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}]},
+                {"role": "assistant", "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}], "reasoning": "check the forecast"},
                 {"role": "tool", "content": "sunny", "tool_call_id": "call-1"}
             ],
             "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}],
@@ -892,11 +798,12 @@ fn tools_and_tool_history_encode() {
 async fn image_input_requires_route_permission_and_uses_inline_https_payload() {
     const IMAGE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2n3QAAAAASUVORK5CYII=";
     for allowed in [false, true] {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let (certificate, acceptor) = tls_fixture();
-        let config = config_with_images(FIXTURE_HOST, address.port(), false, true, allowed);
-        let adapter = adapter_for(&config, certificate, address);
+        let features = Features {
+            input_images: true,
+            allows_input_images: allowed,
+            ..Features::default()
+        };
+        let (client, listener, acceptor) = Client::new(FIXTURE_HOST, features).await;
         let CoreRequest::Chat(mut chat) = text_request() else {
             panic!("chat fixture")
         };
@@ -907,9 +814,7 @@ async fn image_input_requires_route_permission_and_uses_inline_https_payload() {
             }],
         }];
         if !allowed {
-            let result = adapter
-                .execute(routed(&config, CoreRequest::Chat(chat)))
-                .await;
+            let result = client.execute(CoreRequest::Chat(chat)).await;
             assert_eq!(error_kind(result), ErrorKind::UnsupportedOperation);
             continue;
         }
@@ -920,15 +825,12 @@ async fn image_input_requires_route_permission_and_uses_inline_https_payload() {
             "application/json",
             RESPONSE.as_bytes().to_vec(),
         ));
-        let response = adapter
-            .execute(routed(&config, CoreRequest::Chat(chat)))
-            .await
-            .unwrap();
+        let response = client.execute(CoreRequest::Chat(chat)).await.unwrap();
         assert!(matches!(
             response,
             AdapterOutput::Complete(crate::core::Response::Chat(_))
         ));
-        let record = server.await.unwrap().unwrap();
+        let record = recorded(server).await;
         let payload: Value = serde_json::from_slice(&record.body).unwrap();
         assert_eq!(
             payload["messages"][0]["content"],

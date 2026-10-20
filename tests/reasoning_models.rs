@@ -1,18 +1,19 @@
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/gateway.rs"]
 mod support;
+#[path = "adapter_ollama/support.rs"]
+mod upstream;
 
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
 use serde_json::{Value, json};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use support::{
-    adapter_spec, capabilities, chat_outcome, chat_request, models_request, response_json,
-    server_with,
+    adapter_spec, capabilities, chat_outcome, chat_request, load_text as load, models_request,
+    response_json, server_with,
 };
-
-static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 fn source(permissions: &[&str]) -> String {
     let mut text = std::fs::read_to_string("tests/fixtures/config/example.toml").unwrap();
@@ -53,18 +54,6 @@ requires_function_tools = true
         "[listeners.public]\nbind = \"172.30.0.3\"\nport = 8081\n\n[listeners.admin]",
     );
     text
-}
-
-fn load(text: &str) -> Result<kanata::config::ValidatedConfig, kanata::config::ConfigError> {
-    let path = std::env::temp_dir().join(format!(
-        "kanata-reasoning-{}-{}.toml",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, text).unwrap();
-    let result = kanata::config::load(&path);
-    std::fs::remove_file(path).unwrap();
-    result
 }
 
 fn server(permissions: &[&str]) -> support::ServerWithRequests {
@@ -213,6 +202,96 @@ fn reasoning_families_reject_conflicting_backends_and_capabilities() {
             "{error}"
         );
     }
+}
+
+#[test]
+fn summaries_validate_provider_operation_and_legacy_compatibility() {
+    let fixture = std::fs::read_to_string("tests/fixtures/config/example.toml").unwrap();
+    for id in ["ollama-chat", "vllm-transcription"] {
+        let text = fixture.replace(
+            &format!("id = \"{id}\"\nmodel_alias"),
+            &format!("id = \"{id}\"\nreasoning_summary = \"auto\"\nmodel_alias"),
+        );
+        assert_ne!(text, fixture);
+        assert!(
+            load(&text)
+                .unwrap_err()
+                .to_string()
+                .contains("reasoning_summary: unsupported_by_adapter")
+        );
+    }
+    let generic = fixture.replace(
+        "id = \"codex-chat\"\nmodel_alias",
+        "id = \"codex-chat\"\nreasoning_summary = \"detailed\"\nmodel_alias",
+    );
+    let legacy = generic.replace("reasoning_summary =", "codex_reasoning_summary =");
+    let generic_config = load(&generic).unwrap();
+    let legacy_config = load(&legacy).unwrap();
+    let summary = |config: &kanata::config::ValidatedConfig| {
+        config
+            .routes()
+            .iter()
+            .find(|route| route.identity().route_id == "codex-chat")
+            .unwrap()
+            .reasoning_summary()
+    };
+    assert_eq!(
+        summary(&generic_config),
+        Some(kanata::config::ReasoningSummary::Detailed)
+    );
+    assert_eq!(summary(&generic_config), summary(&legacy_config));
+    let mut wrong_operation: toml::Value = toml::from_str(&generic).unwrap();
+    let route = wrong_operation["routes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|route| route["id"].as_str() == Some("codex-chat"))
+        .unwrap();
+    route["operation"] = toml::Value::String("transcription".into());
+    assert!(
+        load(&toml::to_string(&wrong_operation).unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("reasoning_summary: unsupported_by_adapter")
+    );
+    let conflict = generic.replace(
+        "reasoning_summary = \"detailed\"",
+        "reasoning_summary = \"detailed\"\ncodex_reasoning_summary = \"detailed\"",
+    );
+    assert!(
+        load(&conflict)
+            .unwrap_err()
+            .to_string()
+            .contains("conflicting_summary_options")
+    );
+}
+
+#[test]
+fn summary_policy_must_match_every_private_reasoning_variant() {
+    let source = chatgpt_source(&["reasoning-model"]);
+    let mut document: toml::Value = toml::from_str(&source).unwrap();
+    for route in document["routes"].as_array_mut().unwrap() {
+        if route["adapter_id"].as_str() == Some("codex-private") {
+            route.as_table_mut().unwrap().insert(
+                "reasoning_summary".into(),
+                toml::Value::String("auto".into()),
+            );
+        }
+    }
+    let configured = toml::to_string(&document).unwrap();
+    assert!(load(&configured).is_ok());
+    let routes = document["routes"].as_array_mut().unwrap();
+    let low = routes
+        .iter_mut()
+        .find(|route| route["model_alias"].as_str() == Some("reasoning-model:low"))
+        .unwrap();
+    low["reasoning_summary"] = toml::Value::String("concise".into());
+    assert!(
+        load(&toml::to_string(&document).unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("inconsistent_reasoning_family")
+    );
 }
 
 struct StreamAdapter {
@@ -492,4 +571,215 @@ async fn generic_private_reasoning_families_are_key_scoped_and_exact() {
             .0,
         "reasoning-model"
     );
+}
+
+fn vllm_source(address: &str, permissions: &[&str]) -> String {
+    let grants = permissions
+        .iter()
+        .map(|alias| format!("{{ model_alias = \"{alias}\", operation = \"chat\" }}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        r#"
+[listeners.client]
+bind = "127.0.0.1"
+port = 18080
+[listeners.public]
+bind = "172.30.0.3"
+port = 18081
+[listeners.admin]
+bind = "127.0.0.1"
+port = 19090
+[publication]
+tailnet_addresses = ["100.64.0.10"]
+public_routes = [{{ model_alias = "claude", operation = "chat" }}]
+[[adapters]]
+id = "cliproxy"
+kind = "vllm"
+base_url = "http://{address}/v1"
+trust_zone = "local"
+[adapters.capabilities]
+operations = ["chat"]
+streaming_chat = false
+function_tools = false
+reasoning_control = true
+[models.chat.claude]
+adapter_id = "cliproxy"
+upstream_id = "installed-claude"
+default_effort = "medium"
+efforts = ["low", "medium", "high"]
+[[application_keys]]
+id = "family-client"
+secret_ref = "env:FAMILY_CLIENT_KEY"
+permissions = [{grants}]
+[limits]
+max_queue = 4
+max_in_flight = 2
+max_body_bytes = 1048576
+max_audio_bytes = 1048576
+max_extension_bytes = 1024
+[timeouts]
+queue_ms = 1000
+connect_ms = 1000
+headers_ms = 1000
+first_byte_ms = 1000
+idle_ms = 1000
+overall_ms = 5000
+"#
+    )
+}
+
+#[test]
+fn non_account_reasoning_control_adapters_accept_families_and_pins() {
+    let source = vllm_source("127.0.0.1:9", &["claude"]);
+    let config = load(&source).unwrap();
+    let routes: Vec<_> = config
+        .routes()
+        .iter()
+        .map(|route| {
+            (
+                route.identity().route_id.as_str(),
+                route.identity().selector.model_alias.0.as_str(),
+                route.pinned_reasoning_effort(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        routes,
+        vec![
+            ("claude", "claude", Some("medium")),
+            ("claude-low", "claude:low", Some("low")),
+            ("claude-medium", "claude:medium", Some("medium")),
+            ("claude-high", "claude:high", Some("high")),
+        ]
+    );
+    let pinned = source.replace(
+        "default_effort = \"medium\"\nefforts = [\"low\", \"medium\", \"high\"]",
+        "reasoning_effort = \"high\"",
+    );
+    let config = load(&pinned).unwrap();
+    assert_eq!(config.routes()[0].pinned_reasoning_effort(), Some("high"));
+    for (text, error) in [
+        (
+            pinned.replace("reasoning_control = true", "reasoning_control = false"),
+            "reasoning_effort: unsupported_by_adapter",
+        ),
+        (
+            source.replace("reasoning_control = true", "reasoning_control = false"),
+            "reasoning_chat_family_required",
+        ),
+    ] {
+        let message = load(&text).unwrap_err().to_string();
+        assert!(message.ends_with(error), "{message}");
+    }
+}
+
+async fn vllm_call(permissions: &[&str], body: Value) -> (StatusCode, Value, Option<Value>) {
+    let mut mock =
+        upstream::MockServer::once(upstream::ResponseSpec::json(upstream::TEXT_RESPONSE)).await;
+    let config = load(&vllm_source(&mock.address, permissions)).unwrap();
+    let adapter =
+        kanata::adapter::vllm::VllmAdapter::from_config(&config, "cliproxy", "claude").unwrap();
+    let server = kanata::server::TwoPlaneServer::from_validated_with_adapters(
+        &config,
+        &support::Resolver,
+        kanata::server::Readiness::new(true),
+        vec![std::sync::Arc::new(adapter)],
+    )
+    .unwrap();
+    let response = server
+        .client_oneshot(chat_request(&body.to_string()))
+        .await
+        .unwrap();
+    let status = response.status();
+    let output = response_json(response).await;
+    if status != StatusCode::OK {
+        return (status, output, None);
+    }
+    mock.finish().await;
+    let sent = serde_json::from_slice(&mock.requests.lock().unwrap()[0].body).unwrap();
+    (status, output, Some(sent))
+}
+
+#[tokio::test]
+async fn vllm_families_advertise_scoped_efforts_and_forward_the_selected_effort() {
+    let config = load(&vllm_source("127.0.0.1:9", &["claude", "claude:high"])).unwrap();
+    let server = kanata::server::TwoPlaneServer::from_validated_with_adapters(
+        &config,
+        &support::Resolver,
+        kanata::server::Readiness::new(true),
+        vec![std::sync::Arc::new(
+            kanata::adapter::vllm::VllmAdapter::from_config(&config, "cliproxy", "claude").unwrap(),
+        )],
+    )
+    .unwrap();
+    let models = response_json(server.client_oneshot(models_request()).await.unwrap()).await;
+    assert_eq!(models["data"].as_array().unwrap().len(), 1);
+    assert_eq!(models["data"][0]["id"], "claude");
+    assert_eq!(models["data"][0]["kanata"]["reasoning_control"], true);
+    assert_eq!(
+        models["data"][0]["kanata"]["reasoning_efforts"],
+        json!(["medium", "high"])
+    );
+    let public = response_json(server.public_oneshot(models_request()).await.unwrap()).await;
+    assert_eq!(public["data"][0]["id"], "claude");
+    assert_eq!(
+        public["data"][0]["kanata"]["reasoning_efforts"],
+        json!(["medium"])
+    );
+
+    let message = json!([{"role":"user","content":"fixture"}]);
+    for (permissions, model, effort, upstream_effort) in [
+        (&["claude:high"][..], "claude", Some("high"), "high"),
+        (&["claude"][..], "claude", None, "medium"),
+        (&["claude:low"][..], "claude:low", None, "low"),
+    ] {
+        let mut body = json!({"model": model, "messages": message});
+        if let Some(effort) = effort {
+            body["reasoning_effort"] = json!(effort);
+        }
+        let (status, output, sent) = vllm_call(permissions, body).await;
+        assert_eq!(status, StatusCode::OK, "{model} {effort:?}: {output}");
+        assert_eq!(output["model"], "claude");
+        let sent = sent.unwrap();
+        assert_eq!(sent["model"], "installed-claude");
+        assert_eq!(sent["reasoning_effort"], upstream_effort);
+        assert!(sent.get("chat_template_kwargs").is_none());
+    }
+    for (permissions, model, effort, status) in [
+        (
+            &["claude", "claude:high"][..],
+            "claude",
+            Some("xhigh"),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            &["claude:high"][..],
+            "claude",
+            None,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            &["claude:high"][..],
+            "claude",
+            Some("low"),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            &["claude:high"][..],
+            "claude:high",
+            Some("low"),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let mut body = json!({"model": model, "messages": message});
+        if let Some(effort) = effort {
+            body["reasoning_effort"] = json!(effort);
+        }
+        let (actual, output, _) = vllm_call(permissions, body).await;
+        assert_eq!(actual, status, "{model} {effort:?}: {output}");
+        if status == StatusCode::BAD_REQUEST {
+            assert_eq!(output["error"]["param"], "reasoning_effort");
+        }
+    }
 }

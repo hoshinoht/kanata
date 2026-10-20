@@ -6,8 +6,9 @@ use serde_json::{Value, json};
 use crate::config::{self, CodexReasoningEffort, CodexReasoningSummary};
 use crate::core::{
     ChatContent, ChatMessage, ChatRequest, ChatRole, ErrorKind, Extensions, FunctionTool,
-    InputAudioFormat, ModelAlias, Operation, Request, RequestContext, RouteIdentity, RoutedRequest,
-    ToolCall, ToolChoice, TrustZone, ValidatedAudio, ValidatedFile,
+    InputAudioFormat, ModelAlias, Operation, PromptCacheKey, ReasoningItem, Request,
+    RequestContext, RouteIdentity, RoutedRequest, ToolCall, ToolChoice, TrustZone, ValidatedAudio,
+    ValidatedFile,
 };
 
 use super::to_responses_request as map_responses_request;
@@ -38,6 +39,8 @@ fn chat(messages: Vec<ChatMessage>) -> ChatRequest {
         stream: false,
         extensions: Extensions::default(),
         options: Default::default(),
+        prompt_cache_key: None,
+        include_encrypted_reasoning: false,
     }
 }
 
@@ -484,4 +487,78 @@ fn empty_upstream_id_is_rejected_without_rewriting_nonempty_values() {
         ))),
         ErrorKind::InvalidRequest
     );
+}
+
+fn reasoning(id: Option<&str>, content: &str) -> ChatContent {
+    ChatContent::Reasoning {
+        item: ReasoningItem::new(id.map(Into::into), content.into()).expect("valid item"),
+    }
+}
+
+/// A reasoning-only turn, then reasoning ahead of a call with an empty result.
+fn tool_loop_with_reasoning() -> ChatRequest {
+    chat(vec![
+        message(ChatRole::User, "question"),
+        ChatMessage {
+            role: ChatRole::Assistant,
+            content: vec![reasoning(None, "ENCRYPTED_ONLY")],
+        },
+        ChatMessage {
+            role: ChatRole::Assistant,
+            content: vec![
+                ChatContent::Text {
+                    text: "checking".into(),
+                },
+                reasoning(Some("rs_fixture_1"), "ENCRYPTED_1"),
+                ChatContent::ToolCall {
+                    call: ToolCall {
+                        id: "call_1".into(),
+                        name: "lookup".into(),
+                        arguments: "{}".into(),
+                    },
+                },
+            ],
+        },
+        ChatMessage {
+            role: ChatRole::Tool,
+            content: vec![ChatContent::ToolResult {
+                call_id: "call_1".into(),
+                content: String::new(),
+            }],
+        },
+    ])
+}
+
+#[test]
+fn reasoning_replays_in_transcript_order_and_cache_fields_follow_the_request() {
+    let mut requested = tool_loop_with_reasoning();
+    requested.prompt_cache_key = Some(PromptCacheKey::new("cache-key-fixture".into()).unwrap());
+    requested.include_encrypted_reasoning = true;
+    let actual = to_responses_request(&route(
+        requested,
+        context(TrustZone::External, "codex-upstream"),
+    ))
+    .expect("reasoning history maps");
+    assert_eq!(
+        actual["input"],
+        json!([
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"question"}]},
+            {"type":"reasoning","summary":[],"encrypted_content":"ENCRYPTED_ONLY"},
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"checking"}]},
+            {"type":"reasoning","id":"rs_fixture_1","summary":[],"encrypted_content":"ENCRYPTED_1"},
+            {"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},
+            {"type":"function_call_output","call_id":"call_1","output":""},
+        ])
+    );
+    assert_eq!(actual["prompt_cache_key"], "cache-key-fixture");
+    assert_eq!(actual["include"], json!(["reasoning.encrypted_content"]));
+
+    let unrequested = to_responses_request(&route(
+        tool_loop_with_reasoning(),
+        context(TrustZone::External, "codex-upstream"),
+    ))
+    .expect("reasoning history maps");
+    assert!(unrequested.get("prompt_cache_key").is_none());
+    assert!(unrequested.get("include").is_none());
+    assert_eq!(unrequested["input"][1]["type"], "reasoning");
 }

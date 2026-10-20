@@ -2,6 +2,17 @@ use super::{ConfigError, KeySource, ValidatedConfig};
 
 impl ValidatedConfig {
     pub(crate) fn check_reload_compatible(&self, next: &Self) -> Result<(), ConfigError> {
+        if let Some(field) = self.restart_fields(next).first() {
+            return Err(ConfigError::new(
+                format!("reload.{field}"),
+                "restart_required",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn restart_fields(&self, next: &Self) -> Vec<&'static str> {
+        let mut fields = Vec::new();
         for (same, field) in [
             (self.listeners == next.listeners, "listeners"),
             (self.limits == next.limits, "limits"),
@@ -11,10 +22,7 @@ impl ValidatedConfig {
             (self.chatgpt_auth == next.chatgpt_auth, "chatgpt_auth"),
         ] {
             if !same {
-                return Err(ConfigError::new(
-                    format!("reload.{field}"),
-                    "restart_required",
-                ));
+                fields.push(field);
             }
         }
         let same_keys = match (&self.key_source, &next.key_source) {
@@ -32,19 +40,17 @@ impl ValidatedConfig {
             _ => false,
         };
         if !same_keys {
-            return Err(ConfigError::new("reload.keys", "restart_required"));
+            fields.push("keys");
         }
         for previous in &self.adapters {
             if let Some(next) = next.adapters.iter().find(|next| next.id() == previous.id())
                 && (previous.max_in_flight() != next.max_in_flight()
                     || previous.circuit_breaker() != next.circuit_breaker())
             {
-                return Err(ConfigError::new(
-                    "reload.adapter_limits",
-                    "restart_required",
-                ));
+                fields.push("adapter_limits");
+                break;
             }
         }
-        Ok(())
+        fields
     }
 }

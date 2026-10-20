@@ -1,3 +1,4 @@
+use crate::adapter::{internal_error, status_error, unsupported_operation, upstream_failure};
 use std::{fmt, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use http::Method;
@@ -154,8 +155,11 @@ impl Adapter for CodexAdapter {
             Err(error) => return Box::pin(async move { Err(error) }),
         };
         let public_model = routed.context().route.selector.model_alias.clone();
-        let streaming = match routed.request() {
-            Request::Chat(chat) => chat.stream,
+        let (streaming, encrypted_reasoning) = match routed.request() {
+            Request::Chat(chat) => (
+                chat.stream,
+                protocol::requests_encrypted_reasoning(chat, ProviderKind::Codex),
+            ),
             Request::Transcription(_) | Request::Embeddings(_) | Request::Speech(_) => {
                 return Box::pin(async { Err(unsupported_operation()) });
             }
@@ -191,11 +195,16 @@ impl Adapter for CodexAdapter {
                 )
                 .await?;
                 if streaming {
-                    Ok(DispatchResult::Stream(body))
+                    Ok::<_, GatewayError>(DispatchResult::Stream(body))
                 } else {
-                    let response =
-                        stream::collect_response(body, public_model.clone(), deadline, &label)
-                            .await?;
+                    let response = stream::collect_response(
+                        body,
+                        public_model.clone(),
+                        deadline,
+                        &label,
+                        encrypted_reasoning,
+                    )
+                    .await?;
                     Ok(DispatchResult::Complete(Response::Chat(response)))
                 }
             };
@@ -208,6 +217,7 @@ impl Adapter for CodexAdapter {
                     public_model,
                     deadline,
                     label,
+                    encrypted_reasoning,
                 ))),
                 DispatchResult::Complete(response) => Ok(AdapterOutput::Complete(response)),
             }
@@ -341,53 +351,19 @@ async fn post_responses(
     transport.execute(request).await
 }
 
-fn status_error(status: u16) -> GatewayError {
-    let kind = match status {
-        400 | 422 => ErrorKind::InvalidRequest,
-        404 => ErrorKind::NotFound,
-        401 | 403 | 408 | 503 | 504 => ErrorKind::UpstreamUnavailable,
-        429 => ErrorKind::RateLimited,
-        500..=599 => ErrorKind::UpstreamFailure,
-        _ => ErrorKind::UpstreamFailure,
-    };
-    GatewayError { kind }
-}
-
 fn credential_unavailable(label: &UpstreamLabel, error: RefreshError) -> GatewayError {
     label.credential(error);
     upstream_unavailable()
 }
 
-fn internal_error() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
-    }
-}
-
 fn upstream_unavailable() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamUnavailable,
-    }
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
-    }
+    GatewayError::from(ErrorKind::UpstreamUnavailable)
 }
 
 fn overall_timeout_error() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Timeout {
-            phase: crate::core::TimeoutPhase::Overall,
-        },
-    }
+    GatewayError::from(ErrorKind::Timeout {
+        phase: crate::core::TimeoutPhase::Overall,
+    })
 }
 
 #[cfg(test)]

@@ -4,7 +4,6 @@ use axum::{body::to_bytes, http::StatusCode};
 use futures_util::StreamExt;
 use kanata::{
     adapter::{Adapter, AdapterOutput, ollama::OllamaAdapter},
-    config,
     core::{
         ChatContent, ChatRole, ErrorKind, Extensions, FinishReason, ModelAlias, NormalizedEvent,
         Operation, Request as CoreRequest, RequestContext, RouteIdentity, RoutedRequest,
@@ -17,8 +16,8 @@ use serde_json::{Value, json};
 use crate::support::{
     MockServer, RequestRecord, ResponseSpec, SEPARATE_USAGE_STREAM, TEXT_RESPONSE, TEXT_STREAM,
     TOOLS_RESPONSE, TOOLS_STREAM, adapter, api_request, capabilities, config_for,
-    config_for_with_timeouts, error_kind, routed, text_request, text_request_with_stream,
-    tool_request,
+    config_for_with_timeouts, error_kind, load_text as load_contents, routed, text_request,
+    text_request_with_stream, tool_request,
 };
 
 fn decode(record: &RequestRecord) -> Value {
@@ -254,6 +253,7 @@ async fn stream_text_is_demand_driven_and_normalizes_fragmented_utf8_sse() {
                     output_tokens: 7,
                     total_tokens: 18,
                     reasoning_tokens: None,
+                    cached_input_tokens: None,
                 })
             }
         ]
@@ -709,8 +709,12 @@ async fn reasoning_content_is_not_exposed_as_assistant_text() {
 }
 
 #[tokio::test]
-async fn length_stop_without_output_is_an_empty_reply_and_stop_is_not() {
-    for (finish_reason, ok) in [("length", true), ("stop", false)] {
+async fn stop_or_length_without_output_is_an_empty_reply_and_content_filter_is_not() {
+    for (finish_reason, expected) in [
+        ("length", Some(FinishReason::Length)),
+        ("stop", Some(FinishReason::Stop)),
+        ("content_filter", None),
+    ] {
         let body = json!({
             "choices": [{
                 "index": 0,
@@ -723,9 +727,9 @@ async fn length_stop_without_output_is_an_empty_reply_and_stop_is_not() {
         let config = config_for(&mock.address, false, true);
         let adapter = adapter(&config);
         let output = adapter.execute(routed(&config, text_request())).await;
-        if ok {
+        if let Some(expected) = expected {
             let response = crate::support::take_chat(output);
-            assert_eq!(response.finish_reason, FinishReason::Length);
+            assert_eq!(response.finish_reason, expected);
             assert!(response.message.content.is_empty());
         } else {
             assert_eq!(error_kind(output), ErrorKind::UpstreamFailure);
@@ -918,12 +922,4 @@ fn constructor_rejects_wrong_provider_and_trust_zone() {
     );
     let config = load_contents(&with_secret).unwrap_or_else(|_| panic!("secret config"));
     assert!(OllamaAdapter::new(&config.adapters()[0], config.timeouts(), config.limits()).is_err());
-}
-
-fn load_contents(contents: &str) -> Result<kanata::config::ValidatedConfig, config::ConfigError> {
-    let path = std::env::temp_dir().join("kanata-ollama-constructor.toml");
-    std::fs::write(&path, contents).unwrap_or_else(|_| panic!("write config"));
-    let result = config::load(&path);
-    let _ = std::fs::remove_file(path);
-    result
 }

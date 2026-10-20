@@ -1,30 +1,21 @@
-use std::fmt;
-
 use crate::core::{ErrorKind, GatewayError, TimeoutPhase};
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) enum Endpoint {
-    Chat,
-    Transcription,
-    Models,
-    Embeddings,
-    Responses,
-    Speech,
-    Other,
+str_enum! {
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    pub(crate) enum Endpoint {
+        Chat = 0 => "chat",
+        Transcription = 1 => "transcription",
+        Models = 2 => "models",
+        Embeddings = 4 => "embeddings",
+        Responses = 5 => "responses",
+        Speech = 6 => "speech",
+        Messages = 7 => "messages",
+        Other = 3 => "other",
+    }
+    const ALL;
 }
 
 impl Endpoint {
-    pub(crate) const COUNT: usize = 7;
-    pub(crate) const ALL: [Self; Self::COUNT] = [
-        Self::Chat,
-        Self::Transcription,
-        Self::Models,
-        Self::Embeddings,
-        Self::Responses,
-        Self::Speech,
-        Self::Other,
-    ];
-
     pub(crate) fn from_path(path: &str) -> Self {
         match path {
             "/v1/chat/completions" => Self::Chat,
@@ -33,117 +24,39 @@ impl Endpoint {
             "/v1/embeddings" => Self::Embeddings,
             "/v1/responses" => Self::Responses,
             "/v1/audio/speech" => Self::Speech,
+            "/v1/messages" => Self::Messages,
             _ => Self::Other,
         }
     }
+}
 
-    pub(crate) const fn index(self) -> usize {
-        match self {
-            Self::Chat => 0,
-            Self::Transcription => 1,
-            Self::Models => 2,
-            Self::Other => 3,
-            Self::Embeddings => 4,
-            Self::Responses => 5,
-            Self::Speech => 6,
-        }
-    }
-
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Chat => "chat",
-            Self::Transcription => "transcription",
-            Self::Models => "models",
-            Self::Embeddings => "embeddings",
-            Self::Responses => "responses",
-            Self::Speech => "speech",
-            Self::Other => "other",
-        }
+str_enum! {
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    pub(crate) enum Outcome {
+        Success = 0 => "success",
+        ClientError = 1 => "client_error",
+        UpstreamError = 2 => "upstream_error",
+        InternalError = 3 => "internal_error",
+        Timeout = 4 => "timeout",
+        Cancelled = 5 => "cancelled",
+        Draining = 6 => "draining",
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) enum Outcome {
-    Success,
-    ClientError,
-    UpstreamError,
-    InternalError,
-    Timeout,
-    Cancelled,
-    Draining,
-}
-
-impl Outcome {
-    pub(crate) const COUNT: usize = 7;
-
-    pub(crate) const fn index(self) -> usize {
-        match self {
-            Self::Success => 0,
-            Self::ClientError => 1,
-            Self::UpstreamError => 2,
-            Self::InternalError => 3,
-            Self::Timeout => 4,
-            Self::Cancelled => 5,
-            Self::Draining => 6,
-        }
+str_enum! {
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    pub(crate) enum StatusClass {
+        Unknown = 0 => "unknown",
+        Informational = 1 => "1xx",
+        Success = 2 => "2xx",
+        Redirection = 3 => "3xx",
+        ClientError = 4 => "4xx",
+        ServerError = 5 => "5xx",
     }
-
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Success => "success",
-            Self::ClientError => "client_error",
-            Self::UpstreamError => "upstream_error",
-            Self::InternalError => "internal_error",
-            Self::Timeout => "timeout",
-            Self::Cancelled => "cancelled",
-            Self::Draining => "draining",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) enum StatusClass {
-    Unknown,
-    Informational,
-    Success,
-    Redirection,
-    ClientError,
-    ServerError,
+    const ALL;
 }
 
 impl StatusClass {
-    pub(crate) const COUNT: usize = 6;
-    pub(crate) const ALL: [Self; Self::COUNT] = [
-        Self::Unknown,
-        Self::Informational,
-        Self::Success,
-        Self::Redirection,
-        Self::ClientError,
-        Self::ServerError,
-    ];
-
-    pub(crate) const fn index(self) -> usize {
-        match self {
-            Self::Unknown => 0,
-            Self::Informational => 1,
-            Self::Success => 2,
-            Self::Redirection => 3,
-            Self::ClientError => 4,
-            Self::ServerError => 5,
-        }
-    }
-
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::Informational => "1xx",
-            Self::Success => "2xx",
-            Self::Redirection => "3xx",
-            Self::ClientError => "4xx",
-            Self::ServerError => "5xx",
-        }
-    }
-
     pub(crate) fn from_status(status: u16) -> Self {
         match status / 100 {
             1 => Self::Informational,
@@ -156,47 +69,21 @@ impl StatusClass {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) enum Phase {
-    Upload,
-    None,
-    Queue,
-    Connect,
-    Headers,
-    FirstByte,
-    Idle,
-    Overall,
+str_enum! {
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    pub(crate) enum Phase {
+        Upload = 7 => "upload",
+        None = 0 => "none",
+        Queue = 1 => "queue",
+        Connect = 2 => "connect",
+        Headers = 3 => "headers",
+        FirstByte = 4 => "first_byte",
+        Idle = 5 => "idle",
+        Overall = 6 => "overall",
+    }
 }
 
 impl Phase {
-    pub(crate) const COUNT: usize = 8;
-
-    pub(crate) const fn index(self) -> usize {
-        match self {
-            Self::Upload => 7,
-            Self::None => 0,
-            Self::Queue => 1,
-            Self::Connect => 2,
-            Self::Headers => 3,
-            Self::FirstByte => 4,
-            Self::Idle => 5,
-            Self::Overall => 6,
-        }
-    }
-
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Upload => "upload",
-            Self::None => "none",
-            Self::Queue => "queue",
-            Self::Connect => "connect",
-            Self::Headers => "headers",
-            Self::FirstByte => "first_byte",
-            Self::Idle => "idle",
-            Self::Overall => "overall",
-        }
-    }
-
     pub(crate) const fn from_timeout(value: TimeoutPhase) -> Self {
         match value {
             TimeoutPhase::Upload => Self::Upload,
@@ -225,29 +112,5 @@ pub(crate) fn error_labels(error: GatewayError) -> (Outcome, Phase) {
         | ErrorKind::Conflict
         | ErrorKind::RateLimited
         | ErrorKind::UnsupportedOperation => (Outcome::ClientError, Phase::None),
-    }
-}
-
-impl fmt::Display for Endpoint {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl fmt::Display for Outcome {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl fmt::Display for StatusClass {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl fmt::Display for Phase {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
     }
 }

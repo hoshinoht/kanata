@@ -1,8 +1,8 @@
+use crate::adapter::{internal_error, invalid_request, unsupported_operation};
 use crate::{
     config::{CodexReasoningEffort, CodexReasoningSummary, ValidatedRoute},
     core::{
-        Capabilities, ErrorKind, GatewayError, Operation, Request, RouteIdentity, RoutedRequest,
-        TrustZone,
+        Capabilities, GatewayError, Operation, Request, RouteIdentity, RoutedRequest, TrustZone,
     },
 };
 
@@ -64,7 +64,7 @@ pub(super) fn bind_route(
     Ok(RouteBinding {
         identity: identity.clone(),
         reasoning_effort,
-        reasoning_summary: route.codex_reasoning_summary(),
+        reasoning_summary: route.reasoning_summary(),
     })
 }
 
@@ -107,22 +107,4 @@ pub(super) fn validate<'a>(
         return Err(unsupported_operation());
     }
     Ok(binding)
-}
-
-fn internal_error() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
-    }
-}
-
-fn invalid_request() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::InvalidRequest,
-    }
-}
-
-fn unsupported_operation() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UnsupportedOperation,
-    }
 }

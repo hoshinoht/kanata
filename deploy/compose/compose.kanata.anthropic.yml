@@ -1,0 +1,14 @@
+# Opt-in: hands the private Kanata container a Claude Console API key as a Compose secret.
+#   COMPOSE_FILE=...:deploy/compose/compose.kanata.anthropic.yml
+# The key file stays on the host (e.g. 0600 in a 0700 directory); point the
+# Anthropic adapter at secret_ref = "file:/run/secrets/anthropic-api-key".
+# Anthropic routes are private-only, so kanata-public never receives this secret.
+services:
+  kanata:
+    secrets:
+      - source: anthropic_api_key
+        target: anthropic-api-key
+
+secrets:
+  anthropic_api_key:
+    file: "${KANATA_ANTHROPIC_KEY_FILE:?Set KANATA_ANTHROPIC_KEY_FILE to the Anthropic API key file}"

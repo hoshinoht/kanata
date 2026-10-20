@@ -1,6 +1,6 @@
 # Sign in with ChatGPT
 
-Kanata has a separate `chatgpt` provider for the documented ChatGPT plan usage preview. Authentication runs on the host; chat routes stay private. The existing experimental `codex` provider remains separate and its credentials are not imported.
+Kanata's `chatgpt` provider uses OpenAI's [documented OAuth integration](https://developers.openai.com/siwc/token-sharing-open-source) for eligible ChatGPT plan usage (preview). Authentication runs on the host; chat routes stay private. The legacy `codex` provider is deprecated and retained for explicit restoration; its credentials are not imported.
 
 Your account permissions, workspace policy and current model catalog determine what is available. Verify a short inference request with your selected account after configuring a route.
 
@@ -38,17 +38,17 @@ Your account permissions, workspace policy and current model catalog determine w
 
 ## Docker deployment
 
-For an existing Compose deployment, use the [Docker setup](../../deploy/docker/README.md#sign-in-with-chatgpt). It adds the opt-in `compose.kanata.chatgpt.yml` overlay and a dedicated `KANATA_CHATGPT_STATE_DIR` directory. Set `[chatgpt_auth].state_dir` to the same absolute path; host browser login and the private container use one protected state store. This preserves the existing client key file, provider API-key secrets and Codex credentials.
+For an existing Compose deployment, use the [Docker setup](../../deploy/docker/README.md#sign-in-with-chatgpt). It adds the opt-in `deploy/compose/compose.kanata.chatgpt.yml` overlay and a dedicated `KANATA_CHATGPT_STATE_DIR` directory. Set `[chatgpt_auth].state_dir` to the same absolute path; host browser login and the private container use one protected state store. This preserves the existing client key file, provider API-key secrets and Codex credentials.
 
 ```sh
-scripts/kanata.sh chatgpt login
-scripts/kanata.sh chatgpt status
-scripts/kanata.sh chatgpt models
+deploy/scripts/kanata.sh chatgpt login
+deploy/scripts/kanata.sh chatgpt status
+deploy/scripts/kanata.sh chatgpt models
 # Named profile for login or logout:
-scripts/kanata.sh chatgpt login --profile work
+deploy/scripts/kanata.sh chatgpt login --profile work
 ```
 
-The callback stays on host loopback. Nothing is published through the reverse proxy or public gateway. After selecting an account model slug and adding a private route, grant its alias through `scripts/kanata.sh portal` or the key CLI. Starting the gateway does not start sign-in.
+The callback stays on host loopback. Nothing is published through the reverse proxy or public gateway. After selecting an account model slug and adding a private route, grant its alias through `deploy/scripts/kanata.sh portal` or the key CLI. Starting the gateway does not start sign-in.
 
 ## Profiles and sign-out
 
@@ -72,6 +72,8 @@ The callback always binds `127.0.0.1` on an available port at `/auth/callback`. 
 - Exact configured routes and existing key scopes, admission, cancellation, deadlines, usage reports and quotas.
 
 With adapter `reasoning_control = true`, pin every route with `reasoning_effort` and use matching suffixes such as `chatgpt-chat:low` for variants. Clients discover one base alias and accessible `kanata.reasoning_efforts`, then send Chat `reasoning_effort` or Responses `reasoning.effort`. See [client integration and migration](service-handoff.md).
+
+For debugging, set `reasoning_summary = "auto"`, `"concise"` or `"detailed"` on each chat route in a family. Summary requests are off by default, and every variant must use the same policy. Private Chat replies return summaries in `message.reasoning_content` or streamed `delta.reasoning_content`; [Responses](responses.md) returns reasoning output items and summary events. Summaries depend on account/model support and may be absent. They are not raw internal reasoning or encrypted reasoning, and their presence does not determine the reasoning-token count. Clients cannot override the route policy with `reasoning.summary`.
 
 Legacy adapters with reasoning controls disabled keep their default request shape. Catalog levels outside the supported standard enum appear in `unsupported_reasoning_efforts`; `ultra` task delegation is not enabled. Configure only levels supported by the selected account model. The [official reasoning guide](https://developers.openai.com/api/docs/guides/reasoning) defines standard effort values; use the account catalog to select advertised levels and verify inference with the selected model.
 

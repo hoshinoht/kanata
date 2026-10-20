@@ -1,29 +1,20 @@
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/template.rs"]
 mod template;
 
 use std::fs;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kanata::config;
 use kanata::core::{ModelAlias, Operation, RouteSelector};
 use kanata::routing::Registry;
-
-static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
 fn example() -> String {
     fs::read_to_string("tests/fixtures/config/example.toml").expect("example exists")
 }
 
 fn check(contents: String) -> Result<config::ValidatedConfig, String> {
-    let path = std::env::temp_dir().join(format!(
-        "kanata-routing-{}-{}.toml",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture writes");
-    let result = config::load(&path).map_err(|error| error.to_string());
-    fs::remove_file(path).expect("fixture removes");
-    result
+    scratch::load_text(&contents).map_err(|error| error.to_string())
 }
 
 #[test]

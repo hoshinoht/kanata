@@ -1,12 +1,12 @@
 use std::{sync::Arc, sync::atomic::Ordering, task::Poll, time::Duration};
 
 use axum::{
-    body::{Bytes, to_bytes},
+    body::{Body, Bytes, to_bytes},
     http::StatusCode,
 };
 use futures_util::StreamExt;
 use kanata::core::{FinishReason, ModelAlias, NormalizedEvent, Usage};
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::Instant};
 
 use crate::support::{self, Mode};
 
@@ -28,6 +28,7 @@ fn completed() -> support::Event {
             output_tokens: 1,
             total_tokens: 2,
             reasoning_tokens: None,
+            cached_input_tokens: None,
         }),
     })
 }
@@ -408,4 +409,194 @@ async fn expiry_after_completion_drops_buffered_success_and_releases_permit() {
     assert!(String::from_utf8_lossy(&body).contains("[DONE]"));
     assert_eq!(probe.dispatches(), 2);
     assert_eq!(probe.drops.load(Ordering::SeqCst), 2);
+}
+
+const KEEPALIVE: &str = ": keepalive\n\n";
+
+/// Every body frame with its offset in milliseconds from `start`.
+async fn timed_frames(body: Body, start: Instant) -> Vec<(u128, String)> {
+    let mut body = body.into_data_stream();
+    let mut frames = Vec::new();
+    while let Some(frame) = body.next().await {
+        let frame = frame.expect("frame bytes");
+        frames.push((
+            start.elapsed().as_millis(),
+            String::from_utf8(frame.to_vec()).expect("utf8"),
+        ));
+    }
+    frames
+}
+
+fn keepalive_times(frames: &[(u128, String)]) -> Vec<u128> {
+    frames
+        .iter()
+        .filter(|(_, frame)| frame == KEEPALIVE)
+        .map(|(at, _)| *at)
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn stalled_chat_stream_keeps_alive_until_the_idle_deadline_and_releases_the_permit() {
+    let config = support::keepalive_config(1_000, 300, 10_000);
+    let (stalled_sender, stalled) = support::bounded_events(4);
+    stalled_sender.send(started()).await.expect("start");
+    stalled_sender.send(text("hi")).await.expect("text");
+    let (next_sender, next) = support::bounded_events(4);
+    next_sender.send(started()).await.expect("next start");
+    next_sender
+        .send(completed())
+        .await
+        .expect("next completion");
+    let (server, probe) = support::server_with_modes(&config, vec![stalled, next]);
+
+    let start = Instant::now();
+    let response = server
+        .client_oneshot(support::request(true))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let frames = timed_frames(response.into_body(), start).await;
+
+    // floor(idle / interval) keepalives; the fourth interval straddles the deadline.
+    assert_eq!(keepalive_times(&frames), [300, 600, 900]);
+    let (at, error) = frames.last().expect("terminal frame");
+    assert_eq!(*at, 1_000, "idle counts from the last upstream event");
+    assert!(error.contains("upstream_timeout"));
+    assert!(frames.iter().all(|(_, frame)| !frame.contains("[DONE]")));
+    assert_eq!(probe.drops.load(Ordering::SeqCst), 1);
+    drop(stalled_sender);
+
+    // The single in-flight slot was released by the terminal frame.
+    let response = server
+        .client_oneshot(support::request(true))
+        .await
+        .expect("next response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("next body");
+    assert!(String::from_utf8_lossy(&body).contains("[DONE]"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn stalled_responses_stream_keeps_alive_then_fails_at_the_idle_deadline() {
+    let config = support::keepalive_config(1_000, 300, 10_000);
+    let (sender, mode) = support::bounded_events(4);
+    sender.send(started()).await.expect("start");
+    sender.send(text("hi")).await.expect("text");
+    let (server, _) = support::server(&config, mode);
+
+    let start = Instant::now();
+    let response = server
+        .client_oneshot(support::responses_request())
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let frames = timed_frames(response.into_body(), start).await;
+
+    assert_eq!(keepalive_times(&frames), [300, 600, 900]);
+    let (at, failed) = frames.last().expect("terminal frame");
+    assert_eq!(*at, 1_000);
+    assert!(failed.contains("event: response.failed"));
+    assert!(failed.contains("upstream_timeout"));
+    assert!(
+        frames
+            .iter()
+            .all(|(_, frame)| !frame.contains("response.completed"))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn stalled_messages_stream_pings_then_fails_at_the_idle_deadline() {
+    let config = support::keepalive_config(1_000, 300, 10_000);
+    let (sender, mode) = support::bounded_events(4);
+    sender.send(started()).await.expect("start");
+    sender.send(text("hi")).await.expect("text");
+    let (server, _) = support::server(&config, mode);
+
+    let start = Instant::now();
+    let response = server
+        .client_oneshot(support::messages_request())
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let frames = timed_frames(response.into_body(), start).await;
+
+    let pings: Vec<u128> = frames
+        .iter()
+        .filter(|(_, frame)| frame == "event: ping\ndata: {\"type\":\"ping\"}\n\n")
+        .map(|(at, _)| *at)
+        .collect();
+    assert_eq!(pings, [300, 600, 900]);
+    let (at, failed) = frames.last().expect("terminal frame");
+    assert_eq!(*at, 1_000);
+    assert!(failed.starts_with("event: error"));
+    assert!(failed.contains("upstream_timeout"));
+    assert!(
+        frames
+            .iter()
+            .all(|(_, frame)| !frame.contains("message_stop"))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn keepalive_straddling_the_idle_deadline_neither_extends_nor_preempts_it() {
+    let config = support::keepalive_config(1_000, 600, 10_000);
+    let (sender, mode) = support::bounded_events(4);
+    sender.send(started()).await.expect("start");
+    let (server, _) = support::server(&config, mode);
+
+    let start = Instant::now();
+    let response = server
+        .client_oneshot(support::request(true))
+        .await
+        .expect("response");
+    let late = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(450)).await;
+        sender.send(text("late")).await.expect("late text");
+        sender
+    });
+    let frames = timed_frames(response.into_body(), start).await;
+    let _sender = late.await.expect("sender task");
+
+    let late_frame = frames
+        .iter()
+        .find(|(_, frame)| frame.contains("late"))
+        .expect("late text frame");
+    assert_eq!(late_frame.0, 450);
+    // The upstream frame restarts the interval; the keepalive at 1050 does not
+    // restart the idle deadline, and the one due at 1650 never fires.
+    assert_eq!(keepalive_times(&frames), [1_050]);
+    let (at, error) = frames.last().expect("terminal frame");
+    assert_eq!(*at, 1_450);
+    assert!(error.contains("upstream_timeout"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn frames_faster_than_the_interval_send_no_keepalive() {
+    let config = support::keepalive_config(1_000, 300, 10_000);
+    let (sender, mode) = support::bounded_events(4);
+    sender.send(started()).await.expect("start");
+    let (server, _) = support::server(&config, mode);
+
+    let start = Instant::now();
+    let response = server
+        .client_oneshot(support::request(true))
+        .await
+        .expect("response");
+    let upstream = tokio::spawn(async move {
+        for value in ["one", "two", "three", "four", "five"] {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            sender.send(text(value)).await.expect("text");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        sender.send(completed()).await.expect("completion");
+    });
+    let frames = timed_frames(response.into_body(), start).await;
+    upstream.await.expect("upstream task");
+
+    assert!(keepalive_times(&frames).is_empty());
+    let (at, done) = frames.last().expect("terminal frame");
+    assert_eq!(*at, 1_200);
+    assert!(done.contains("[DONE]"));
 }

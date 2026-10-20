@@ -19,7 +19,7 @@ use crate::{
     keys::cli::{Exposure, RouteChoice},
 };
 
-const USAGE: &str = "usage: kanata portal --config <path> [--port <port>] | kanata doctor --config <path> [--plane all|private|public] [--probe-backends] [--probe-models] [--probe-inference <alias> --operation <operation>] | kanata health --config <path> | kanata check --config <path> [--plane all|private|public] | kanata serve --config <path> [--plane all|private|public] | kanata auth chatgpt {login,status,logout,models} --config <path> [--profile <name>] | kanata auth codex {login,status,logout} --config <path> | kanata key {new,list,show,edit,rm,rotate,migrate} ... (see `kanata key`) | kanata routes --config <path> [--json] | kanata routes explain --config <path> --model <alias> --operation <operation> --key-id <id> [--plane all|private|public] [--json]";
+const USAGE: &str = "usage: kanata config {compact,expand,plan} ... | kanata portal --config <path> [--port <port>] | kanata doctor --config <path> [--plane all|private|public] [--probe-backends] [--probe-models] [--probe-inference <alias> --operation <operation>] | kanata health --config <path> | kanata check --config <path> [--plane all|private|public] | kanata serve --config <path> [--plane all|private|public] | kanata auth chatgpt {login,status,logout,models} --config <path> [--profile <name>] | kanata auth codex {login,status,logout} --config <path> | kanata key {new,list,show,edit,rm,rotate,migrate} ... (see `kanata key`) | kanata routes --config <path> [--json] | kanata routes explain --config <path> --model <alias> --operation <operation> --key-id <id> [--plane all|private|public] [--json]";
 
 pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>, String> {
     let arguments: Vec<_> = arguments.into_iter().collect();
@@ -31,15 +31,14 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>
         .is_some_and(|argument| argument == "check")
     {
         let (path, plane) = parse_config_plane(&arguments[1..]).ok_or_else(|| USAGE.to_owned())?;
-        let config = config::load(path)
-            .and_then(|config| config.for_plane(plane))
-            .map_err(|error| error.to_string())?;
+        let (_, config) = config::load_plane(path, plane).map_err(|error| error.to_string())?;
         for warning in config.key_warnings(crate::keys::time::now()) {
             eprintln!("warning: {warning}");
         }
         return Ok(Some("configuration valid".into()));
     }
     match arguments[0].as_str() {
+        "config" => config::commands::run(&arguments[1..]).map(Some),
         "key" => crate::keys::cli::run(&arguments[1..], route_choices).map(Some),
         "routes" => run_routes(&arguments[1..]).map(Some),
         _ => Err(USAGE.into()),
@@ -57,7 +56,8 @@ fn parse_config_plane(arguments: &[String]) -> Option<(PathBuf, config::Plane)> 
     }
 }
 
-/// Codex routes are never public; others are public when listed in `publication.public_routes`.
+/// Private-only kinds (Codex, ChatGPT, CLIProxyAPI, Anthropic) are never public; others are public when
+/// listed in `publication.public_routes`.
 fn route_exposure(config: &ValidatedConfig, route: &config::ValidatedRoute) -> Exposure {
     let selector = &route.identity().selector;
     if route_kind(config, route).is_some_and(ProviderKind::is_private_only) {
@@ -258,7 +258,8 @@ fn build_adapter(
         ProviderKind::Ollama | ProviderKind::AppleFm => std::sync::Arc::new(
             OllamaAdapter::new(configured, config.timeouts(), config.limits()).map_err(|_| ())?,
         ),
-        ProviderKind::Vllm => std::sync::Arc::new(
+        // CLIProxyAPI speaks the same OpenAI chat wire as vLLM.
+        ProviderKind::Vllm | ProviderKind::Cliproxy => std::sync::Arc::new(
             VllmAdapter::from_config_with_secrets(
                 config,
                 configured.id(),
@@ -287,6 +288,14 @@ fn build_adapter(
         ProviderKind::Codex => {
             std::sync::Arc::new(CodexAdapter::from_config(config, configured.id()).map_err(|_| ())?)
         }
+        ProviderKind::Anthropic => std::sync::Arc::new(
+            crate::adapter::anthropic::AnthropicAdapter::from_config(
+                config,
+                configured.id(),
+                resolver,
+            )
+            .map_err(|_| ())?,
+        ),
     };
     Ok(adapter)
 }

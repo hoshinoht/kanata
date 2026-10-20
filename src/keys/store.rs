@@ -59,10 +59,7 @@ impl LockedKeys {
     /// Current file, syntax-checked only so route drift can be repaired; empty
     /// when it does not exist. [`Self::write`] validates the result against routes.
     pub fn read(&self) -> Result<KeysFile, String> {
-        match file::read(&self.path).map_err(|error| error.to_string())? {
-            Some(bytes) => file::parse_without_routes(&bytes).map_err(|error| error.to_string()),
-            None => Ok(KeysFile::default()),
-        }
+        file::load(&self.path)
     }
 
     /// Validates `keys` as the server would, then replaces the file atomically (0600).

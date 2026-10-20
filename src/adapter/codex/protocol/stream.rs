@@ -8,7 +8,7 @@ use crate::{
     adapter::transport::sse::{SseFramer, SseRecord},
     core::{
         ChatContent, ChatMessage, ChatResponse, ChatRole, ErrorKind, FinishReason, GatewayError,
-        MAX_REASONING_BYTES, ModelAlias, NormalizedEvent, ToolCall, Usage,
+        MAX_REASONING_BYTES, ModelAlias, NormalizedEvent, ReasoningItem, ToolCall, Usage,
     },
 };
 
@@ -16,6 +16,9 @@ use crate::{
 const MAX_CODEX_EVENT_BYTES: usize = 4 * 1024 * 1024;
 /// Assembled text and tool-argument bytes per response.
 const MAX_CODEX_OUTPUT_BYTES: usize = 1024 * 1024;
+/// Encrypted reasoning kept per response; later items are dropped, which only costs
+/// the upstream some reasoning context on the next turn.
+const MAX_ENCRYPTED_REASONING_BYTES: usize = 4 * 1024 * 1024;
 
 const MAX_OUTPUT_ITEMS: usize = 64;
 const MAX_TOOL_CALL_ID_BYTES: usize = 128;
@@ -29,9 +32,7 @@ pub(crate) enum ResponsesStreamError {
 
 impl ResponsesStreamError {
     pub(crate) fn gateway_error(self) -> GatewayError {
-        GatewayError {
-            kind: ErrorKind::UpstreamFailure,
-        }
+        GatewayError::from(ErrorKind::UpstreamFailure)
     }
 }
 
@@ -94,6 +95,10 @@ pub(crate) struct ResponsesStreamParser {
     reasoning: String,
     reasoning_full: bool,
     reasoning_items: BTreeSet<String>,
+    /// Set only when the client asked for encrypted reasoning.
+    capture_encrypted_reasoning: bool,
+    encrypted_reasoning: Vec<ReasoningItem>,
+    encrypted_reasoning_bytes: usize,
     last_reasoning_part: Option<(String, u64)>,
     last_sequence_number: Option<u64>,
     output_bytes: usize,
@@ -123,6 +128,9 @@ impl ResponsesStreamParser {
             reasoning: String::new(),
             reasoning_full: false,
             reasoning_items: BTreeSet::new(),
+            capture_encrypted_reasoning: false,
+            encrypted_reasoning: Vec::new(),
+            encrypted_reasoning_bytes: 0,
             last_reasoning_part: None,
             last_sequence_number: None,
             output_bytes: 0,
@@ -142,6 +150,12 @@ impl ResponsesStreamParser {
             namespace: Some(namespace),
             ..Self::new(public_model)
         }
+    }
+
+    /// Emits `ChatReasoningItem` for reasoning output items carrying `encrypted_content`.
+    pub(crate) fn with_encrypted_reasoning(mut self, capture: bool) -> Self {
+        self.capture_encrypted_reasoning = capture;
+        self
     }
 
     pub(crate) fn feed(
@@ -415,26 +429,52 @@ impl ResponsesStreamParser {
         self.emit_reasoning(item_id, event.summary_index.unwrap_or(0), event.delta)
     }
 
-    /// Emits summaries whose text never arrived as deltas.
+    /// Emits summaries whose text never arrived as deltas, then the encrypted payload.
     fn reasoning_item_done(&mut self, item: Value) -> Vec<NormalizedEvent> {
-        let Ok(item) = parse_event::<ReasoningItem>(item) else {
+        let Ok(item) = parse_event::<ReasoningOutputItem>(item) else {
             return Vec::new();
         };
         let item_id = item.id.unwrap_or_default();
-        if !item_id.is_empty() && self.reasoning_items.contains(&item_id) {
+        let mut events = Vec::new();
+        if item_id.is_empty() || !self.reasoning_items.contains(&item_id) {
+            for (index, part) in item.summary.iter().enumerate() {
+                if part.get("type").and_then(Value::as_str) != Some("summary_text") {
+                    continue;
+                }
+                let Some(text) = part.get("text").and_then(Value::as_str) else {
+                    continue;
+                };
+                let index = u64::try_from(index).unwrap_or(u64::MAX);
+                events.append(&mut self.emit_reasoning(item_id.clone(), index, text.to_owned()));
+            }
+        }
+        if let Some(content) = item
+            .encrypted_content
+            .filter(|_| self.capture_encrypted_reasoning)
+        {
+            events.append(&mut self.emit_encrypted_reasoning(item_id, content));
+        }
+        events
+    }
+
+    /// Out-of-contract or over-budget payloads are dropped rather than failing the reply.
+    fn emit_encrypted_reasoning(
+        &mut self,
+        item_id: String,
+        content: String,
+    ) -> Vec<NormalizedEvent> {
+        let total = self.encrypted_reasoning_bytes.saturating_add(content.len());
+        if total > MAX_ENCRYPTED_REASONING_BYTES {
             return Vec::new();
         }
-        let mut events = Vec::new();
-        for (index, part) in item.summary.iter().enumerate() {
-            if part.get("type").and_then(Value::as_str) != Some("summary_text") {
-                continue;
-            }
-            let Some(text) = part.get("text").and_then(Value::as_str) else {
-                continue;
-            };
-            let index = u64::try_from(index).unwrap_or(u64::MAX);
-            events.append(&mut self.emit_reasoning(item_id.clone(), index, text.to_owned()));
-        }
+        let id = (!item_id.is_empty()).then_some(item_id);
+        let Ok(item) = ReasoningItem::new(id, content) else {
+            return Vec::new();
+        };
+        self.encrypted_reasoning_bytes = total;
+        self.encrypted_reasoning.push(item.clone());
+        let mut events = self.start_event();
+        events.push(NormalizedEvent::ChatReasoningItem { item });
         events
     }
 
@@ -513,10 +553,8 @@ impl ResponsesStreamParser {
             return Err(());
         }
         let usage = event.response.usage.map(normalize_usage).transpose()?;
+        // A normally completed reply with no text and no tool calls is an empty answer.
         let content = self.collected_content();
-        if content.is_empty() {
-            return Err(());
-        }
         let finish_reason = if self.tools.is_empty() {
             FinishReason::Stop
         } else {
@@ -531,12 +569,15 @@ impl ResponsesStreamParser {
             finish_reason,
             usage: usage.clone(),
             reasoning: (!self.reasoning.is_empty()).then(|| self.reasoning.clone()),
+            reasoning_items: std::mem::take(&mut self.encrypted_reasoning),
         });
         self.done = true;
-        Ok(vec![NormalizedEvent::ChatCompleted {
+        let mut events = self.start_event();
+        events.push(NormalizedEvent::ChatCompleted {
             finish_reason,
             usage,
-        }])
+        });
+        Ok(events)
     }
 
     fn add_tool(
@@ -701,16 +742,24 @@ fn is_terminal_record(record: &SseRecord) -> bool {
 }
 
 fn normalize_usage(usage: ResponsesUsage) -> Result<Usage, ()> {
+    let cached = usage
+        .input_tokens_details
+        .and_then(|details| details.cached_tokens);
     if usage.input_tokens.checked_add(usage.output_tokens) != Some(usage.total_tokens) {
         return Err(());
     }
-    Ok(Usage {
+    let usage = Usage {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
         total_tokens: usage.total_tokens,
         reasoning_tokens: usage
             .output_tokens_details
             .and_then(|details| details.reasoning_tokens),
+        cached_input_tokens: None,
+    };
+    Ok(match cached {
+        Some(cached) => usage.with_cached_input_tokens(cached),
+        None => usage,
     })
 }
 
@@ -751,7 +800,15 @@ struct ResponsesUsage {
     output_tokens: u64,
     total_tokens: u64,
     #[serde(default)]
+    input_tokens_details: Option<InputTokensDetails>,
+    #[serde(default)]
     output_tokens_details: Option<OutputTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct InputTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -769,10 +826,12 @@ struct ReasoningDeltaEvent {
 }
 
 #[derive(Deserialize)]
-struct ReasoningItem {
+struct ReasoningOutputItem {
     id: Option<String>,
     #[serde(default)]
     summary: Vec<Value>,
+    #[serde(default)]
+    encrypted_content: Option<String>,
 }
 
 #[derive(Deserialize)]

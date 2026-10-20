@@ -1,45 +1,31 @@
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/gateway.rs"]
 mod support;
 #[path = "adapter_ollama/support.rs"]
 mod upstream;
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
 
 use axum::http::StatusCode;
 use kanata::{
     adapter::{Adapter, ollama::OllamaAdapter, vllm::VllmAdapter},
-    config,
     core::ChatContent,
     server::{Readiness, TwoPlaneServer},
 };
 use serde_json::{Value, json};
 use support::{
-    adapter_spec, capabilities, chat_outcome, chat_request, models_request, recorded_len,
-    response_json, server_with, take_request,
+    adapter_spec, capabilities, chat_outcome, chat_request, compact_config, load_text as load,
+    models_request, recorded_len, response_json, server_with, take_request,
 };
 
 const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2n3QAAAAASUVORK5CYII=";
-static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 fn config_text(kind: &str, address: &str, allowed: bool) -> String {
-    format!(
-        r#"
-[listeners.client]
-bind = "127.0.0.1"
-port = 18080
-[listeners.public]
-bind = "172.30.0.3"
-port = 18081
-[listeners.admin]
-bind = "127.0.0.1"
-port = 19090
-[publication]
-tailnet_addresses = ["100.64.0.10"]
-public_routes = [{{ model_alias = "vision", operation = "chat" }}]
-[[adapters]]
+    compact_config(
+        r#"[{ model_alias = "vision", operation = "chat" }]"#,
+        &format!(
+            r#"[[adapters]]
 id = "vision-adapter"
 kind = "{kind}"
 base_url = "http://{address}/v1"
@@ -61,34 +47,9 @@ allows_input_images = {allowed}
 [[application_keys]]
 id = "vision-client"
 secret_ref = "env:VISION_CLIENT_KEY"
-permissions = [{{ model_alias = "vision", operation = "chat" }}]
-[limits]
-max_queue = 4
-max_in_flight = 2
-max_body_bytes = 1048576
-max_audio_bytes = 1048576
-max_extension_bytes = 1024
-[timeouts]
-queue_ms = 1000
-connect_ms = 1000
-headers_ms = 1000
-first_byte_ms = 1000
-idle_ms = 1000
-overall_ms = 5000
-"#
+permissions = [{{ model_alias = "vision", operation = "chat" }}]"#
+        ),
     )
-}
-
-fn load(text: &str) -> Result<config::ValidatedConfig, config::ConfigError> {
-    let path = std::env::temp_dir().join(format!(
-        "kanata-image-{}-{}.toml",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, text).unwrap();
-    let result = config::load(&path);
-    std::fs::remove_file(path).unwrap();
-    result
 }
 
 fn request(parts: Value) -> Value {

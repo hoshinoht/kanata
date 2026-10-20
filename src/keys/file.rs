@@ -66,6 +66,14 @@ pub fn parse_without_routes(bytes: &[u8]) -> Result<KeysFile, ConfigError> {
     parse_inner(bytes, None)
 }
 
+/// Reads and syntax-checks a keys file; empty when it does not exist.
+pub fn load(path: &Path) -> Result<KeysFile, String> {
+    match read(path).map_err(|error| error.to_string())? {
+        Some(bytes) => parse_without_routes(&bytes).map_err(|error| error.to_string()),
+        None => Ok(KeysFile::default()),
+    }
+}
+
 /// Every record of a validated keys file, including revoked ones.
 #[derive(Clone, Debug, Default)]
 pub struct KeysFile {
@@ -74,21 +82,22 @@ pub struct KeysFile {
 }
 
 impl KeysFile {
-    pub fn records(&self) -> &[StoredKey] {
-        &self.records
+    getters! {
+        pub records: &[StoredKey],
+        /// SHA-256 of the bytes this file was parsed from.
+        pub sha256: [u8; 32],
     }
     pub fn records_mut(&mut self) -> &mut [StoredKey] {
         &mut self.records
+    }
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut StoredKey> {
+        self.records.iter_mut().find(|record| record.id() == id)
     }
     pub fn push(&mut self, record: StoredKey) {
         self.records.push(record);
     }
     pub fn active(&self) -> impl Iterator<Item = &StoredKey> {
         self.records.iter().filter(|record| !record.is_revoked())
-    }
-    /// SHA-256 of the bytes this file was parsed from.
-    pub fn sha256(&self) -> [u8; 32] {
-        self.sha256
     }
 
     /// Canonical `keys.toml` text.
@@ -171,42 +180,22 @@ impl StoredKey {
         self.rate_limit = rate_limit;
     }
 
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-    pub fn digest(&self) -> &[u8; 32] {
-        &self.digest
-    }
-    pub fn is_owner(&self) -> bool {
-        self.owner
-    }
-    pub fn permissions(&self) -> &[RouteSelector] {
-        &self.permissions
-    }
-    pub fn max_in_flight(&self) -> Option<u64> {
-        self.max_in_flight
-    }
-    pub fn rate_limit(&self) -> Option<KeyRateLimit> {
-        self.rate_limit
-    }
-    pub fn daily_quota(&self) -> Option<super::quota::DailyQuota> {
-        self.daily_quota
-    }
     pub fn set_daily_quota(&mut self, quota: Option<super::quota::DailyQuota>) {
         self.daily_quota = quota;
     }
 
-    pub fn created_at(&self) -> u64 {
-        self.created_at
-    }
-    pub fn expires_at(&self) -> Option<u64> {
-        self.expires_at
-    }
-    pub fn rotated_at(&self) -> Option<u64> {
-        self.rotated_at
-    }
-    pub fn revoked_at(&self) -> Option<u64> {
-        self.revoked_at
+    getters! {
+        pub id: &str,
+        pub digest: &[u8; 32],
+        pub is_owner(owner): bool,
+        pub permissions: &[RouteSelector],
+        pub max_in_flight: Option<u64>,
+        pub rate_limit: Option<KeyRateLimit>,
+        pub daily_quota: Option<super::quota::DailyQuota>,
+        pub created_at: u64,
+        pub expires_at: Option<u64>,
+        pub rotated_at: Option<u64>,
+        pub revoked_at: Option<u64>,
     }
     pub fn is_revoked(&self) -> bool {
         self.revoked_at.is_some()

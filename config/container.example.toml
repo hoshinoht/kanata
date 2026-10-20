@@ -21,7 +21,7 @@ state_dir = "/var/lib/kanata/codex"
 [[adapters]]
 id = "ollama-mac"
 kind = "ollama"
-# Needs compose.kanata.host-ollama.yml on macOS/OrbStack.
+# Needs deploy/compose/compose.kanata.host-ollama.yml on macOS/OrbStack.
 base_url = "http://host.orb.internal:11434/v1"
 trust_zone = "local"
 # Optional cap shared by every route on this adapter, e.g. 1 for a single local GPU.
@@ -33,7 +33,7 @@ operations = ["chat"]
 streaming_chat = true
 function_tools = false
 
-# Apple Foundation Models (macOS 27+): `scripts/kanata.sh fm-serve install`, then
+# Apple Foundation Models (macOS 27+): `deploy/scripts/kanata.sh fm-serve install`, then
 # uncomment this adapter and the matching route below.
 # [[adapters]]
 # id = "apple-fm"
@@ -46,6 +46,21 @@ function_tools = false
 # function_tools = false
 # structured_output = true
 # sampling_controls = true
+
+# CLIProxyAPI through deploy/compose/compose.kanata.cliproxy.yml (see deploy/docker/README.md).
+# Private-only like Codex/ChatGPT: never list its routes in public_routes.
+# [[adapters]]
+# id = "cliproxy"
+# kind = "cliproxy"
+# base_url = "https://cliproxy-tls:8443/v1"
+# ca_file = "/run/secrets/cliproxy-ca.pem"
+# secret_ref = "file:/run/secrets/cliproxy-api-key"
+# trust_zone = "external"
+# [adapters.capabilities]
+# operations = ["chat"]
+# streaming_chat = true
+# function_tools = true
+# reasoning_control = true
 
 [[adapters]]
 id = "codex"
@@ -67,7 +82,7 @@ operation = "chat"
 adapter_id = "ollama-mac"
 upstream_id = "qwen3:0.6b"
 # Declared window shown on /v1/models; must match the Ollama model
-# (see `scripts/kanata.sh ollama-context`). Omit for cloud models.
+# (see `deploy/scripts/kanata.sh ollama-context`). Omit for cloud models.
 # context_tokens = 16384
 # Largest max_tokens a client may request; shown on /v1/models.
 # max_output_tokens = 4096
@@ -140,6 +155,8 @@ max_extension_bytes = 8192
 
 # Long enough for high-effort Codex turns.
 [timeouts]
+# Optional SSE keepalive interval in milliseconds (default 15000, capped by overall_ms).
+# sse_keepalive_ms = 15000
 upload_ms = 30000
 queue_ms = 1000
 connect_ms = 5000

@@ -32,6 +32,8 @@ operation = "chat"
 adapter_id = "chatgpt-private"
 upstream_id = "replace-with-account-model-slug"
 reasoning_effort = "medium"
+# Optional summary request; use the same policy on every family variant.
+# reasoning_summary = "auto"
 requires_streaming_chat = true
 requires_function_tools = true
 
@@ -42,6 +44,7 @@ operation = "chat"
 adapter_id = "chatgpt-private"
 upstream_id = "replace-with-account-model-slug"
 reasoning_effort = "low"
+# reasoning_summary = "auto"
 requires_streaming_chat = true
 requires_function_tools = true
 

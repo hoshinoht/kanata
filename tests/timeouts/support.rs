@@ -1,7 +1,8 @@
+use crate::scratch;
+
 use std::{
     collections::VecDeque,
     convert::Infallible,
-    future::Future,
     pin::Pin,
     sync::{
         Arc,
@@ -19,7 +20,7 @@ use futures_core::Stream;
 use kanata::{
     adapter::{Adapter, AdapterFuture, AdapterOutput},
     auth::{SecretResolutionError, SecretResolver},
-    config::{SecretReference, ValidatedConfig, load},
+    config::{SecretReference, ValidatedConfig},
     core::{
         Capabilities, ChatContent, ChatMessage, ChatResponse, ChatRole, FinishReason, GatewayError,
         ModelAlias, NormalizedEvent, Response as CoreResponse, RoutedRequest,
@@ -40,7 +41,35 @@ pub fn config_with_limits(
     idle_ms: u64,
     overall_ms: u64,
 ) -> ValidatedConfig {
-    let contents = include_str!("../../tests/fixtures/config/example.toml")
+    load_config(config_contents(
+        max_queue,
+        max_in_flight,
+        queue_ms,
+        first_byte_ms,
+        idle_ms,
+        overall_ms,
+    ))
+}
+
+/// One in-flight slot, so a leaked permit would make the next request wait.
+pub fn keepalive_config(idle_ms: u64, keepalive_ms: u64, overall_ms: u64) -> ValidatedConfig {
+    load_config(
+        config_contents(1, 1, overall_ms, idle_ms, idle_ms, overall_ms).replace(
+            "overall_ms = ",
+            &format!("sse_keepalive_ms = {keepalive_ms}\noverall_ms = "),
+        ),
+    )
+}
+
+fn config_contents(
+    max_queue: u64,
+    max_in_flight: u64,
+    queue_ms: u64,
+    first_byte_ms: u64,
+    idle_ms: u64,
+    overall_ms: u64,
+) -> String {
+    include_str!("../../tests/fixtures/config/example.toml")
         .replace("max_queue = 32", &format!("max_queue = {max_queue}"))
         .replace(
             "max_in_flight = 8",
@@ -54,19 +83,12 @@ pub fn config_with_limits(
             &format!("first_byte_ms = {first_byte_ms}"),
         )
         .replace("idle_ms = 30000", &format!("idle_ms = {idle_ms}"))
-        .replace("overall_ms = 60000", &format!("overall_ms = {overall_ms}"));
-    let path = std::env::temp_dir().join(format!(
-        "kanata-timeouts-{}-{}.toml",
-        std::process::id(),
-        CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, contents).expect("config write");
-    let config = load(&path).expect("config");
-    let _ = std::fs::remove_file(path);
-    config
+        .replace("overall_ms = 60000", &format!("overall_ms = {overall_ms}"))
 }
 
-static CONFIG_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+fn load_config(contents: String) -> ValidatedConfig {
+    scratch::load_valid(&contents)
+}
 
 struct Resolver;
 impl SecretResolver for Resolver {
@@ -172,6 +194,7 @@ impl Adapter for TestAdapter {
                         finish_reason: FinishReason::Stop,
                         usage: None,
                         reasoning: None,
+                        reasoning_items: Vec::new(),
                     })))
                 })
             }
@@ -295,6 +318,22 @@ pub fn request_with_options(stream: bool, include_usage: bool) -> Request<Body> 
         stream_options.unwrap_or_default()
     );
     request_with_body(Body::from(body))
+}
+
+pub fn responses_request() -> Request<Body> {
+    let mut request = request_with_body(Body::from(
+        r#"{"model":"private-chat","input":"hi","stream":true}"#,
+    ));
+    *request.uri_mut() = "/v1/responses".parse().expect("uri");
+    request
+}
+
+pub fn messages_request() -> Request<Body> {
+    let mut request = request_with_body(Body::from(
+        r#"{"model":"private-chat","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":true}"#,
+    ));
+    *request.uri_mut() = "/v1/messages".parse().expect("uri");
+    request
 }
 
 pub fn trickling_request() -> (Request<Body>, mpsc::Sender<Bytes>, BodyProbe) {

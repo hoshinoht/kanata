@@ -1,25 +1,23 @@
 ## Contract
-- `mod.rs`: `Adapter` trait (`id()`, `capabilities()`, `execute(RoutedRequest) -> AdapterFuture`). Output is `AdapterOutput::Complete(Response)` or `AdapterOutput::Events(EventStream)` of `NormalizedEvent`s; failures are `GatewayError` with an `ErrorKind`, never provider text.
-- Adapters are built in `src/cli.rs` `build_serve_adapters` by matching `ProviderKind` (`new`/`from_config`), only for adapters that have a route.
-- Validate the request inside `execute` before any network call, and return `InvalidRequest`/`UnsupportedOperation` for local rejections. The circuit breaker treats these as neutral, so keep that distinction.
+- `Adapter` (`mod.rs`): `execute(RoutedRequest)` returns `AdapterOutput::Complete` or `Events` of `NormalizedEvent`s; failures are `GatewayError`s, never provider text.
+- Validate inside `execute` before any network call and return `InvalidRequest`/`UnsupportedOperation` for local rejections; the circuit breaker treats these as neutral.
+- Use the shared helpers in `mod.rs` (`status_error`, `upstream_failure`, `internal_error`, `invalid_request`, `unsupported_operation`) and `GatewayError::from(kind)`. Status mapping: 400/422 → `InvalidRequest`, 404 → `NotFound`, 401/403/408/503/504 → `UpstreamUnavailable`, 429 → `RateLimited`, else `UpstreamFailure`; Anthropic adds 529 → `UpstreamUnavailable`.
+- No retries. The only exception is Codex's single token refresh after a 401 received before any output (`codex/provider.rs` `open_response`).
 
 ## Layout
-- One directory per provider, split by concern: `mod.rs` (adapter, `execute`, `status_error`), `request.rs` (IR → provider payload), `response.rs` (provider → IR), `stream.rs` + `stream_state.rs` + `stream_wire.rs` (streaming), `validation.rs` (capability and option checks).
-  - `ollama/`: also `apple_fm.rs` (`ProviderKind::AppleFm` reuses the Ollama chat path) and `sse.rs` (re-export of the transport SSE framing).
-  - `vllm/`: chat (streaming and tools when declared, also behind LiteLLM) and transcription (multipart or audio chat); construction rejects reasoning control, and a `secret_ref` without a resolved token.
-  - `openrouter/`: tests in `tests.rs` and `tests/stream.rs`.
-  - `codex/`: `provider.rs` (instead of `mod.rs` logic), `protocol/` (Responses wire protocol + tests), `auth/` (device login, token refresh with single-flight `RefreshCoordinator`, keyring/file credential store with a lock, pinned-TLS `net.rs`).
-  - `chatgpt/`: documented plan-usage provider; browser auth with signed ID tokens, protected profiles, account catalog, pinned inference and namespaced functions. Shares the bounded Responses text/event mapper in `codex/protocol` and `codex/stream`.
-- `transport/`: the only HTTP client. HTTP/1 over hyper with rustls, per-request connection (no pool), `origin.rs` (URL and TLS rules, credentials only over HTTPS), `resolver.rs` (DNS lookups capped at 16), `time.rs` (connect/headers/first-byte/idle phases), `body.rs` (bounded bodies), `multipart.rs`, `sse.rs`. Tests live in `transport/tests/`.
-- `diagnostics.rs`: `UpstreamLabel` and sanitized provider error parsing. It never logs tokens, headers or request bodies; provider messages are DEBUG only, with body reads capped at 8 KiB.
+- One directory per provider, split by concern (`mod.rs`, `request.rs`, `response.rs`, `stream*.rs`, `validation.rs`).
+- `chat_completions/`: shared OpenAI-compatible chat code for `vllm/`, `ollama/` (incl. Apple FM) and `openrouter/`. Provider differences are explicit parameters (`StreamDialect`, `MessageRules`, strict vs lenient wire types); provider envelopes and their serde strictness stay in the provider modules.
+- `auth_files.rs`: owner-only state directory, lock and atomic record writes shared by `codex/auth` and `chatgpt/auth`.
+- `transport/`: the only HTTP client (hyper + rustls, no pool, bounded bodies, DNS lookups capped, credentials only over HTTPS or plain HTTP to a literal loopback IP). An adapter `ca_file` replaces platform roots for that adapter only.
+- `diagnostics.rs`: sanitized provider errors; never log tokens, headers or bodies; provider messages DEBUG only.
 
-## Conventions
-- Map upstream statuses with the per-provider `status_error` in the same way: 400/422 → `InvalidRequest`, 404 → `NotFound`, 401/403/408/503/504 → `UpstreamUnavailable`, 429 → `RateLimited`, anything else → `UpstreamFailure`.
-- The only exception to the root no-retry rule is Codex's single refresh after a 401 received before any output (`codex/provider.rs` `open_response`).
-- Unit tests stay next to the code (`#[cfg(test)]`, `tests.rs`, `provider_tests.rs`) and load fixtures from `tests/fixtures/<provider>/`.
+## Provider rules that are easy to break
+- vLLM: with `reasoning_control`, `reasoning_effort` is sent top-level and never with `chat_template_kwargs.enable_thinking`. CLIProxyAPI reuses this path, chat only, private-only, and still sends a route's pinned effort.
+- Anthropic: private-only, pinned origin; `thinking` is never sent. Signed thinking blocks become `ReasoningItem`s prefixed `anthropic_thinking_`/`anthropic_redacted_thinking_` only when encrypted reasoning is requested; replay converts only those prefixes and skips foreign items.
+- ChatGPT shares the Responses mapper in `codex/protocol` and `codex/stream`.
 
 ## Adding a provider kind
-1. `src/config.rs`: `ProviderKind` variant and its methods (`label`, `accepts_reasoning_effort`, `supports_chat_options`), plus any kind-specific validation (zone, URL, secrets).
-2. New module here implementing `Adapter` on top of `transport::Transport`; declare it in `mod.rs`.
+1. `src/config.rs`: `ProviderKind` variant, its methods and kind-specific validation (zone, URL, secrets).
+2. Module here implementing `Adapter` on `transport::Transport` (reuse `chat_completions/` if OpenAI-compatible); declare it in `mod.rs`.
 3. `src/cli.rs` `build_serve_adapters`: construct it.
-4. Fixtures under `tests/fixtures/<provider>/`, an integration suite `tests/adapter_<provider>.rs`, and a template entry plus docs (`config/README.md`, README backends table).
+4. Fixtures in `tests/fixtures/<provider>/`, `tests/adapter_<provider>.rs`, a template entry, `config/README.md` and the README backends table; add the name to `tests/architecture_boundaries.rs` if it must stay out of other layers.

@@ -4,15 +4,15 @@ use kanata::{
     adapter::{Adapter, AdapterOutput, vllm::VllmAdapter},
     auth::{SecretResolutionError, SecretResolver},
     config::SecretReference,
-    core::{ErrorKind, ModelAlias, Operation, Request as CoreRequest, TrustZone},
+    core::{ErrorKind, ModelAlias, Operation, ReasoningEffort, Request as CoreRequest, TrustZone},
 };
 use serde_json::{Value, json};
 
 use crate::support::{
-    INVALID_USAGE_RESPONSE, MockServer, TEXT_RESPONSE, UNEXPECTED_RESPONSE, adapter, config_for,
-    config_with, error_kind, expected_capabilities, expected_text, fixture_finish_reason, routed,
-    routed_transcription, routed_with_zone, text_request, tool_history_request, tool_request,
-    transcription_request,
+    INVALID_USAGE_RESPONSE, MockServer, TEXT_RESPONSE, UNEXPECTED_RESPONSE, adapter, config_at,
+    config_for, config_text_at, config_with, error_kind, expected_capabilities, expected_text,
+    fixture_finish_reason, load_config, routed, routed_transcription, routed_with_zone,
+    text_request, tool_history_request, tool_request, transcription_request,
 };
 
 fn decode_request(body: &[u8]) -> Value {
@@ -76,6 +76,44 @@ fn secret_reference_is_resolved_only_through_the_secret_aware_constructor() {
 }
 
 #[tokio::test]
+async fn external_loopback_http_upstream_receives_the_bearer_key() {
+    let mut mock = MockServer::json(TEXT_RESPONSE).await;
+    let config = config_at(
+        &format!("http://{}/v1", mock.address),
+        "external",
+        Operation::Chat,
+        false,
+        false,
+        true,
+    );
+    let adapter = VllmAdapter::from_config_with_secrets(
+        &config,
+        "vllm-fixture",
+        "vllm-chat",
+        &FixtureResolver,
+    )
+    .unwrap_or_else(|error| panic!("loopback adapter: {error:?}"));
+    let response = crate::support::take_chat(
+        adapter
+            .execute(routed_with_zone(
+                &config,
+                text_request(),
+                TrustZone::External,
+            ))
+            .await,
+    );
+    assert_eq!(response.message.content, expected_text());
+    mock.finish().await;
+
+    let record = mock
+        .requests
+        .lock()
+        .unwrap_or_else(|_| panic!("request lock"))[0]
+        .clone();
+    assert_eq!(record.headers["authorization"], "Bearer fixture-vllm-key");
+}
+
+#[tokio::test]
 async fn nonstream_text_posts_explicit_upstream_model_and_returns_public_alias() {
     let mut mock = MockServer::json(TEXT_RESPONSE).await;
     let config = config_for(&mock.address);
@@ -117,6 +155,85 @@ async fn nonstream_text_posts_explicit_upstream_model_and_returns_public_alias()
         json!([{"role":"user", "content":"Say hello"}])
     );
     assert_eq!(body.as_object().map(|object| object.len()), Some(3));
+}
+
+fn effort_request(effort: Option<ReasoningEffort>, enable_thinking: Option<bool>) -> CoreRequest {
+    let CoreRequest::Chat(mut request) = text_request() else {
+        panic!("chat request")
+    };
+    request.options.reasoning_effort = effort;
+    request.options.enable_thinking = enable_thinking;
+    CoreRequest::Chat(request)
+}
+
+#[tokio::test]
+async fn reasoning_effort_is_forwarded_only_with_reasoning_control() {
+    let mock = MockServer::json(TEXT_RESPONSE).await;
+    let plain = config_for(&mock.address);
+    assert_eq!(
+        error_kind(
+            adapter(&plain)
+                .execute(routed(
+                    &plain,
+                    effort_request(Some(ReasoningEffort::High), None)
+                ))
+                .await
+        ),
+        ErrorKind::UnsupportedOperation
+    );
+    assert_eq!(mock.calls.load(Ordering::SeqCst), 0);
+    drop(mock);
+
+    for (effort, expected) in [(Some(ReasoningEffort::High), Some("high")), (None, None)] {
+        let mut mock = MockServer::json(TEXT_RESPONSE).await;
+        let config = load_config(
+            &config_text_at(
+                &format!("http://{}/v1", mock.address),
+                "local",
+                Operation::Chat,
+                false,
+                false,
+                false,
+            )
+            .replacen(
+                "function_tools = false\n",
+                "function_tools = false\nreasoning_control = true\n",
+                1,
+            ),
+        );
+        let adapter = adapter(&config);
+        assert!(adapter.capabilities().reasoning_control);
+        // The two thinking switches are alternatives; both together never reach the upstream.
+        assert_eq!(
+            error_kind(
+                adapter
+                    .execute(routed(
+                        &config,
+                        effort_request(Some(ReasoningEffort::High), Some(false))
+                    ))
+                    .await
+            ),
+            ErrorKind::InvalidRequest
+        );
+        crate::support::take_chat(
+            adapter
+                .execute(routed(&config, effort_request(effort, None)))
+                .await,
+        );
+        mock.finish().await;
+        let records = mock
+            .requests
+            .lock()
+            .unwrap_or_else(|_| panic!("request lock"))
+            .clone();
+        assert_eq!(records.len(), 1);
+        let body = decode_request(&records[0].body);
+        assert_eq!(
+            body.get("reasoning_effort").and_then(Value::as_str),
+            expected
+        );
+        assert!(body.get("chat_template_kwargs").is_none());
+    }
 }
 
 #[tokio::test]
@@ -171,19 +288,26 @@ async fn context_trust_mismatch_is_rejected_before_dispatch() {
 }
 
 #[tokio::test]
-async fn length_stop_without_content_is_an_empty_reply() {
-    let body = r#"{"id":"id","object":"chat.completion","created":1700000000,"model":"served-checkpoint","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"hidden"},"finish_reason":"length"}]}"#;
-    let mut mock = MockServer::json(body).await;
-    let config = config_for(&mock.address);
-    let adapter = adapter(&config);
-    let Ok(AdapterOutput::Complete(kanata::core::Response::Chat(response))) =
-        adapter.execute(routed(&config, text_request())).await
-    else {
-        panic!("length stop was not a chat response")
-    };
-    assert_eq!(response.finish_reason, kanata::core::FinishReason::Length);
-    assert!(response.message.content.is_empty());
-    mock.finish().await;
+async fn stop_or_length_stop_without_content_is_an_empty_reply() {
+    for (finish, expected) in [
+        ("length", kanata::core::FinishReason::Length),
+        ("stop", kanata::core::FinishReason::Stop),
+    ] {
+        let body = format!(
+            r#"{{"id":"id","object":"chat.completion","created":1700000000,"model":"served-checkpoint","choices":[{{"index":0,"message":{{"role":"assistant","content":null,"reasoning_content":"hidden"}},"finish_reason":"{finish}"}}]}}"#
+        );
+        let mut mock = MockServer::json(&body).await;
+        let config = config_for(&mock.address);
+        let adapter = adapter(&config);
+        let Ok(AdapterOutput::Complete(kanata::core::Response::Chat(response))) =
+            adapter.execute(routed(&config, text_request())).await
+        else {
+            panic!("{finish} stop was not a chat response")
+        };
+        assert_eq!(response.finish_reason, expected);
+        assert!(response.message.content.is_empty());
+        mock.finish().await;
+    }
 }
 
 #[tokio::test]
@@ -191,7 +315,7 @@ async fn malformed_or_unexpected_success_payloads_are_redacted_failures() {
     let cases = [
         INVALID_USAGE_RESPONSE,
         UNEXPECTED_RESPONSE,
-        r#"{"id":"id","object":"chat.completion","created":1700000000,"model":"served-checkpoint","choices":[{"index":0,"message":{"role":"assistant","content":null},"finish_reason":"stop"}]}"#,
+        r#"{"id":"id","object":"chat.completion","created":1700000000,"model":"served-checkpoint","choices":[{"index":0,"message":{"role":"assistant","content":null,"refusal":"I can't help with that."},"finish_reason":"stop"}]}"#,
         r#"{"id":"id","object":"chat.completion","created":1700000000,"model":"","choices":[{"index":0,"message":{"role":"assistant","content":"text"},"finish_reason":"stop"}]}"#,
     ];
     for body in cases {

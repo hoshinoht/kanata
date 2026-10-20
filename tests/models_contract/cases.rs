@@ -1,15 +1,12 @@
 use std::fs;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::http::StatusCode;
 use serde_json::Value;
 
 use crate::support::{
-    adapter_spec, capabilities, chat_outcome, config, config_with_public_routes, models_request,
-    response_json, server_with, server_without_adapters, try_server_with,
+    adapter_spec, capabilities, chat_outcome, config, config_with_public_routes, load_text,
+    models_request, response_json, server_with, server_without_adapters, try_server_with,
 };
-
-static NEXT_CONFIG: AtomicUsize = AtomicUsize::new(0);
 
 fn ids(value: &Value) -> Vec<&str> {
     value["data"]
@@ -53,21 +50,11 @@ async fn models_are_sorted_deduplicated_authorized_and_bound() {
 
 #[tokio::test]
 async fn models_keep_exact_key_permissions_with_a_bound_adapter() {
-    let source = fs::read_to_string("tests/fixtures/config/example.toml").expect("example config");
     let old = "permissions = [\n  { model_alias = \"local-chat\", operation = \"chat\" },\n  { model_alias = \"private-chat\", operation = \"chat\" },\n  { model_alias = \"private-transcribe\", operation = \"transcription\" },\n  { model_alias = \"remote-chat\", operation = \"chat\" },\n  { model_alias = \"codex-chat\", operation = \"chat\" },\n]";
-    let contents = source.replace(
+    let config = load_variant(&[(
         old,
         "permissions = [{ model_alias = \"private-chat\", operation = \"chat\" }]",
-    );
-    assert_ne!(contents, source);
-    let path = std::env::temp_dir().join(format!(
-        "kanata-models-{}-{}.toml",
-        std::process::id(),
-        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture");
-    let config = kanata::config::load(&path).expect("restricted config");
-    fs::remove_file(path).expect("fixture cleanup");
+    )]);
 
     let capabilities = capabilities(&config, "vllm-private");
     let (server, _) = server_with(
@@ -208,15 +195,7 @@ fn load_variant(replacements: &[(&str, &str)]) -> kanata::config::ValidatedConfi
         assert!(contents.contains(old), "fixture contains {old}");
         contents = contents.replace(old, new);
     }
-    let path = std::env::temp_dir().join(format!(
-        "kanata-models-{}-{}.toml",
-        std::process::id(),
-        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("fixture");
-    let config = kanata::config::load(&path).expect("variant config");
-    fs::remove_file(path).expect("fixture cleanup");
-    config
+    load_text(&contents).expect("variant config")
 }
 
 fn entry<'a>(value: &'a Value, id: &str) -> &'a Value {
@@ -265,6 +244,7 @@ async fn models_report_kanata_capabilities_per_alias() {
             "input_audio": false, "input_images": false, "images": null, "trust_zone": "local", "reasoning_efforts": null,
             "context_tokens": 16384, "max_output_tokens": 4096,
             "responses": {"endpoint":"/v1/responses","operation":"chat","stateless":true,"input":["text"],"function_tools":true,"streaming":true,"max_output_bytes":8388608},
+            "messages": {"endpoint":"/v1/messages","operation":"chat","stateless":true,"function_tools":true,"streaming":true},
             "admission": {
                 "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000,
                 "adapter_max_in_flight": null
@@ -280,6 +260,7 @@ async fn models_report_kanata_capabilities_per_alias() {
             "reasoning_efforts": ["medium"], "context_tokens": null,
             "max_output_tokens": null,
             "responses": {"endpoint":"/v1/responses","operation":"chat","stateless":true,"input":["text"],"function_tools":true,"streaming":true,"max_output_bytes":8388608},
+            "messages": {"endpoint":"/v1/messages","operation":"chat","stateless":true,"function_tools":true,"streaming":true},
             "admission": {
                 "max_in_flight": 8, "max_queue": 32, "queue_ms": 1000,
                 "adapter_max_in_flight": null

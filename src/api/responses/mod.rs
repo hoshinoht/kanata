@@ -1,5 +1,4 @@
 mod output;
-mod streaming;
 mod wire;
 
 use axum::{
@@ -9,8 +8,7 @@ use axum::{
 
 use crate::server::{Authenticated, ClientState};
 
-pub(super) use output::{Options, complete};
-pub(super) use streaming::stream_response;
+pub(super) use output::{Options, complete, stream_start};
 pub(super) use wire::parse;
 
 pub(super) async fn create(

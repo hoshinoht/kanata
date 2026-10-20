@@ -64,9 +64,10 @@ pub(super) async fn protect_discovery(
         response
             .headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        response
-            .headers_mut()
-            .append(header::VARY, HeaderValue::from_static("Authorization"));
+        response.headers_mut().append(
+            header::VARY,
+            HeaderValue::from_static("Authorization, X-Api-Key"),
+        );
     }
     response
 }

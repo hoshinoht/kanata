@@ -28,6 +28,7 @@ pub struct RouteEntry {
     pub context_tokens: Option<u32>,
     pub max_output_tokens: Option<u32>,
     pub pinned_reasoning_effort: Option<&'static str>,
+    pub reasoning_summary: Option<&'static str>,
 }
 
 impl RouteEntry {
@@ -175,5 +176,6 @@ fn entry(route: &ValidatedRoute, adapter: &ValidatedAdapter) -> RouteEntry {
         context_tokens: route.context_tokens(),
         max_output_tokens: route.max_output_tokens(),
         pinned_reasoning_effort: route.pinned_reasoning_effort(),
+        reasoning_summary: route.reasoning_summary().map(|summary| summary.as_str()),
     }
 }

@@ -373,6 +373,7 @@ mod tests {
             output_tokens: output,
             total_tokens: input + output,
             reasoning_tokens: None,
+            cached_input_tokens: None,
         }
     }
 

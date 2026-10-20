@@ -99,36 +99,46 @@ fn choice_chunk(delta: Value, finish_reason: Option<&str>) -> Value {
 }
 
 #[tokio::test]
-async fn stream_completion_requires_visible_text_or_a_tool_call() {
+async fn stream_stop_without_visible_text_completes_empty_and_content_filter_does_not() {
     for delta in [
         json!({"role":"assistant"}),
         json!({"role":"assistant","reasoning":"hidden"}),
         json!({"role":"assistant","reasoning_content":"hidden"}),
     ] {
-        let body = format!(
-            "{}{}data: [DONE]\n\n",
-            sse_record(choice_chunk(delta, None)),
-            sse_record(choice_chunk(json!({}), Some("stop")))
-        );
-        let mock = MockServer::once(ResponseSpec::event_stream(&body, body.len())).await;
-        let config = config_for(&mock.address, true, true);
-        let adapter = adapter(&config);
-        let (events, kind) = match stream_outcome(
-            adapter
-                .execute(routed(&config, text_request_with_stream(true)))
-                .await,
-        )
-        .await
-        {
-            Err(error) => error,
-            Ok(events) => panic!("empty stream completed: {events:?}"),
-        };
-        assert_eq!(kind, ErrorKind::UpstreamFailure);
-        assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event, NormalizedEvent::ChatCompleted { .. }))
-        );
+        for finish in ["stop", "content_filter"] {
+            let body = format!(
+                "{}{}data: [DONE]\n\n",
+                sse_record(choice_chunk(delta.clone(), None)),
+                sse_record(choice_chunk(json!({}), Some(finish)))
+            );
+            let mock = MockServer::once(ResponseSpec::event_stream(&body, body.len())).await;
+            let config = config_for(&mock.address, true, true);
+            let adapter = adapter(&config);
+            let outcome = stream_outcome(
+                adapter
+                    .execute(routed(&config, text_request_with_stream(true)))
+                    .await,
+            )
+            .await;
+            match (finish, outcome) {
+                ("stop", Ok(events)) => assert!(matches!(
+                    events.last(),
+                    Some(NormalizedEvent::ChatCompleted {
+                        finish_reason: FinishReason::Stop,
+                        ..
+                    })
+                )),
+                ("content_filter", Err((events, kind))) => {
+                    assert_eq!(kind, ErrorKind::UpstreamFailure);
+                    assert!(
+                        !events
+                            .iter()
+                            .any(|event| matches!(event, NormalizedEvent::ChatCompleted { .. }))
+                    );
+                }
+                (_, outcome) => panic!("unexpected {finish} outcome: {outcome:?}"),
+            }
+        }
     }
 }
 

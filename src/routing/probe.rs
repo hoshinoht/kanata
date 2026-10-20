@@ -38,6 +38,8 @@ pub(crate) async fn inference(
                     .then_some(route.max_output_tokens.unwrap_or(16).min(16)),
                 ..ChatOptions::default()
             },
+            prompt_cache_key: None,
+            include_encrypted_reasoning: false,
             extensions: Extensions::default(),
         }),
         Operation::Embeddings => Request::Embeddings(EmbeddingRequest {

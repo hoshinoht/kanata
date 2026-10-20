@@ -69,6 +69,9 @@ struct FunctionWire {
     #[serde(default)]
     description: Option<String>,
     parameters: Value,
+    /// Accepted and dropped: no backend is asked to enforce the schema.
+    #[serde(default, rename = "strict")]
+    _strict: Option<bool>,
 }
 
 impl ToolWire {

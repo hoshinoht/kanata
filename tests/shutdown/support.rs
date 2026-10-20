@@ -1,26 +1,23 @@
 #![allow(dead_code)]
 
+#[path = "../admission/support.rs"]
+mod admission;
+use crate::scratch;
+
 use std::{
-    collections::VecDeque,
-    fs, io,
-    pin::Pin,
+    io,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    task::{Context, Poll},
     time::Duration,
 };
 
-use futures_core::Stream;
 use kanata::{
-    adapter::{Adapter, AdapterFuture, AdapterOutput},
+    adapter::{Adapter, AdapterFuture},
     auth::{SecretResolutionError, SecretResolver},
-    config::{SecretReference, ValidatedConfig, load},
-    core::{
-        Capabilities, ChatContent, ChatMessage, ChatResponse, ChatRole, FinishReason, GatewayError,
-        ModelAlias, NormalizedEvent, Response as CoreResponse, RoutedRequest,
-    },
+    config::{SecretReference, ValidatedConfig},
+    core::{Capabilities, NormalizedEvent, RoutedRequest},
     server::{Readiness, TwoPlaneServer},
 };
 use tokio::{
@@ -30,7 +27,8 @@ use tokio::{
     task::JoinHandle,
 };
 
-static CONFIG_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+use admission::{CancellationGuard, ok_chat};
+pub use admission::{Event, StreamProbe};
 
 pub struct Resolver;
 
@@ -130,15 +128,7 @@ fn config(client_port: u16, admin_port: u16) -> ValidatedConfig {
         .replace("port = 8080", &format!("port = {client_port}"))
         .replace("port = 9090", &format!("port = {admin_port}"))
         .replace("max_in_flight = 8", "max_in_flight = 1");
-    let path = std::env::temp_dir().join(format!(
-        "kanata-shutdown-{}-{}.toml",
-        std::process::id(),
-        CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&path, contents).expect("shutdown config writes");
-    let config = load(&path).expect("shutdown config validates");
-    let _ = fs::remove_file(path);
-    config
+    scratch::load_valid(&contents)
 }
 
 pub async fn connected(addr: std::net::SocketAddr) -> TcpStream {
@@ -335,116 +325,15 @@ impl Adapter for PendingAdapter {
                 .expect("gate");
             permit.forget();
             cancellation.completed = true;
-            Ok(AdapterOutput::Complete(CoreResponse::Chat(ChatResponse {
-                model: ModelAlias(model),
-                message: ChatMessage {
-                    role: ChatRole::Assistant,
-                    content: vec![ChatContent::Text { text: "ok".into() }],
-                },
-                finish_reason: FinishReason::Stop,
-                usage: None,
-                reasoning: None,
-            })))
+            Ok(ok_chat(model))
         })
     }
 }
-
-struct CancellationGuard {
-    counter: Arc<AtomicUsize>,
-    completed: bool,
-}
-
-impl Drop for CancellationGuard {
-    fn drop(&mut self) {
-        if !self.completed {
-            self.counter.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct StreamProbe {
-    drops: Arc<AtomicUsize>,
-    streams: Arc<Mutex<VecDeque<mpsc::UnboundedReceiver<Event>>>>,
-}
-
-pub type Event = Result<NormalizedEvent, GatewayError>;
 
 pub fn stream_adapter() -> (Arc<dyn Adapter>, StreamProbe, mpsc::UnboundedSender<Event>) {
-    let probe = StreamProbe {
-        drops: Arc::new(AtomicUsize::new(0)),
-        streams: Arc::new(Mutex::new(VecDeque::new())),
-    };
-    let (sender, receiver) = mpsc::unbounded_channel();
-    probe
-        .streams
-        .lock()
-        .expect("stream plans")
-        .push_back(receiver);
-    (
-        Arc::new(StreamAdapter {
-            probe: probe.clone(),
-        }),
-        probe,
-        sender,
-    )
-}
-
-impl StreamProbe {
-    pub fn drops(&self) -> usize {
-        self.drops.load(Ordering::SeqCst)
-    }
-}
-
-struct StreamAdapter {
-    probe: StreamProbe,
-}
-
-impl Adapter for StreamAdapter {
-    fn id(&self) -> &str {
-        "vllm-private"
-    }
-
-    fn capabilities(&self) -> &Capabilities {
-        static CAPABILITIES: std::sync::OnceLock<Capabilities> = std::sync::OnceLock::new();
-        CAPABILITIES.get_or_init(capabilities)
-    }
-
-    fn execute(&self, _: RoutedRequest) -> AdapterFuture {
-        let receiver = self
-            .probe
-            .streams
-            .lock()
-            .expect("stream plans")
-            .pop_front()
-            .expect("stream plan");
-        let drops = self.probe.drops.clone();
-        Box::pin(async move {
-            Ok(AdapterOutput::Events(Box::pin(ChannelStream {
-                receiver,
-                drops,
-            })))
-        })
-    }
-}
-
-struct ChannelStream {
-    receiver: mpsc::UnboundedReceiver<Event>,
-    drops: Arc<AtomicUsize>,
-}
-
-impl Stream for ChannelStream {
-    type Item = Event;
-
-    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.get_mut().receiver.poll_recv(context)
-    }
-}
-
-impl Drop for ChannelStream {
-    fn drop(&mut self) {
-        self.drops.fetch_add(1, Ordering::SeqCst);
-    }
+    let (adapter, probe) = admission::stream_adapter("vllm-private", capabilities());
+    let sender = probe.prepare();
+    (adapter, probe, sender)
 }
 
 pub fn capabilities() -> Capabilities {
@@ -460,9 +349,7 @@ pub fn capabilities() -> Capabilities {
 }
 
 pub fn started() -> Event {
-    Ok(NormalizedEvent::ChatStarted {
-        model: ModelAlias("private-chat".into()),
-    })
+    admission::started("private-chat")
 }
 
 pub fn text(value: &str) -> Event {

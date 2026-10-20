@@ -8,34 +8,17 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Operation {
-    Chat,
-    Transcription,
-    Embeddings,
-    Speech,
-}
-
-impl Operation {
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "chat" => Some(Self::Chat),
-            "transcription" => Some(Self::Transcription),
-            "embeddings" => Some(Self::Embeddings),
-            "speech" => Some(Self::Speech),
-            _ => None,
-        }
+str_enum! {
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Operation {
+        Chat => "chat",
+        Transcription => "transcription",
+        Embeddings => "embeddings",
+        Speech => "speech",
     }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Chat => "chat",
-            Self::Transcription => "transcription",
-            Self::Embeddings => "embeddings",
-            Self::Speech => "speech",
-        }
-    }
+    pub const fn as_str;
+    pub fn parse;
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -296,6 +279,7 @@ pub enum RequestValidationError {
     InputImagesTooLarge,
     InputAudioRoleMismatch,
     InputAudioTooLarge,
+    ReasoningRoleMismatch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -318,12 +302,9 @@ impl RoutedRequest {
         Ok(Self { context, request })
     }
 
-    pub fn context(&self) -> &RequestContext {
-        &self.context
-    }
-
-    pub fn request(&self) -> &Request {
-        &self.request
+    getters! {
+        pub context: &RequestContext,
+        pub request: &Request,
     }
 
     pub fn into_parts(self) -> (RequestContext, Request) {
@@ -344,6 +325,11 @@ pub struct ChatRequest {
     pub stream: bool,
     #[serde(default, skip_serializing_if = "ChatOptions::is_empty")]
     pub options: ChatOptions,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<PromptCacheKey>,
+    /// Ask a replaying upstream to return `ReasoningItem`s for the next turn.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_encrypted_reasoning: bool,
     #[serde(default)]
     pub extensions: Extensions,
 }
@@ -367,6 +353,10 @@ impl<'de> Deserialize<'de> for ChatRequest {
             #[serde(default)]
             options: ChatOptions,
             #[serde(default)]
+            prompt_cache_key: Option<PromptCacheKey>,
+            #[serde(default)]
+            include_encrypted_reasoning: bool,
+            #[serde(default)]
             extensions: Extensions,
         }
 
@@ -378,13 +368,47 @@ impl<'de> Deserialize<'de> for ChatRequest {
             tool_choice: raw.tool_choice,
             stream: raw.stream,
             options: raw.options,
+            prompt_cache_key: raw.prompt_cache_key,
+            include_encrypted_reasoning: raw.include_encrypted_reasoning,
             extensions: raw.extensions,
         };
         chat.validate_audio()
             .map_err(|_| D::Error::custom("invalid chat audio content"))?;
         chat.validate_images()
             .map_err(|_| D::Error::custom("invalid chat image content"))?;
+        chat.validate_reasoning()
+            .map_err(|_| D::Error::custom("reasoning content outside an assistant message"))?;
         Ok(chat)
+    }
+}
+
+/// Upper bound for `prompt_cache_key`; harnesses send 36-byte UUIDs.
+pub const MAX_PROMPT_CACHE_KEY_BYTES: usize = 64;
+
+/// Upstream prefix-cache routing key: 1–64 bytes of printable ASCII (`0x20..=0x7e`).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct PromptCacheKey(String);
+
+impl PromptCacheKey {
+    pub fn new(value: String) -> Result<Self, InvalidChatOption> {
+        ((1..=MAX_PROMPT_CACHE_KEY_BYTES).contains(&value.len())
+            && value.bytes().all(|byte| matches!(byte, b' '..=b'~')))
+        .then_some(Self(value))
+        .ok_or(InvalidChatOption)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for PromptCacheKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
     }
 }
 
@@ -417,6 +441,9 @@ pub struct ChatOptions {
     /// Wire field that carried `max_output_tokens`, for error attribution only.
     #[serde(skip)]
     pub max_output_tokens_param: MaxTokensParam,
+    /// Wire field that carried `sampling.stop`, for error attribution only.
+    #[serde(skip)]
+    pub stop_param: StopParam,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
     /// Chat-template thinking switch (`chat_template_kwargs.enable_thinking`).
@@ -424,23 +451,27 @@ pub struct ChatOptions {
     pub enable_thinking: Option<bool>,
 }
 
-/// Wire field name used for the output token limit.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum MaxTokensParam {
-    #[default]
-    MaxTokens,
-    MaxCompletionTokens,
-    MaxOutputTokens,
+str_enum! {
+    /// Wire field name used for the output token limit.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum MaxTokensParam {
+        #[default]
+        MaxTokens => "max_tokens",
+        MaxCompletionTokens => "max_completion_tokens",
+        MaxOutputTokens => "max_output_tokens",
+    }
+    pub const fn as_str;
 }
 
-impl MaxTokensParam {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::MaxTokens => "max_tokens",
-            Self::MaxCompletionTokens => "max_completion_tokens",
-            Self::MaxOutputTokens => "max_output_tokens",
-        }
+str_enum! {
+    /// Wire field name used for stop sequences.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum StopParam {
+        #[default]
+        Stop => "stop",
+        StopSequences => "stop_sequences",
     }
+    pub const fn as_str;
 }
 
 impl ChatOptions {
@@ -470,6 +501,12 @@ impl ChatOptions {
             Some("top_p")
         } else if self.sampling.seed.is_some() {
             Some("seed")
+        } else if !self.sampling.stop.is_empty() {
+            Some(self.stop_param.as_str())
+        } else if self.sampling.presence_penalty.is_some() {
+            Some("presence_penalty")
+        } else if self.sampling.frequency_penalty.is_some() {
+            Some("frequency_penalty")
         } else if self.max_output_tokens.is_some() {
             Some(self.max_output_tokens_param.as_str())
         } else {
@@ -509,6 +546,7 @@ impl<'de> Deserialize<'de> for ChatOptions {
             sampling: raw.sampling,
             max_output_tokens,
             max_output_tokens_param: MaxTokensParam::default(),
+            stop_param: StopParam::default(),
             reasoning_effort: raw.reasoning_effort,
             enable_thinking: raw.enable_thinking,
         })
@@ -524,12 +562,44 @@ pub struct SamplingOptions {
     pub top_p: Option<TopP>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<i64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_stop"
+    )]
+    pub stop: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<Penalty>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<Penalty>,
 }
+
+/// Stop sequences per request, the common chat API limit.
+pub const MAX_STOP_SEQUENCES: usize = 4;
+/// Bytes per stop sequence.
+pub const MAX_STOP_SEQUENCE_BYTES: usize = 256;
 
 impl SamplingOptions {
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
+
+    /// At most four sequences of 1–256 bytes each.
+    pub fn validate_stop(stop: Vec<String>) -> Result<Vec<String>, InvalidChatOption> {
+        (stop.len() <= MAX_STOP_SEQUENCES
+            && stop
+                .iter()
+                .all(|sequence| (1..=MAX_STOP_SEQUENCE_BYTES).contains(&sequence.len())))
+        .then_some(stop)
+        .ok_or(InvalidChatOption)
+    }
+}
+
+fn deserialize_stop<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    SamplingOptions::validate_stop(Vec::deserialize(deserializer)?).map_err(D::Error::custom)
 }
 
 /// Finite temperature in `[0, 2]`.
@@ -590,43 +660,49 @@ impl<'de> Deserialize<'de> for TopP {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ReasoningEffort {
-    None,
-    Minimal,
-    Low,
-    Medium,
-    High,
-    Xhigh,
-    Max,
+/// Finite presence or frequency penalty in `[-2, 2]`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct Penalty(f64);
+
+// Finite by construction, so reflexive equality holds.
+impl Eq for Penalty {}
+
+impl Penalty {
+    pub fn new(value: f64) -> Result<Self, InvalidChatOption> {
+        (value.is_finite() && (-2.0..=2.0).contains(&value))
+            .then_some(Self(value))
+            .ok_or(InvalidChatOption)
+    }
+
+    pub fn get(self) -> f64 {
+        self.0
+    }
 }
 
-impl ReasoningEffort {
-    pub fn parse(value: &str) -> Option<Self> {
-        Some(match value {
-            "none" => Self::None,
-            "minimal" => Self::Minimal,
-            "low" => Self::Low,
-            "medium" => Self::Medium,
-            "high" => Self::High,
-            "xhigh" => Self::Xhigh,
-            "max" => Self::Max,
-            _ => return None,
-        })
+impl<'de> Deserialize<'de> for Penalty {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(f64::deserialize(deserializer)?).map_err(D::Error::custom)
     }
+}
 
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Minimal => "minimal",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Xhigh => "xhigh",
-            Self::Max => "max",
-        }
+str_enum! {
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum ReasoningEffort {
+        None => "none",
+        Minimal => "minimal",
+        Low => "low",
+        Medium => "medium",
+        High => "high",
+        Xhigh => "xhigh",
+        Max => "max",
     }
+    pub const fn as_str;
+    pub fn parse;
 }
 
 /// Serializes in the public wire `response_format` shape.
@@ -770,11 +846,126 @@ pub enum ChatRole {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ChatContent {
-    Text { text: String },
-    ToolCall { call: ToolCall },
-    ToolResult { call_id: String, content: String },
-    InputAudio { audio: ValidatedAudio },
-    InputImage { image: super::ValidatedImage },
+    Text {
+        text: String,
+    },
+    ToolCall {
+        call: ToolCall,
+    },
+    ToolResult {
+        call_id: String,
+        content: String,
+    },
+    InputAudio {
+        audio: ValidatedAudio,
+    },
+    InputImage {
+        image: super::ValidatedImage,
+    },
+    /// Opaque upstream reasoning replayed in an assistant turn; adapters that cannot
+    /// replay it skip it.
+    Reasoning {
+        item: ReasoningItem,
+    },
+    /// Plaintext reasoning a client replays on an assistant turn (chat `reasoning_content`);
+    /// adapters whose upstream accepts it forward it, others skip it. Never encrypted.
+    ReasoningText {
+        text: String,
+    },
+}
+
+impl ChatContent {
+    /// Whether this part is replayed reasoning, encrypted or plaintext.
+    pub fn is_reasoning(&self) -> bool {
+        matches!(self, Self::Reasoning { .. } | Self::ReasoningText { .. })
+    }
+}
+
+/// Bytes per reasoning item id; upstream ids are short (`rs_…`).
+pub const MAX_REASONING_ITEM_ID_BYTES: usize = 256;
+/// Bytes per encrypted reasoning payload.
+pub const MAX_ENCRYPTED_REASONING_BYTES: usize = 1024 * 1024;
+
+/// Encrypted reasoning carried between turns without inspection.
+#[derive(Clone, Eq, PartialEq, Serialize)]
+pub struct ReasoningItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    encrypted_content: String,
+}
+
+// The payload is large and opaque; logs get its size only.
+impl fmt::Debug for ReasoningItem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReasoningItem")
+            .field("id", &self.id)
+            .field("encrypted_content_len", &self.encrypted_content.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReasoningItemError {
+    IdTooLong,
+    EmptyContent,
+    ContentTooLarge,
+}
+
+impl fmt::Display for ReasoningItemError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::IdTooLong => "reasoning item id exceeds the contract limit",
+            Self::EmptyContent => "encrypted reasoning content is empty",
+            Self::ContentTooLarge => "encrypted reasoning content exceeds the contract limit",
+        })
+    }
+}
+
+impl std::error::Error for ReasoningItemError {}
+
+impl ReasoningItem {
+    pub fn new(id: Option<String>, encrypted_content: String) -> Result<Self, ReasoningItemError> {
+        if id
+            .as_ref()
+            .is_some_and(|id| id.len() > MAX_REASONING_ITEM_ID_BYTES)
+        {
+            return Err(ReasoningItemError::IdTooLong);
+        }
+        if encrypted_content.is_empty() {
+            return Err(ReasoningItemError::EmptyContent);
+        }
+        if encrypted_content.len() > MAX_ENCRYPTED_REASONING_BYTES {
+            return Err(ReasoningItemError::ContentTooLarge);
+        }
+        Ok(Self {
+            id,
+            encrypted_content,
+        })
+    }
+
+    getters! {
+        pub id: Option<&str> = as_deref,
+        pub encrypted_content: &str,
+    }
+}
+
+impl<'de> Deserialize<'de> for ReasoningItem {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawReasoningItem {
+            #[serde(default)]
+            id: Option<String>,
+            encrypted_content: String,
+        }
+
+        let raw = RawReasoningItem::deserialize(deserializer)?;
+        Self::new(raw.id, raw.encrypted_content).map_err(D::Error::custom)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -837,12 +1028,9 @@ impl ValidatedAudio {
         Ok(Self { format, bytes })
     }
 
-    pub fn format(&self) -> InputAudioFormat {
-        self.format
-    }
-
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+    getters! {
+        pub format: InputAudioFormat,
+        pub bytes: &[u8],
     }
 }
 
@@ -931,16 +1119,10 @@ impl ValidatedFile {
         })
     }
 
-    pub fn file_name(&self) -> &str {
-        &self.file_name
-    }
-
-    pub fn media_type(&self) -> &str {
-        &self.media_type
-    }
-
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+    getters! {
+        pub file_name: &str,
+        pub media_type: &str,
+        pub bytes: &[u8],
     }
 }
 
@@ -1037,6 +1219,7 @@ impl Request {
         };
         chat.validate_audio()?;
         chat.validate_images()?;
+        chat.validate_reasoning()?;
         match &chat.tool_choice {
             ToolChoice::Required if chat.tools.is_empty() => {
                 Err(RequestValidationError::RequiredToolChoiceWithoutTools)
@@ -1050,6 +1233,15 @@ impl Request {
 }
 
 impl ChatRequest {
+    /// History for an upstream adapter: assistant turns holding nothing but reasoning
+    /// (encrypted or plaintext) are dropped, so the remaining turns never go empty.
+    /// Callers still skip or forward reasoning parts inside the turns that remain.
+    pub fn messages_without_reasoning(&self) -> impl Iterator<Item = &ChatMessage> {
+        self.messages.iter().filter(|message| {
+            message.content.is_empty() || !message.content.iter().all(ChatContent::is_reasoning)
+        })
+    }
+
     fn validate_images(&self) -> Result<(), RequestValidationError> {
         let mut budget = super::ImageBudget::default();
         for message in &self.messages {
@@ -1087,16 +1279,18 @@ impl ChatRequest {
         }
         Ok(())
     }
-}
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ModelDescriptor {
-    pub alias: ModelAlias,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ModelsResponse {
-    pub models: Vec<ModelDescriptor>,
+    fn validate_reasoning(&self) -> Result<(), RequestValidationError> {
+        let misplaced = self.messages.iter().any(|message| {
+            message.role != ChatRole::Assistant
+                && message.content.iter().any(ChatContent::is_reasoning)
+        });
+        if misplaced {
+            Err(RequestValidationError::ReasoningRoleMismatch)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1109,6 +1303,9 @@ pub struct ChatResponse {
     /// Upstream reasoning text or summary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    /// Encrypted reasoning to replay on the next turn, when the client asked for it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_items: Vec<ReasoningItem>,
 }
 
 /// Reasoning bytes forwarded per response; the rest is dropped.
@@ -1146,6 +1343,25 @@ pub struct Usage {
     /// Part of `output_tokens`, when the upstream reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u64>,
+    /// Part of `input_tokens` served from the upstream prefix cache; set it through
+    /// `with_cached_input_tokens`, which drops counts above `input_tokens`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<u64>,
+}
+
+impl Usage {
+    /// Records the cached prefix count; a count above `input_tokens` is contradictory
+    /// upstream data and is dropped rather than failing the completion.
+    pub fn with_cached_input_tokens(mut self, cached: u64) -> Self {
+        self.cached_input_tokens = (cached <= self.input_tokens).then_some(cached);
+        self
+    }
+
+    /// Drops the cached count where it must not be disclosed (public listener).
+    pub fn without_cached_input_tokens(mut self) -> Self {
+        self.cached_input_tokens = None;
+        self
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1159,6 +1375,9 @@ pub enum NormalizedEvent {
     },
     ChatReasoningDelta {
         text: String,
+    },
+    ChatReasoningItem {
+        item: ReasoningItem,
     },
     ChatToolCallDelta {
         call_id: String,
@@ -1188,7 +1407,7 @@ pub struct Capabilities {
     pub audio_function_tools: bool,
     #[serde(default)]
     pub structured_output: bool,
-    /// Covers temperature, top_p, seed and max output tokens.
+    /// Covers temperature, top_p, seed, stop, penalties and max output tokens.
     #[serde(default)]
     pub sampling_controls: bool,
     #[serde(default)]
@@ -1411,4 +1630,73 @@ impl ErrorKind {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct GatewayError {
     pub kind: ErrorKind,
+}
+
+impl From<ErrorKind> for GatewayError {
+    fn from(kind: ErrorKind) -> Self {
+        Self { kind }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_cache_key_is_one_to_sixty_four_printable_ascii_bytes() {
+        for valid in [
+            "k",
+            "0f8b1c2e-6a4d-4f1e-9a3b-2c7d5e8f1a0b",
+            " ~",
+            &"a".repeat(64),
+        ] {
+            assert_eq!(
+                PromptCacheKey::new(valid.to_owned()).map(|key| key.as_str().to_owned()),
+                Ok(valid.to_owned())
+            );
+        }
+        for invalid in ["", &"a".repeat(65), "tab\there", "line\n", "é"] {
+            assert_eq!(
+                PromptCacheKey::new(invalid.to_owned()),
+                Err(InvalidChatOption)
+            );
+        }
+    }
+
+    #[test]
+    fn cached_input_tokens_never_exceed_input_tokens() {
+        let usage = Usage {
+            input_tokens: 10,
+            output_tokens: 1,
+            total_tokens: 11,
+            reasoning_tokens: None,
+            cached_input_tokens: None,
+        };
+        let cached = usage.clone().with_cached_input_tokens(10);
+        assert_eq!(cached.cached_input_tokens, Some(10));
+        assert_eq!(cached.without_cached_input_tokens(), usage);
+        assert_eq!(usage.with_cached_input_tokens(11).cached_input_tokens, None);
+    }
+
+    #[test]
+    fn penalties_and_stop_sequences_are_bounded() {
+        for valid in [-2.0, 0.0, 2.0] {
+            assert!(Penalty::new(valid).is_ok());
+        }
+        for invalid in [-2.01, 2.01, f64::NAN, f64::INFINITY] {
+            assert_eq!(Penalty::new(invalid), Err(InvalidChatOption));
+        }
+        let stop = |items: &[&str]| items.iter().map(|item| (*item).to_owned()).collect();
+        assert!(SamplingOptions::validate_stop(stop(&["a", "b", "c", &"d".repeat(256)])).is_ok());
+        for invalid in [
+            stop(&["a", "b", "c", "d", "e"]),
+            stop(&[""]),
+            stop(&[&"d".repeat(257)]),
+        ] {
+            assert_eq!(
+                SamplingOptions::validate_stop(invalid),
+                Err(InvalidChatOption)
+            );
+        }
+    }
 }

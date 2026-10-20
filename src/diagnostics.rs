@@ -44,12 +44,12 @@ pub(crate) async fn run(
     if inference.is_some() != operation.is_some() {
         return Err(USAGE.into());
     }
+    let plane = plane.unwrap_or_default();
     let config = if health {
-        config::load_deferring_keys(&path)
+        config::load_deferring_keys(&path).and_then(|config| config.for_plane(plane))
     } else {
-        config::load(&path)
+        config::load_plane(&path, plane).map(|(_, config)| config)
     }
-    .and_then(|config| config.for_plane(plane.unwrap_or_default()))
     .map_err(|error| error.to_string())?;
     if models || inference.is_some() {
         crate::telemetry::logging::install(config.logging());

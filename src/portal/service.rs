@@ -5,7 +5,10 @@ use serde_json::{Value, json};
 
 use crate::config::{self, KeyRateLimit, KeySource, ValidatedConfig, valid_identifier};
 use crate::core::{ModelAlias, Operation, RouteSelector};
-use crate::keys::cli::{Exposure, RouteChoice};
+use crate::keys::cli::{
+    self, Exposure, RouteChoice, generate_key, key_json, missing_routes_json, parse_expires,
+    publicly_usable, rate_limit_json, scope_json, usage_dir,
+};
 use crate::keys::file::{self, KeysFile, StoredKey};
 use crate::keys::quota::DailyQuota;
 use crate::keys::store::{self, AuditEvent};
@@ -110,34 +113,26 @@ fn revision(keys: &KeysFile) -> String {
 impl KeyService {
     pub fn snapshot(&self) -> Result<Value, String> {
         let (config, path) = location(&self.path)?;
-        let keys = match file::read(&path).map_err(|error| error.to_string())? {
-            Some(bytes) => file::parse_without_routes(&bytes).map_err(|error| error.to_string())?,
-            None => KeysFile::default(),
-        };
-        let usage_dir = match config.key_source() {
-            KeySource::File { usage_dir, .. } => usage_dir.as_deref(),
-            _ => None,
-        };
+        let keys = file::load(&path)?;
+        let usage_dir = usage_dir(&config);
         let usage = usage_dir.map(usage::read_merged);
         let catalog = (self.catalog)(&config);
         let now = time::now();
-        let records: Vec<Value> = keys.records().iter().map(|key| {
-            let used = usage.as_ref().and_then(|usage| usage.get(key.id()));
-            json!({
-                "id": key.id(), "owner": key.is_owner(), "scopes": scope_json(key.permissions()),
-                "created_at": time::format(key.created_at()), "expires_at": key.expires_at().map(time::format),
-                "expired": key.is_expired(now), "revoked_at": key.revoked_at().map(time::format),
-                "rotated_at": key.rotated_at().map(time::format),
-                "max_in_flight": key.max_in_flight(),
-                "rate_limit": key.rate_limit().map(|value| json!({"requests": value.requests, "per_ms": value.per_ms})),
-                "requests": usage.as_ref().map(|_| used.map_or(0, |value| value.requests)),
-                "tokens": used.map(|value| value.tokens),
-                "last_used_at": used.filter(|value| value.last_used_at > 0).map(|value| time::format(value.last_used_at)),
-                "public_access": publicly_usable(key, &catalog),
-                "daily_quota": key.daily_quota(),
-                "missing_routes": key.permissions().iter().filter(|scope| !catalog.iter().any(|route| route.selector == **scope)).map(|scope| json!({"model_alias":scope.model_alias.0,"operation":scope.operation.as_str()})).collect::<Vec<_>>(),
+        let records: Vec<Value> = keys
+            .records()
+            .iter()
+            .map(|key| {
+                let mut record = key_json(key, usage.as_ref(), now);
+                record.insert("max_in_flight".into(), json!(key.max_in_flight()));
+                record.insert("rate_limit".into(), rate_limit_json(key.rate_limit()));
+                record.insert(
+                    "public_access".into(),
+                    json!(publicly_usable(key.is_owner(), key.permissions(), &catalog)),
+                );
+                record.insert("missing_routes".into(), missing_routes_json(key, &config));
+                Value::Object(record)
             })
-        }).collect();
+            .collect();
         Ok(json!({
             "revision": revision(&keys), "keys": records,
             "routes": catalog.iter().map(|route| {
@@ -198,18 +193,10 @@ impl KeyService {
                 let scopes = parse_scopes(scopes, &catalog, confirm_private)?;
                 let expires = expires_at(&expires, now)?;
                 let (max, rate) = parse_limits(limits.as_ref());
-                let value = format!("kanata_sk_{}", super::random_secret()?);
+                let (value, digest) = generate_key()?;
                 let daily_quota = parse_quota(daily_quota, false, None, &config)?;
-                let mut key = StoredKey::new(
-                    id.clone(),
-                    super::digest(&value),
-                    owner,
-                    scopes,
-                    max,
-                    rate,
-                    now,
-                    expires,
-                );
+                let mut key =
+                    StoredKey::new(id.clone(), digest, owner, scopes, max, rate, now, expires);
                 key.set_daily_quota(daily_quota);
                 keys.push(key);
                 secret = Some(value);
@@ -239,7 +226,7 @@ impl KeyService {
                     key.set_limits(max, rate);
                 }
                 changes = Some(
-                    json!({"before_scopes":before,"after_scopes":scope_json(key.permissions()),"expires_at":key.expires_at().map(time::format),"max_in_flight":key.max_in_flight(),"daily_quota":key.daily_quota(),"rate_limit":key.rate_limit().map(|rate| json!({"requests":rate.requests,"per_ms":rate.per_ms}))}),
+                    json!({"before_scopes":before,"after_scopes":scope_json(key.permissions()),"expires_at":key.expires_at().map(time::format),"max_in_flight":key.max_in_flight(),"daily_quota":key.daily_quota(),"rate_limit":rate_limit_json(key.rate_limit())}),
                 );
                 ("edit", key.is_owner())
             }
@@ -250,8 +237,8 @@ impl KeyService {
                     return Err("Type the key ID to confirm rotation".into());
                 }
                 let key = active_key(&mut keys, &id)?;
-                let value = format!("kanata_sk_{}", super::random_secret()?);
-                key.rotate(super::digest(&value), now, expires_at(&expires, now)?);
+                let (value, digest) = generate_key()?;
+                key.rotate(digest, now, expires_at(&expires, now)?);
                 secret = Some(value);
                 ("rotate", key.is_owner())
             }
@@ -278,11 +265,7 @@ impl KeyService {
 }
 
 fn active_key<'a>(keys: &'a mut KeysFile, id: &str) -> Result<&'a mut StoredKey, String> {
-    let key = keys
-        .records_mut()
-        .iter_mut()
-        .find(|key| key.id() == id)
-        .ok_or("Key not found")?;
+    let key = keys.get_mut(id).ok_or("Key not found")?;
     if key.is_revoked() {
         return Err("This key is revoked. Create a new key instead".into());
     }
@@ -332,36 +315,9 @@ fn parse_limits(limits: Option<&Limits>) -> (Option<u64>, Option<KeyRateLimit>) 
 }
 
 fn expires_at(choice: &str, now: u64) -> Result<Option<u64>, String> {
-    match choice {
-        "unlimited" => Ok(None),
-        "1" | "3" | "7" | "13" | "30" | "60" => Ok(Some(
-            now + choice.parse::<u64>().expect("validated days") * 86400,
-        )),
-        _ => Err("Choose an expiry of 1, 3, 7, 13, 30 or 60 days, or unlimited".into()),
-    }
-}
-
-fn scope_json(scopes: &[RouteSelector]) -> Value {
-    scopes
-        .iter()
-        .map(
-            |scope| json!({"model_alias":scope.model_alias.0,"operation":scope.operation.as_str()}),
-        )
-        .collect()
-}
-
-fn publicly_usable(key: &StoredKey, catalog: &[RouteChoice]) -> bool {
-    !key.is_owner()
-        && !key.permissions().iter().any(|scope| {
-            catalog
-                .iter()
-                .any(|route| route.selector == *scope && route.exposure == Exposure::Never)
-        })
-        && key.permissions().iter().any(|scope| {
-            catalog
-                .iter()
-                .any(|route| route.selector == *scope && route.exposure == Exposure::Public)
-        })
+    parse_expires(choice)
+        .map(|days| cli::expires_at(now, days))
+        .map_err(|_| "Choose an expiry of 1, 3, 7, 13, 30 or 60 days, or unlimited".into())
 }
 
 fn parse_quota(
@@ -381,13 +337,7 @@ fn parse_quota(
         quota
             .validate()
             .map_err(|class| format!("Invalid daily quota: {class}"))?;
-        if !matches!(
-            config.key_source(),
-            KeySource::File {
-                usage_dir: Some(_),
-                ..
-            }
-        ) {
+        if usage_dir(config).is_none() {
             return Err(
                 "Daily quotas require [keys] usage_dir in the gateway configuration".into(),
             );

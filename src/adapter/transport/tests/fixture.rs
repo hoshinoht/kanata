@@ -4,7 +4,7 @@ use bytes::Bytes;
 use http::Method;
 use serde_json::Value;
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::oneshot,
     task::JoinHandle,
@@ -12,7 +12,12 @@ use tokio::{
 
 use super::super::origin::Origin;
 use super::super::time::Timeouts;
-use super::super::{Accept, COMPLETE_RESPONSE_BYTES, Endpoint, Transport, TransportRequest};
+use super::super::{
+    Accept, COMPLETE_RESPONSE_BYTES, Endpoint, Transport, TransportRequest, TransportResponse,
+};
+use crate::core::GatewayError;
+
+pub(super) const SECOND: Duration = Duration::from_secs(1);
 
 pub(super) async fn listener() -> (TcpListener, String) {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -53,6 +58,28 @@ pub(super) fn timeouts(
         first_byte,
         idle,
     }
+}
+
+/// One second for every phase.
+pub(super) fn uniform_timeouts() -> Timeouts {
+    timeouts(SECOND, SECOND, SECOND, SECOND)
+}
+
+/// Executes the default `{}` request over plain HTTP.
+pub(super) async fn execute(
+    address: String,
+    timeouts: Timeouts,
+) -> Result<TransportResponse, GatewayError> {
+    transport(address, timeouts)
+        .execute(request(Bytes::from_static(b"{}"), 1024))
+        .await
+}
+
+/// Executes the default request and expects a response head.
+pub(super) async fn respond(address: String, timeouts: Timeouts) -> TransportResponse {
+    execute(address, timeouts)
+        .await
+        .unwrap_or_else(|error| panic!("response: {error:?}"))
 }
 
 pub(super) fn request(body: Bytes, request_budget: usize) -> TransportRequest {
@@ -105,6 +132,14 @@ pub(super) async fn wait_for_close(mut socket: TcpStream) -> std::io::Result<()>
     }
 }
 
+/// Waits for the client to close `socket`, then fires `closed`.
+pub(super) async fn signal_close(socket: TcpStream, closed: oneshot::Sender<()>) {
+    wait_for_close(socket)
+        .await
+        .unwrap_or_else(|_| panic!("close"));
+    closed.send(()).unwrap_or_else(|_| panic!("close signal"));
+}
+
 pub(super) fn signal_pair() -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
     oneshot::channel()
 }
@@ -119,12 +154,64 @@ pub(super) async fn bounded_wait(receiver: oneshot::Receiver<()>) {
 pub(super) fn server_task<F, Fut>(listener: TcpListener, handler: F) -> JoinHandle<()>
 where
     F: FnOnce(TcpStream) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
 {
     tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap_or_else(|_| panic!("accept"));
         handler(socket).await;
     })
+}
+
+/// Like `server_task`, but reads the request head before handing over the socket.
+pub(super) fn serve<F, Fut>(listener: TcpListener, handler: F) -> JoinHandle<()>
+where
+    F: FnOnce(TcpStream) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    server_task(listener, |mut socket| async move {
+        read_headers(&mut socket)
+            .await
+            .unwrap_or_else(|_| panic!("request headers"));
+        handler(socket).await;
+    })
+}
+
+/// Like `serve`, and also asserts the request head targets `address`.
+pub(super) fn serve_checked<F, Fut>(
+    listener: TcpListener,
+    address: &str,
+    handler: F,
+) -> JoinHandle<()>
+where
+    F: FnOnce(TcpStream) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    let address = address.to_owned();
+    server_task(listener, |mut socket| async move {
+        let request = read_headers(&mut socket)
+            .await
+            .unwrap_or_else(|_| panic!("request headers"));
+        assert_request_headers(&request, &address);
+        handler(socket).await;
+    })
+}
+
+/// Serves `response` verbatim; given `address`, first checks the request head targets it.
+pub(super) fn reply(
+    listener: TcpListener,
+    address: Option<&str>,
+    response: Vec<u8>,
+) -> JoinHandle<()> {
+    let write = |mut socket: TcpStream| async move {
+        socket
+            .write_all(&response)
+            .await
+            .unwrap_or_else(|_| panic!("response"));
+    };
+    match address {
+        Some(address) => serve_checked(listener, address, write),
+        None => serve(listener, write),
+    }
 }
 
 pub(super) fn assert_request_headers(request: &[u8], address: &str) {

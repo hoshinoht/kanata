@@ -1,20 +1,21 @@
 mod request;
 mod response;
 mod stream;
-mod stream_state;
-mod stream_wire;
 mod validation;
 
+use crate::adapter::internal_error;
 use std::{fmt, sync::Arc};
 
 use bytes::Bytes;
-use futures_util::StreamExt;
 use http::Method;
 
 use crate::adapter::diagnostics::UpstreamLabel;
 
 use crate::{
-    adapter::{Adapter, AdapterFuture, AdapterOutput},
+    adapter::{
+        Adapter, AdapterFuture, AdapterOutput,
+        chat_completions::{self, stream::ChatStream, validation::has_input_audio},
+    },
     auth::{SecretResolver, canonical_bearer_token},
     config::{
         ProviderKind, ValidatedAdapter, ValidatedConfig, ValidatedLimits, ValidatedRoute,
@@ -28,13 +29,17 @@ use crate::{
 
 use super::transport::{
     Accept, COMPLETE_RESPONSE_BYTES, CredentialHeader, Endpoint, MultipartFile, MultipartRequest,
-    ResponseBody, ResponseContentType, STREAM_RESPONSE_BYTES, Transport, TransportRequest,
+    Transport, TransportRequest,
 };
 
 const NATIVE_ASR_MULTIPART_OVERHEAD_BYTES: usize = 8 * 1024;
 
 pub struct VllmAdapter {
     id: String,
+    /// Provider label for diagnostics: `vllm`, or `cliproxy` for CLIProxyAPI on this path.
+    provider: &'static str,
+    /// Whether assistant reasoning text reaches the upstream (vLLM yes, CLIProxyAPI no).
+    replays_reasoning_text: bool,
     capabilities: Capabilities,
     trust_zone: TrustZone,
     max_body_bytes: usize,
@@ -110,12 +115,17 @@ impl VllmAdapter {
                 || (configured.input_audio && configured.streaming_chat))
             && (!configured.audio_function_tools
                 || (configured.input_audio && configured.function_tools));
-        if adapter.kind() != ProviderKind::Vllm
+        // CLIProxyAPI reuses this chat path only: chat, always with its client key.
+        let kind_allowed = match adapter.kind() {
+            ProviderKind::Vllm => true,
+            ProviderKind::Cliproxy => bearer_token.is_some() && !supports_transcription,
+            _ => false,
+        };
+        if !kind_allowed
             || !zone_allowed
             || adapter.secret_ref().is_some() != bearer_token.is_some()
             || !supported_operations
             || !chat_features_valid
-            || configured.reasoning_control
         {
             return Err(internal_error());
         }
@@ -132,6 +142,8 @@ impl VllmAdapter {
 
         Ok(Self {
             id: adapter.id().to_owned(),
+            provider: adapter.kind().label(),
+            replays_reasoning_text: adapter.kind().replays_reasoning_text(),
             capabilities: configured.clone(),
             trust_zone: adapter.trust_zone(),
             max_body_bytes,
@@ -243,57 +255,6 @@ impl VllmAdapter {
             .enable_thinking()
     }
 
-    async fn post_completion(
-        transport: Arc<Transport>,
-        payload: request::ChatPayload,
-        credential: Option<CredentialHeader>,
-        request_budget: usize,
-        label: UpstreamLabel,
-    ) -> Result<Vec<u8>, GatewayError> {
-        let endpoint = Endpoint::new(&["chat", "completions"])?;
-        let request = TransportRequest::json(
-            Method::POST,
-            endpoint,
-            &payload,
-            credential,
-            Some(Accept::Json),
-            request_budget,
-            COMPLETE_RESPONSE_BYTES,
-        )?;
-        Self::post_json(transport, request, label).await
-    }
-
-    async fn post_stream(
-        transport: Arc<Transport>,
-        payload: request::ChatPayload,
-        credential: Option<CredentialHeader>,
-        request_budget: usize,
-        label: UpstreamLabel,
-    ) -> Result<ResponseBody, GatewayError> {
-        let request = TransportRequest::json(
-            Method::POST,
-            Endpoint::new(&["chat", "completions"])?,
-            &payload,
-            credential,
-            Some(Accept::EventStream),
-            request_budget,
-            STREAM_RESPONSE_BYTES,
-        )?;
-        let mut response = transport.execute(request).await?;
-        if response.status != 200 {
-            label.status(response.status, &mut response.body).await;
-            return Err(status_error(response.status));
-        }
-        if !matches!(
-            response.content_type,
-            Some(ResponseContentType::EventStream)
-        ) {
-            label.content_type(response.status, response.media_type.as_deref());
-            return Err(upstream_failure());
-        }
-        Ok(response.body)
-    }
-
     fn native_transcription_request(
         transcription: &crate::core::TranscriptionRequest,
         upstream_model: &str,
@@ -328,35 +289,6 @@ impl VllmAdapter {
             COMPLETE_RESPONSE_BYTES,
         )
     }
-
-    async fn post_json(
-        transport: Arc<Transport>,
-        request: TransportRequest,
-        label: UpstreamLabel,
-    ) -> Result<Vec<u8>, GatewayError> {
-        let mut response = transport.execute(request).await?;
-        if response.status != 200 {
-            label.status(response.status, &mut response.body).await;
-            return Err(status_error(response.status));
-        }
-        if !matches!(response.content_type, Some(ResponseContentType::Json)) {
-            label.content_type(response.status, response.media_type.as_deref());
-            return Err(upstream_failure());
-        }
-
-        let mut body = Vec::new();
-        while let Some(chunk) = response.body.next().await {
-            let chunk = chunk?;
-            let Some(next) = body.len().checked_add(chunk.len()) else {
-                return Err(upstream_failure());
-            };
-            if next > COMPLETE_RESPONSE_BYTES {
-                return Err(upstream_failure());
-            }
-            body.extend_from_slice(&chunk);
-        }
-        Ok(body)
-    }
 }
 
 impl Adapter for VllmAdapter {
@@ -382,56 +314,45 @@ impl Adapter for VllmAdapter {
 
         let (context, request) = routed.into_parts();
         let transport = self.transport.clone();
-        let label = UpstreamLabel::new(&self.id, "vllm");
+        let label = UpstreamLabel::new(&self.id, self.provider);
         let credential = self.credential();
         let enable_thinking = self.enable_thinking(&context.route.route_id);
         match request {
-            Request::Speech(_) | Request::Embeddings(_) => Box::pin(async {
-                Err(GatewayError {
-                    kind: ErrorKind::UnsupportedOperation,
-                })
-            }),
+            Request::Speech(_) | Request::Embeddings(_) => {
+                Box::pin(async { Err(GatewayError::from(ErrorKind::UnsupportedOperation)) })
+            }
             Request::Chat(chat) => {
                 let public_model = context.route.selector.model_alias.clone();
-                let has_audio = chat.messages.iter().any(|message| {
-                    message.content.iter().any(|content| {
-                        matches!(content, crate::core::ChatContent::InputAudio { .. })
-                    })
-                });
-                let request_budget = if has_audio {
+                let request_budget = if has_input_audio(&chat) {
                     self.max_audio_chat_body_bytes
                 } else {
                     self.max_body_bytes
                 };
-                let payload =
-                    match request::encode(&chat, &context.route.upstream_id, enable_thinking) {
-                        Ok(payload) => payload,
-                        Err(error) => return Box::pin(async move { Err(error) }),
-                    };
+                let payload = match request::encode(
+                    &chat,
+                    &context.route.upstream_id,
+                    enable_thinking,
+                    self.replays_reasoning_text,
+                ) {
+                    Ok(payload) => payload,
+                    Err(error) => return Box::pin(async move { Err(error) }),
+                };
                 let streaming = chat.stream;
                 Box::pin(async move {
-                    if streaming {
-                        let body = Self::post_stream(
-                            transport,
-                            payload,
-                            credential,
-                            request_budget,
-                            label,
-                        )
-                        .await?;
-                        return Ok(AdapterOutput::Events(Box::pin(stream::VllmStream::new(
-                            body,
-                            public_model,
-                        ))));
-                    }
-                    let body = Self::post_completion(
-                        transport,
-                        payload,
+                    let request = chat_completions::chat_request(
+                        &payload,
                         credential,
+                        streaming,
                         request_budget,
-                        label,
-                    )
-                    .await?;
+                    )?;
+                    if streaming {
+                        let body =
+                            chat_completions::post_events(&transport, request, &label).await?;
+                        return Ok(AdapterOutput::Events(Box::pin(
+                            ChatStream::<stream::Vllm>::new(body, public_model),
+                        )));
+                    }
+                    let body = chat_completions::post_json(&transport, request, &label).await?;
                     let response = response::decode(&body, public_model)?;
                     Ok(AdapterOutput::Complete(Response::Chat(response)))
                 })
@@ -449,14 +370,13 @@ impl Adapter for VllmAdapter {
                     };
                     let request_budget = self.max_audio_chat_body_bytes;
                     Box::pin(async move {
-                        let body = Self::post_completion(
-                            transport,
-                            payload,
+                        let request = chat_completions::chat_request(
+                            &payload,
                             credential,
+                            false,
                             request_budget,
-                            label,
-                        )
-                        .await?;
+                        )?;
+                        let body = chat_completions::post_json(&transport, request, &label).await?;
                         let response = response::decode_transcription(&body)?;
                         Ok(AdapterOutput::Complete(Response::Transcription(response)))
                     })
@@ -472,7 +392,7 @@ impl Adapter for VllmAdapter {
                         Err(error) => return Box::pin(async move { Err(error) }),
                     };
                     Box::pin(async move {
-                        let body = Self::post_json(transport, request, label).await?;
+                        let body = chat_completions::post_json(&transport, request, &label).await?;
                         let response = response::decode_native_transcription(&body)?;
                         Ok(AdapterOutput::Complete(Response::Transcription(response)))
                     })
@@ -480,29 +400,5 @@ impl Adapter for VllmAdapter {
                 None => Box::pin(async { Err(internal_error()) }),
             },
         }
-    }
-}
-
-fn status_error(status: u16) -> GatewayError {
-    let kind = match status {
-        400 | 422 => ErrorKind::InvalidRequest,
-        404 => ErrorKind::NotFound,
-        401 | 403 | 408 | 503 | 504 => ErrorKind::UpstreamUnavailable,
-        429 => ErrorKind::RateLimited,
-        500..=599 => ErrorKind::UpstreamFailure,
-        _ => ErrorKind::UpstreamFailure,
-    };
-    GatewayError { kind }
-}
-
-fn internal_error() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::Internal,
-    }
-}
-
-fn upstream_failure() -> GatewayError {
-    GatewayError {
-        kind: ErrorKind::UpstreamFailure,
     }
 }

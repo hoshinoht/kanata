@@ -1,4 +1,6 @@
 pub(crate) use raw::{RawPermission, RawRateLimit};
+mod catalog;
+pub(crate) mod commands;
 mod plane;
 mod raw;
 mod reload;
@@ -6,7 +8,6 @@ mod validation;
 use raw::*;
 use std::collections::BTreeSet;
 use std::fmt;
-use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use validation::*;
@@ -32,7 +33,7 @@ pub const MAX_TIMEOUT_MS: u64 = 604_800_000;
 pub const MAX_CONCURRENCY_LIMIT: u64 = 1_000_000;
 pub const MAX_CONFIG_AUDIO_BYTES: u64 = MAX_INPUT_AUDIO_BYTES as u64;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedConfig {
     listeners: ValidatedListeners,
     publication: ValidatedPublication,
@@ -45,6 +46,7 @@ pub struct ValidatedConfig {
     limits: ValidatedLimits,
     timeouts: ValidatedTimeouts,
     logging: ValidatedLogging,
+    route_sources: std::collections::BTreeMap<String, String>,
 }
 
 /// Where application keys come from.
@@ -64,30 +66,16 @@ pub enum KeySource {
 }
 
 impl ValidatedConfig {
-    pub fn listeners(&self) -> &ValidatedListeners {
-        &self.listeners
-    }
-    pub fn publication(&self) -> &ValidatedPublication {
-        &self.publication
-    }
-    pub fn codex_auth(&self) -> Option<&ValidatedCodexAuth> {
-        self.codex_auth.as_ref()
-    }
-    pub fn chatgpt_auth(&self) -> Option<&ValidatedChatgptAuth> {
-        self.chatgpt_auth.as_ref()
-    }
-    pub fn adapters(&self) -> &[ValidatedAdapter] {
-        &self.adapters
-    }
-    pub fn routes(&self) -> &[ValidatedRoute] {
-        &self.routes
-    }
-    /// Non-revoked keys, expired ones included.
-    pub fn application_keys(&self) -> &[ValidatedApplicationKey] {
-        &self.application_keys
-    }
-    pub fn key_source(&self) -> &KeySource {
-        &self.key_source
+    getters! {
+        pub listeners: &ValidatedListeners,
+        pub publication: &ValidatedPublication,
+        pub codex_auth: Option<&ValidatedCodexAuth> = as_ref,
+        pub chatgpt_auth: Option<&ValidatedChatgptAuth> = as_ref,
+        pub adapters: &[ValidatedAdapter],
+        pub routes: &[ValidatedRoute],
+        /// Non-revoked keys, expired ones included.
+        pub application_keys: &[ValidatedApplicationKey],
+        pub key_source: &KeySource,
     }
 
     /// Replaces the keys with the active records of a reloaded keys file.
@@ -149,49 +137,30 @@ impl ValidatedConfig {
         warnings
     }
 
-    pub fn limits(&self) -> &ValidatedLimits {
-        &self.limits
-    }
-    pub fn timeouts(&self) -> &ValidatedTimeouts {
-        &self.timeouts
-    }
-    pub fn logging(&self) -> &ValidatedLogging {
-        &self.logging
+    getters! {
+        pub limits: &ValidatedLimits,
+        pub timeouts: &ValidatedTimeouts,
+        pub logging: &ValidatedLogging,
     }
 }
 
-/// Which listeners one `kanata serve` process runs.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum Plane {
-    /// Private and public listeners in one process.
-    #[default]
-    All,
-    /// Private listener only; no public listener or public routes.
-    Private,
-    /// Public listener only, with just the public routes, their adapters and non-owner keys.
-    Public,
+str_enum! {
+    /// Which listeners one `kanata serve` process runs.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum Plane {
+        /// Private and public listeners in one process.
+        #[default]
+        All => "all",
+        /// Private listener only; no public listener or public routes.
+        Private => "private",
+        /// Public listener only, with just the public routes, their adapters and non-owner keys.
+        Public => "public",
+    }
+    pub const fn as_str;
+    pub fn parse;
 }
 
-impl Plane {
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "all" => Some(Self::All),
-            "private" => Some(Self::Private),
-            "public" => Some(Self::Public),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Private => "private",
-            Self::Public => "public",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Trace,
@@ -202,7 +171,7 @@ pub enum LogLevel {
     Error,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
     #[default]
@@ -217,11 +186,9 @@ pub struct ValidatedLogging {
 }
 
 impl ValidatedLogging {
-    pub fn level(&self) -> LogLevel {
-        self.level
-    }
-    pub fn format(&self) -> LogFormat {
-        self.format
+    getters! {
+        pub level: LogLevel,
+        pub format: LogFormat,
     }
 }
 
@@ -232,14 +199,10 @@ pub struct ValidatedListeners {
     public: Option<ValidatedListener>,
 }
 impl ValidatedListeners {
-    pub fn client(&self) -> &ValidatedListener {
-        &self.client
-    }
-    pub fn admin(&self) -> &ValidatedListener {
-        &self.admin
-    }
-    pub fn public(&self) -> Option<&ValidatedListener> {
-        self.public.as_ref()
+    getters! {
+        pub client: &ValidatedListener,
+        pub admin: &ValidatedListener,
+        pub public: Option<&ValidatedListener> = as_ref,
     }
 }
 
@@ -249,41 +212,40 @@ pub struct ValidatedListener {
     port: u16,
 }
 impl ValidatedListener {
-    pub fn bind(&self) -> IpAddr {
-        self.bind
-    }
-    pub fn port(&self) -> u16 {
-        self.port
+    getters! {
+        pub bind: IpAddr,
+        pub port: u16,
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedPublication {
     tailnet_addresses: Vec<IpAddr>,
     public_routes: Vec<RouteSelector>,
 }
 impl ValidatedPublication {
-    pub fn tailnet_addresses(&self) -> &[IpAddr] {
-        &self.tailnet_addresses
-    }
-    pub fn public_routes(&self) -> &[RouteSelector] {
-        &self.public_routes
+    getters! {
+        pub tailnet_addresses: &[IpAddr],
+        pub public_routes: &[RouteSelector],
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexAuthStore {
     Keyring,
     File,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum CodexReasoningEffort {
-    Low,
-    Medium,
-    High,
+str_enum! {
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum CodexReasoningEffort {
+        Low => "low",
+        Medium => "medium",
+        High => "high",
+    }
+    pub const fn as_str;
 }
 
 impl CodexReasoningEffort {
@@ -299,34 +261,21 @@ impl CodexReasoningEffort {
             | ReasoningEffort::Max => None,
         }
     }
+}
 
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
+str_enum! {
+    /// Requested reasoning summary detail.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum ReasoningSummary {
+        Auto => "auto",
+        Concise => "concise",
+        Detailed => "detailed",
     }
+    pub const fn as_str;
 }
 
-/// Reasoning summary detail requested from Codex.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum CodexReasoningSummary {
-    Auto,
-    Concise,
-    Detailed,
-}
-
-impl CodexReasoningSummary {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Concise => "concise",
-            Self::Detailed => "detailed",
-        }
-    }
-}
+pub type CodexReasoningSummary = ReasoningSummary;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedCodexAuth {
@@ -334,11 +283,9 @@ pub struct ValidatedCodexAuth {
     state_dir: PathBuf,
 }
 impl ValidatedCodexAuth {
-    pub fn store(&self) -> CodexAuthStore {
-        self.store
-    }
-    pub fn state_dir(&self) -> &Path {
-        &self.state_dir
+    getters! {
+        pub store: CodexAuthStore,
+        pub state_dir: &Path,
     }
 }
 
@@ -352,7 +299,7 @@ impl ValidatedChatgptAuth {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedAdapter {
     id: String,
     kind: ProviderKind,
@@ -364,38 +311,81 @@ pub struct ValidatedAdapter {
     capabilities: Capabilities,
     max_in_flight: Option<u64>,
     circuit_breaker: CircuitBreakerPolicy,
+    ca_bundle: Option<CaBundle>,
+    anthropic: Option<ValidatedAnthropicSettings>,
 }
 impl ValidatedAdapter {
-    pub fn id(&self) -> &str {
-        &self.id
+    getters! {
+        pub id: &str,
+        pub kind: ProviderKind,
+        pub base_url: &Url,
+        pub trust_zone: TrustZone,
+        pub transcription_mode: Option<VllmTranscriptionMode>,
+        pub secret_ref: Option<&SecretReference> = as_ref,
+        pub extension_allowlist: &BTreeSet<ExtensionKey>,
+        pub capabilities: &Capabilities,
+        /// Concurrency cap shared by every route on this adapter; `None` means uncapped.
+        pub max_in_flight: Option<u64>,
+        pub circuit_breaker: CircuitBreakerPolicy,
+        /// Private CA that replaces the platform roots for this adapter's TLS (`ca_file`).
+        pub ca_bundle: Option<&CaBundle> = as_ref,
+        /// `[adapters.anthropic]` settings, defaults applied; `Some` exactly for Anthropic adapters.
+        pub anthropic: Option<&ValidatedAnthropicSettings> = as_ref,
     }
-    pub fn kind(&self) -> ProviderKind {
-        self.kind
+}
+
+/// Default `max_tokens` sent to the Claude Messages API, which requires one.
+pub const DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS: u32 = 16_000;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedAnthropicSettings {
+    workspace_id: Option<String>,
+    default_max_output_tokens: u32,
+}
+impl ValidatedAnthropicSettings {
+    getters! {
+        /// Sent as `anthropic-workspace-id` when set.
+        pub workspace_id: Option<&str> = as_deref,
+        /// `max_tokens` on every request.
+        pub default_max_output_tokens: u32,
     }
-    pub fn base_url(&self) -> &Url {
-        &self.base_url
+}
+
+/// Certificates from `adapters[].ca_file`, parsed for the adapters a loaded plane keeps.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CaBundle {
+    path: PathBuf,
+    /// Position in the configured `adapters`, kept for errors after plane narrowing.
+    index: usize,
+    /// Empty when unread: in the full config from [`load_plane`] and in
+    /// [`load_deferring_keys`]; such a bundle cannot build a TLS client.
+    certificates: std::sync::Arc<[rustls::pki_types::CertificateDer<'static>]>,
+}
+impl CaBundle {
+    getters! {
+        pub path: &Path,
+        pub(crate) certificates: &[rustls::pki_types::CertificateDer<'static>],
     }
-    pub fn trust_zone(&self) -> TrustZone {
-        self.trust_zone
+}
+impl fmt::Debug for CaBundle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CaBundle")
+            .field("path", &self.path)
+            .field("certificates", &self.certificates.len())
+            .finish()
     }
-    pub fn transcription_mode(&self) -> Option<VllmTranscriptionMode> {
-        self.transcription_mode
-    }
-    pub fn secret_ref(&self) -> Option<&SecretReference> {
-        self.secret_ref.as_ref()
-    }
-    pub fn extension_allowlist(&self) -> &BTreeSet<ExtensionKey> {
-        &self.extension_allowlist
-    }
-    pub fn capabilities(&self) -> &Capabilities {
-        &self.capabilities
-    }
-    /// Concurrency cap shared by every route on this adapter; `None` means uncapped.
-    pub fn max_in_flight(&self) -> Option<u64> {
-        self.max_in_flight
-    }
-    pub fn circuit_breaker(&self) -> CircuitBreakerPolicy {
-        self.circuit_breaker
+}
+
+/// Whether credentials may be sent to an adapter `base_url`: HTTPS, or plain HTTP to a literal
+/// loopback IP. A loopback literal never leaves the host and is connected to without DNS, so a
+/// hostname such as `localhost` does not qualify.
+pub(crate) fn url_permits_credentials(url: &Url) -> bool {
+    match (url.scheme(), url.host()) {
+        ("https", _) => true,
+        ("http", Some(url::Host::Ipv4(ip))) => ip.is_loopback(),
+        ("http", Some(url::Host::Ipv6(ip))) => ip.is_loopback(),
+        _ => false,
     }
 }
 
@@ -438,12 +428,6 @@ impl SecretReference {
             Self::File(_) | Self::Sha256(_) => None,
         }
     }
-    pub fn file_path(&self) -> Option<&Path> {
-        match self {
-            Self::File(path) => Some(path),
-            Self::Env(_) | Self::Sha256(_) => None,
-        }
-    }
     pub fn sha256_digest(&self) -> Option<&[u8; 32]> {
         match self {
             Self::Sha256(digest) => Some(digest),
@@ -455,12 +439,13 @@ impl SecretReference {
 const MIN_CONTEXT_TOKENS: u32 = 256;
 const MAX_CONTEXT_TOKENS: u32 = 16_777_216;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedRoute {
     identity: RouteIdentity,
     adapter_id: String,
     codex_reasoning_effort: Option<CodexReasoningEffort>,
     reasoning_effort: Option<ReasoningEffort>,
+    reasoning_summary: Option<ReasoningSummary>,
     codex_reasoning_summary: Option<CodexReasoningSummary>,
     extension_allowlist: BTreeSet<ExtensionKey>,
     requires_streaming_chat: bool,
@@ -475,54 +460,29 @@ pub struct ValidatedRoute {
     enable_thinking: Option<bool>,
 }
 impl ValidatedRoute {
-    pub fn identity(&self) -> &RouteIdentity {
-        &self.identity
+    getters! {
+        pub identity: &RouteIdentity,
+        pub adapter_id: &str,
+        pub codex_reasoning_effort: Option<CodexReasoningEffort>,
+        pub reasoning_effort: Option<ReasoningEffort>,
+        pub codex_reasoning_summary: Option<CodexReasoningSummary>,
+        pub extension_allowlist: &BTreeSet<ExtensionKey>,
+        pub requires_streaming_chat: bool,
+        pub requires_function_tools: bool,
+        pub speech: Option<&crate::core::SpeechPolicy> = as_ref,
+        pub allows_input_images: bool,
+        pub allows_input_audio: bool,
+        pub allows_audio_streaming_chat: bool,
+        pub allows_audio_function_tools: bool,
+        /// Declared upstream context window; `None` means the provider's own.
+        pub context_tokens: Option<u32>,
+        /// Declared output cap; larger client requests are rejected.
+        pub max_output_tokens: Option<u32>,
+        /// vLLM chat-template thinking switch; `None` leaves the template default.
+        pub enable_thinking: Option<bool>,
     }
-    pub fn adapter_id(&self) -> &str {
-        &self.adapter_id
-    }
-    pub fn codex_reasoning_effort(&self) -> Option<CodexReasoningEffort> {
-        self.codex_reasoning_effort
-    }
-    pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
-        self.reasoning_effort
-    }
-    pub fn codex_reasoning_summary(&self) -> Option<CodexReasoningSummary> {
-        self.codex_reasoning_summary
-    }
-    pub fn extension_allowlist(&self) -> &BTreeSet<ExtensionKey> {
-        &self.extension_allowlist
-    }
-    pub fn requires_streaming_chat(&self) -> bool {
-        self.requires_streaming_chat
-    }
-    pub fn requires_function_tools(&self) -> bool {
-        self.requires_function_tools
-    }
-    pub fn speech(&self) -> Option<&crate::core::SpeechPolicy> {
-        self.speech.as_ref()
-    }
-
-    pub fn allows_input_images(&self) -> bool {
-        self.allows_input_images
-    }
-
-    pub fn allows_input_audio(&self) -> bool {
-        self.allows_input_audio
-    }
-    pub fn allows_audio_streaming_chat(&self) -> bool {
-        self.allows_audio_streaming_chat
-    }
-    pub fn allows_audio_function_tools(&self) -> bool {
-        self.allows_audio_function_tools
-    }
-    /// Declared upstream context window; `None` means the provider's own.
-    pub fn context_tokens(&self) -> Option<u32> {
-        self.context_tokens
-    }
-    /// Declared output cap; larger client requests are rejected.
-    pub fn max_output_tokens(&self) -> Option<u32> {
-        self.max_output_tokens
+    pub fn reasoning_summary(&self) -> Option<ReasoningSummary> {
+        self.reasoning_summary.or(self.codex_reasoning_summary)
     }
     /// Reasoning effort fixed by the route rather than the client.
     pub fn pinned_reasoning_effort(&self) -> Option<&'static str> {
@@ -542,13 +502,9 @@ impl ValidatedRoute {
             .map(|(model, _)| model)
             .unwrap_or(alias)
     }
-    /// vLLM chat-template thinking switch; `None` leaves the template default.
-    pub fn enable_thinking(&self) -> Option<bool> {
-        self.enable_thinking
-    }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedApplicationKey {
     id: String,
     owner: bool,
@@ -560,33 +516,19 @@ pub struct ValidatedApplicationKey {
     expires_at: Option<u64>,
 }
 impl ValidatedApplicationKey {
-    pub fn daily_quota(&self) -> Option<crate::keys::quota::DailyQuota> {
-        self.daily_quota
-    }
-    /// Unix seconds; `None` never expires (always for inline keys).
-    pub fn expires_at(&self) -> Option<u64> {
-        self.expires_at
+    getters! {
+        pub daily_quota: Option<crate::keys::quota::DailyQuota>,
+        /// Unix seconds; `None` never expires (always for inline keys).
+        pub expires_at: Option<u64>,
+        pub id: &str,
+        pub is_owner(owner): bool,
+        pub secret_ref: &SecretReference,
+        pub permissions: &[RouteSelector],
+        pub max_in_flight: Option<u64>,
+        pub rate_limit: Option<KeyRateLimit>,
     }
     pub fn is_expired(&self, now: u64) -> bool {
         self.expires_at.is_some_and(|at| now >= at)
-    }
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-    pub fn is_owner(&self) -> bool {
-        self.owner
-    }
-    pub fn secret_ref(&self) -> &SecretReference {
-        &self.secret_ref
-    }
-    pub fn permissions(&self) -> &[RouteSelector] {
-        &self.permissions
-    }
-    pub fn max_in_flight(&self) -> Option<u64> {
-        self.max_in_flight
-    }
-    pub fn rate_limit(&self) -> Option<KeyRateLimit> {
-        self.rate_limit
     }
 }
 
@@ -602,29 +544,15 @@ pub struct ValidatedLimits {
     max_extension_bytes: u64,
 }
 impl ValidatedLimits {
-    pub fn max_uploads(&self) -> u64 {
-        self.max_uploads
-    }
-    pub fn max_buffered_bytes(&self) -> u64 {
-        self.max_buffered_bytes
-    }
-    pub fn max_queue(&self) -> u64 {
-        self.max_queue
-    }
-    pub fn max_in_flight(&self) -> u64 {
-        self.max_in_flight
-    }
-    pub fn max_body_bytes(&self) -> u64 {
-        self.max_body_bytes
-    }
-    pub fn max_audio_bytes(&self) -> u64 {
-        self.max_audio_bytes
-    }
-    pub fn max_audio_chat_body_bytes(&self) -> u64 {
-        self.max_audio_chat_body_bytes
-    }
-    pub fn max_extension_bytes(&self) -> u64 {
-        self.max_extension_bytes
+    getters! {
+        pub max_uploads: u64,
+        pub max_buffered_bytes: u64,
+        pub max_queue: u64,
+        pub max_in_flight: u64,
+        pub max_body_bytes: u64,
+        pub max_audio_bytes: u64,
+        pub max_audio_chat_body_bytes: u64,
+        pub max_extension_bytes: u64,
     }
 }
 
@@ -637,32 +565,22 @@ pub struct ValidatedTimeouts {
     first_byte_ms: u64,
     idle_ms: u64,
     overall_ms: u64,
+    sse_keepalive_ms: u64,
 }
 impl ValidatedTimeouts {
-    pub fn upload_ms(&self) -> u64 {
-        self.upload_ms
-    }
-    pub fn queue_ms(&self) -> u64 {
-        self.queue_ms
-    }
-    pub fn connect_ms(&self) -> u64 {
-        self.connect_ms
-    }
-    pub fn headers_ms(&self) -> u64 {
-        self.headers_ms
-    }
-    pub fn first_byte_ms(&self) -> u64 {
-        self.first_byte_ms
-    }
-    pub fn idle_ms(&self) -> u64 {
-        self.idle_ms
-    }
-    pub fn overall_ms(&self) -> u64 {
-        self.overall_ms
+    getters! {
+        pub upload_ms: u64,
+        pub queue_ms: u64,
+        pub connect_ms: u64,
+        pub headers_ms: u64,
+        pub first_byte_ms: u64,
+        pub idle_ms: u64,
+        pub overall_ms: u64,
+        pub sse_keepalive_ms: u64,
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     Ollama,
@@ -673,17 +591,36 @@ pub enum ProviderKind {
     /// Apple Foundation Models through macOS `fm serve`.
     AppleFm,
     Speech,
+    /// CLIProxyAPI's OpenAI-compatible chat endpoint (account sign-ins behind a local proxy);
+    /// reuses the vLLM chat path and, like Codex and ChatGPT, is never public.
+    Cliproxy,
+    /// Claude Messages API with a Console API key; never public.
+    Anthropic,
 }
 
 impl ProviderKind {
+    /// Never published, never on the public plane, and keys reaching it stay private.
     pub fn is_private_only(self) -> bool {
+        matches!(
+            self,
+            Self::Codex | Self::Chatgpt | Self::Cliproxy | Self::Anthropic
+        )
+    }
+
+    /// Whether the adapter applies a route's pinned effort itself (Codex
+    /// `codex_reasoning_effort`, ChatGPT pinned inference). Other reasoning-control adapters
+    /// receive the pin as the request's `reasoning_effort`, so families on them need
+    /// `reasoning_control`.
+    pub fn applies_route_effort_pin(self) -> bool {
         matches!(self, Self::Codex | Self::Chatgpt)
     }
 
     pub fn accepts_reasoning_effort(self, effort: ReasoningEffort) -> bool {
         match self {
             Self::Codex => CodexReasoningEffort::from_request(effort).is_some(),
-            Self::Ollama | Self::Vllm | Self::Openrouter | Self::Chatgpt => true,
+            Self::Ollama | Self::Vllm | Self::Openrouter | Self::Chatgpt | Self::Cliproxy => true,
+            // `output_config.effort` has no off or minimal level.
+            Self::Anthropic => !matches!(effort, ReasoningEffort::None | ReasoningEffort::Minimal),
             Self::AppleFm | Self::Speech => false,
         }
     }
@@ -691,6 +628,33 @@ impl ProviderKind {
     /// Whether a request may set `chat_template_kwargs.enable_thinking`.
     pub fn accepts_enable_thinking(self) -> bool {
         matches!(self, Self::Vllm)
+    }
+
+    /// Whether stop sequences and presence/frequency penalties reach a backend that honours
+    /// them on routes with sampling controls; `fm serve` support is unproven.
+    pub fn accepts_stop_and_penalties(self) -> bool {
+        !matches!(self, Self::AppleFm)
+    }
+
+    /// Whether the upstream receives the request's `prompt_cache_key`.
+    pub fn forwards_prompt_cache_key(self) -> bool {
+        matches!(self, Self::Chatgpt | Self::Codex)
+    }
+
+    /// Whether assistant `ChatContent::Reasoning` items are replayed upstream; others skip them.
+    /// Anthropic replays only the thinking items it produced.
+    pub fn replays_encrypted_reasoning(self) -> bool {
+        matches!(self, Self::Chatgpt | Self::Codex | Self::Anthropic)
+    }
+
+    /// Whether assistant `ChatContent::ReasoningText` is replayed upstream as the assistant
+    /// message's `reasoning` string; others skip it. vLLM (canonical input field since it
+    /// renamed `reasoning_content`), Ollama's OpenAI layer (maps it to `thinking`) and
+    /// OpenRouter all read `reasoning`. CLIProxyAPI turns replayed reasoning into unsigned
+    /// Claude thinking only on opt-in compat endpoints, so it is dropped there; `fm serve`
+    /// support is unproven.
+    pub fn replays_reasoning_text(self) -> bool {
+        matches!(self, Self::Vllm | Self::Ollama | Self::Openrouter)
     }
 
     /// Config name, used as the provider label in logs and metrics.
@@ -703,6 +667,8 @@ impl ProviderKind {
             Self::Chatgpt => "chatgpt",
             Self::AppleFm => "apple_fm",
             Self::Speech => "speech",
+            Self::Cliproxy => "cliproxy",
+            Self::Anthropic => "anthropic",
         }
     }
 
@@ -728,16 +694,17 @@ impl ProviderKind {
     // structured_output / sampling_controls / reasoning_control.
     fn supports_chat_options(self) -> (bool, bool, bool) {
         match self {
-            Self::Ollama | Self::Openrouter => (true, true, true),
-            Self::Vllm => (true, true, false),
+            Self::Ollama | Self::Vllm | Self::Openrouter | Self::Cliproxy => (true, true, true),
             Self::Codex | Self::Chatgpt => (false, false, true),
+            // Claude 4.7+ rejects non-default sampling; the output cap is an adapter setting.
+            Self::Anthropic => (true, false, true),
             Self::AppleFm => (true, true, false),
             Self::Speech => (false, false, false),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VllmTranscriptionMode {
     NativeAsr,
@@ -817,18 +784,27 @@ fn sanitized_deserialize_error(
 
 pub fn load(path: impl AsRef<Path>) -> Result<ValidatedConfig, ConfigError> {
     let path = path.as_ref();
-    let contents =
-        fs::read_to_string(path).map_err(|_| ConfigError::new("config", "read_error"))?;
-    let raw = parse_toml(&contents, "config")?;
-    validate(raw, path.parent().unwrap_or(Path::new("")), true)
+    catalog::Document::load(path)?.validate(path, true)
+}
+
+/// [`load`] for one `--plane`: returns the full config and its [`ValidatedConfig::for_plane`]
+/// narrowing. Adapter `ca_file`s are read only for adapters the plane keeps, so a plane
+/// container need not mount the CA of an adapter it never dials; the full config's bundles
+/// stay unread.
+pub fn load_plane(
+    path: impl AsRef<Path>,
+    plane: Plane,
+) -> Result<(ValidatedConfig, ValidatedConfig), ConfigError> {
+    let path = path.as_ref();
+    let full = catalog::Document::load(path)?.validate_deferring_ca(path, true)?;
+    let narrowed = full.for_plane(plane)?.load_ca_bundles()?;
+    Ok((full, narrowed))
 }
 
 /// Like [`load`] but leaves a `[keys] file` unread (no application keys, `sha256: None`),
-/// so the host key CLI can validate it itself and repair route drift.
+/// so the host key CLI can validate it itself and repair route drift. Adapter `ca_file`s are
+/// left unread too: they name paths inside the serving container, not on the host.
 pub fn load_deferring_keys(path: impl AsRef<Path>) -> Result<ValidatedConfig, ConfigError> {
     let path = path.as_ref();
-    let contents =
-        fs::read_to_string(path).map_err(|_| ConfigError::new("config", "read_error"))?;
-    let raw = parse_toml(&contents, "config")?;
-    validate(raw, path.parent().unwrap_or(Path::new("")), false)
+    catalog::Document::load(path)?.validate(path, false)
 }
