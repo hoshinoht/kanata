@@ -1,4 +1,4 @@
-//! `kind = "cliproxy"`: CLIProxyAPI on the vLLM chat path, private-only like ChatGPT/Codex.
+//! `kind = "cliproxy"`: CLIProxyAPI on the vLLM chat path, private-only like ChatGPT.
 
 #[path = "support/scratch.rs"]
 mod scratch;
@@ -16,18 +16,18 @@ use kanata::{
     server::{Readiness, TwoPlaneServer},
 };
 use serde_json::{Value, json};
-use support::{
-    TempFile, chat_request, compact_config, load_text as load, models_request, response_json,
-};
+use support::{chat_request, compact_config, load_text as load, models_request, response_json};
 
 const RESPONSE: &str = include_str!("fixtures/cliproxy/chat-text-response.json");
 const LOOPBACK: &str = "http://127.0.0.1:9/v1";
-const PUBLIC_ONLY_KEY: &str = r#"
-[[application_keys]]
-id = "public-only"
-secret_ref = "env:PUBLIC_ONLY_KEY"
-permissions = [{ model_alias = "local", operation = "chat" }]
-"#;
+
+fn public_only_key() -> String {
+    scratch::key_record(
+        "public-only",
+        "public-only-key",
+        "permissions = [{ model_alias = \"local\", operation = \"chat\" }]",
+    )
+}
 
 /// An Ollama route published on the public listener next to a CLIProxyAPI effort family.
 fn source(base_url: &str, extra_keys: &str) -> String {
@@ -61,16 +61,15 @@ upstream_id = "qwen3:0.6b"
 adapter_id = "cliproxy"
 upstream_id = "claude-sonnet"
 default_effort = "medium"
-efforts = ["low", "medium", "high"]
-[[application_keys]]
-id = "mixed"
-secret_ref = "env:MIXED_KEY"
-permissions = [
-  {{ model_alias = "local", operation = "chat" }},
-  {{ model_alias = "claude", operation = "chat" }},
-  {{ model_alias = "claude:high", operation = "chat" }},
-]
-{extra_keys}"#
+efforts = ["low", "medium", "high"]"#
+        ),
+        &format!(
+            "{}{extra_keys}",
+            scratch::key_record(
+                "mixed",
+                scratch::TEST_KEY,
+                "permissions = [\n  { model_alias = \"local\", operation = \"chat\" },\n  { model_alias = \"claude\", operation = \"chat\" },\n  { model_alias = \"claude:high\", operation = \"chat\" },\n]",
+            )
         ),
     )
 }
@@ -86,13 +85,8 @@ fn server(config: &ValidatedConfig) -> TwoPlaneServer {
         VllmAdapter::from_config_with_secrets(config, "cliproxy", "claude", &support::Resolver)
             .expect("cliproxy adapter");
     let adapters: Vec<Arc<dyn Adapter>> = vec![Arc::new(ollama), Arc::new(cliproxy)];
-    TwoPlaneServer::from_validated_with_adapters(
-        config,
-        &support::Resolver,
-        Readiness::new(true),
-        adapters,
-    )
-    .expect("server")
+    TwoPlaneServer::from_validated_with_adapters(config, Readiness::new(true), adapters)
+        .expect("server")
 }
 
 fn model_ids(models: &Value) -> Vec<&str> {
@@ -137,8 +131,8 @@ fn config_accepts_loopback_http_and_private_ca_https_with_an_effort_family() {
         "secret_ref = \"env:CLIPROXY_KEY\"",
         "secret_ref = \"env:CLIPROXY_KEY\"\nca_file = \"/run/secrets/cliproxy-ca.pem\"",
     );
-    let sidecar = TempFile::new("cliproxy", "toml", sidecar);
-    let config = kanata::config::load_deferring_keys(sidecar.path()).unwrap();
+    let sidecar = scratch::config_dir("cliproxy", &sidecar);
+    let config = kanata::config::load_deferring_keys(sidecar.join("config.toml")).unwrap();
     let adapter = &config.adapters()[1];
     assert_eq!(adapter.kind(), ProviderKind::Cliproxy);
     assert!(adapter.ca_bundle().is_some());
@@ -154,10 +148,18 @@ fn check_reads_ca_file_only_for_adapters_the_plane_keeps() {
             missing.display()
         ),
     );
-    let config = TempFile::new("cliproxy", "toml", sidecar);
+    let dir = scratch::config_dir("cliproxy", &sidecar);
+    let config = dir.join("config.toml");
     let check = |plane: &str| {
         kanata::cli::run(
-            ["check", "--config", config.as_str(), "--plane", plane].map(str::to_owned),
+            [
+                "check",
+                "--config",
+                config.to_str().unwrap(),
+                "--plane",
+                plane,
+            ]
+            .map(str::to_owned),
         )
     };
     // The public plane drops the private-only adapter, so its CA is never read.
@@ -168,7 +170,7 @@ fn check_reads_ca_file_only_for_adapters_the_plane_keeps() {
             Err("config error at adapters[1].ca_file: read_error".to_owned())
         );
     }
-    let (full, public) = kanata::config::load_plane(config.path(), Plane::Public).unwrap();
+    let (full, public) = kanata::config::load_plane(&config, Plane::Public).unwrap();
     assert!(
         public
             .adapters()
@@ -246,9 +248,9 @@ fn config_rejects_publication_zones_missing_keys_and_non_chat_options() {
 
 #[test]
 fn public_plane_drops_cliproxy_routes_adapters_and_keys_with_cliproxy_scopes() {
-    let config = load(&source(LOOPBACK, PUBLIC_ONLY_KEY)).unwrap();
+    let config = load(&source(LOOPBACK, &public_only_key())).unwrap();
     let private = config.for_plane(Plane::Private).unwrap();
-    assert_eq!(private.application_keys().len(), 2);
+    assert_eq!(private.keys().len(), 2);
     assert!(
         private
             .adapters()
@@ -270,19 +272,19 @@ fn public_plane_drops_cliproxy_routes_adapters_and_keys_with_cliproxy_scopes() {
         .collect();
     assert_eq!(aliases, ["local"]);
     // The mixed key also holds a public scope but never enters the public process.
-    let keys: Vec<_> = public
-        .application_keys()
-        .iter()
-        .map(|key| key.id())
-        .collect();
+    let keys: Vec<_> = public.keys().iter().map(|key| key.id()).collect();
     assert_eq!(keys, ["public-only"]);
 }
 
 #[test]
 fn routes_command_marks_cliproxy_routes_never_public() {
-    let file = TempFile::new("cliproxy", "toml", source(LOOPBACK, ""));
+    let dir = scratch::config_dir("cliproxy", &source(LOOPBACK, ""));
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_kanata"))
-        .args(["routes", "--config", file.as_str()])
+        .args([
+            "routes",
+            "--config",
+            dir.join("config.toml").to_str().unwrap(),
+        ])
         .output()
         .unwrap();
     assert!(output.status.success());

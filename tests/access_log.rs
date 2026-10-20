@@ -124,16 +124,29 @@ async fn private_request_logs_key_and_model_but_not_secrets_or_client_ip() {
 
 #[tokio::test]
 async fn caller_request_id_and_route_pinned_reasoning_effort_are_logged() {
-    let config = support::config();
+    let example =
+        std::fs::read_to_string("tests/fixtures/config/example.toml").expect("example config");
+    let pinned = example
+        .replacen(
+            "function_tools = true\n\n[[routes]]",
+            "function_tools = true\nreasoning_control = true\n\n[[routes]]",
+            1,
+        )
+        .replace(
+            "upstream_id = \"gpt-5\"\n",
+            "upstream_id = \"gpt-5\"\nreasoning_effort = \"medium\"\n",
+        );
+    assert_ne!(pinned, example);
+    let config = support::load_valid(&pinned);
     let (server, _) = support::server_with(
         &config,
         vec![support::adapter_spec(
-            "codex-private",
-            support::capabilities(&config, "codex-private"),
+            "chatgpt-private",
+            support::capabilities(&config, "chatgpt-private"),
             support::chat_outcome("SYNTHETIC_OUTPUT"),
         )],
     );
-    let body = r#"{"model":"codex-chat","messages":[{"role":"user","content":"x"}]}"#;
+    let body = r#"{"model":"chatgpt-chat","messages":[{"role":"user","content":"x"}]}"#;
     let capture = captured(async {
         server
             .client_oneshot(support::chat_request_with(

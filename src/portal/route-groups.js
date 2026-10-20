@@ -19,7 +19,7 @@ function routeGroups(routes) {
 }
 
 function providerGroups(routes) {
-  const labels = {chatgpt: 'ChatGPT', codex: 'Codex', ollama: 'Ollama', vllm: 'vLLM', openrouter: 'OpenRouter', apple_fm: 'Apple Foundation Models', speech: 'Speech', cliproxy: 'CLIProxyAPI', unknown: 'Other providers'};
+  const labels = {chatgpt: 'ChatGPT', ollama: 'Ollama', vllm: 'vLLM', openrouter: 'OpenRouter', apple_fm: 'Apple Foundation Models', speech: 'Speech', cliproxy: 'CLIProxyAPI', unknown: 'Other providers'};
   const providers = new Map();
   for (const group of routeGroups(routes)) {
     if (!providers.has(group.provider)) providers.set(group.provider, {id: group.provider, label: labels[group.provider] || group.provider, models: []});

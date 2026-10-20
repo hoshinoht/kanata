@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::config::{self, KeyRateLimit, KeySource, ValidatedConfig, valid_identifier};
+use crate::config::{self, KeyRateLimit, ValidatedConfig, valid_identifier};
 use crate::core::{ModelAlias, Operation, RouteSelector};
 use crate::keys::cli::{
     self, Exposure, RouteChoice, generate_key, key_json, missing_routes_json, parse_expires,
@@ -96,10 +96,7 @@ pub(super) fn validate_location(path: &Path) -> Result<(), String> {
 
 fn location(path: &Path) -> Result<(ValidatedConfig, PathBuf), String> {
     let config = config::load_deferring_keys(path).map_err(|error| error.to_string())?;
-    let KeySource::File { path, .. } = config.key_source() else {
-        return Err("Portal requires a separate keys file. Run `kanata key migrate --config <path>` on the host first".into());
-    };
-    let path = path.clone();
+    let path = config.key_source().path.clone();
     Ok((config, path))
 }
 

@@ -37,11 +37,10 @@ pub const MAX_CONFIG_AUDIO_BYTES: u64 = MAX_INPUT_AUDIO_BYTES as u64;
 pub struct ValidatedConfig {
     listeners: ValidatedListeners,
     publication: ValidatedPublication,
-    codex_auth: Option<ValidatedCodexAuth>,
     chatgpt_auth: Option<ValidatedChatgptAuth>,
     adapters: Vec<ValidatedAdapter>,
     routes: Vec<ValidatedRoute>,
-    application_keys: Vec<ValidatedApplicationKey>,
+    keys: Vec<ValidatedApplicationKey>,
     key_source: KeySource,
     limits: ValidatedLimits,
     timeouts: ValidatedTimeouts,
@@ -49,53 +48,44 @@ pub struct ValidatedConfig {
     route_sources: std::collections::BTreeMap<String, String>,
 }
 
-/// Where application keys come from.
+/// The `[keys] file`, resolved against the config file's directory.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum KeySource {
-    /// Deprecated `[[application_keys]]` in the config file.
-    Inline,
-    /// `[keys] file`, resolved against the config file's directory.
-    File {
-        path: PathBuf,
-        usage_dir: Option<PathBuf>,
-        /// The file did not exist; no keys are loaded.
-        missing: bool,
-        /// SHA-256 of the file bytes the current keys were parsed from.
-        sha256: Option<[u8; 32]>,
-    },
+pub struct KeySource {
+    pub path: PathBuf,
+    pub usage_dir: Option<PathBuf>,
+    /// The file did not exist; no keys are loaded.
+    pub missing: bool,
+    /// SHA-256 of the file bytes the current keys were parsed from.
+    pub sha256: Option<[u8; 32]>,
 }
 
 impl ValidatedConfig {
     getters! {
         pub listeners: &ValidatedListeners,
         pub publication: &ValidatedPublication,
-        pub codex_auth: Option<&ValidatedCodexAuth> = as_ref,
         pub chatgpt_auth: Option<&ValidatedChatgptAuth> = as_ref,
         pub adapters: &[ValidatedAdapter],
         pub routes: &[ValidatedRoute],
         /// Non-revoked keys, expired ones included.
-        pub application_keys: &[ValidatedApplicationKey],
+        pub keys: &[ValidatedApplicationKey],
         pub key_source: &KeySource,
     }
 
     /// Replaces the keys with the active records of a reloaded keys file.
-    pub fn with_application_keys(&self, file: &KeysFile) -> Result<Self, ConfigError> {
-        let KeySource::File {
+    pub fn with_keys(&self, file: &KeysFile) -> Result<Self, ConfigError> {
+        let KeySource {
             path, usage_dir, ..
-        } = &self.key_source
-        else {
-            return Err(ConfigError::new("keys", "required"));
-        };
+        } = &self.key_source;
         if usage_dir.is_none() && file.active().any(|key| key.daily_quota().is_some()) {
             return Err(ConfigError::new(
                 "keys.usage_dir",
                 "required_for_daily_quota",
             ));
         }
-        let application_keys = application_keys_from_file(file, &self.routes)?;
+        let keys = keys_from_file(file, &self.routes)?;
         Ok(Self {
-            application_keys,
-            key_source: KeySource::File {
+            keys,
+            key_source: KeySource {
                 path: path.clone(),
                 usage_dir: usage_dir.clone(),
                 missing: false,
@@ -105,25 +95,17 @@ impl ValidatedConfig {
         })
     }
 
-    /// Operator warnings: deprecated inline keys, a missing keys file, and keys
-    /// expired or expiring within [`KEY_EXPIRY_WARNING_SECS`]. Ids and dates only.
+    /// Operator warnings: a missing keys file, and keys expired or expiring within
+    /// [`KEY_EXPIRY_WARNING_SECS`]. Ids and dates only.
     pub fn key_warnings(&self, now: u64) -> Vec<String> {
         let mut warnings = Vec::new();
-        match &self.key_source {
-            KeySource::Inline => warnings.push(
-                "inline [[application_keys]] are deprecated; move them to a keys file with `kanata key migrate`".into(),
-            ),
-            KeySource::File {
-                path,
-                missing: true,
-                ..
-            } => warnings.push(format!(
+        if self.key_source.missing {
+            warnings.push(format!(
                 "keys file {} not found; no application keys are loaded (create one with `kanata key new`)",
-                path.display()
-            )),
-            KeySource::File { .. } => {}
+                self.key_source.path.display()
+            ));
         }
-        for key in &self.application_keys {
+        for key in &self.keys {
             let Some(expires_at) = key.expires_at else {
                 continue;
             };
@@ -230,39 +212,6 @@ impl ValidatedPublication {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CodexAuthStore {
-    Keyring,
-    File,
-}
-
-str_enum! {
-    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-    #[serde(rename_all = "lowercase")]
-    pub enum CodexReasoningEffort {
-        Low => "low",
-        Medium => "medium",
-        High => "high",
-    }
-    pub const fn as_str;
-}
-
-impl CodexReasoningEffort {
-    /// Maps a client effort onto the subset the Responses backend accepts.
-    pub fn from_request(effort: ReasoningEffort) -> Option<Self> {
-        match effort {
-            ReasoningEffort::Low => Some(Self::Low),
-            ReasoningEffort::Medium => Some(Self::Medium),
-            ReasoningEffort::High => Some(Self::High),
-            ReasoningEffort::None
-            | ReasoningEffort::Minimal
-            | ReasoningEffort::Xhigh
-            | ReasoningEffort::Max => None,
-        }
-    }
-}
-
 str_enum! {
     /// Requested reasoning summary detail.
     #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -273,20 +222,6 @@ str_enum! {
         Detailed => "detailed",
     }
     pub const fn as_str;
-}
-
-pub type CodexReasoningSummary = ReasoningSummary;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ValidatedCodexAuth {
-    store: CodexAuthStore,
-    state_dir: PathBuf,
-}
-impl ValidatedCodexAuth {
-    getters! {
-        pub store: CodexAuthStore,
-        pub state_dir: &Path,
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -418,20 +353,12 @@ pub struct KeyRateLimit {
 pub enum SecretReference {
     Env(String),
     File(PathBuf),
-    /// SHA-256 digest of an application key; never resolved to plaintext.
-    Sha256([u8; 32]),
 }
 impl SecretReference {
     pub fn env_name(&self) -> Option<&str> {
         match self {
             Self::Env(name) => Some(name),
-            Self::File(_) | Self::Sha256(_) => None,
-        }
-    }
-    pub fn sha256_digest(&self) -> Option<&[u8; 32]> {
-        match self {
-            Self::Sha256(digest) => Some(digest),
-            Self::Env(_) | Self::File(_) => None,
+            Self::File(_) => None,
         }
     }
 }
@@ -443,10 +370,8 @@ const MAX_CONTEXT_TOKENS: u32 = 16_777_216;
 pub struct ValidatedRoute {
     identity: RouteIdentity,
     adapter_id: String,
-    codex_reasoning_effort: Option<CodexReasoningEffort>,
     reasoning_effort: Option<ReasoningEffort>,
     reasoning_summary: Option<ReasoningSummary>,
-    codex_reasoning_summary: Option<CodexReasoningSummary>,
     extension_allowlist: BTreeSet<ExtensionKey>,
     requires_streaming_chat: bool,
     requires_function_tools: bool,
@@ -463,9 +388,7 @@ impl ValidatedRoute {
     getters! {
         pub identity: &RouteIdentity,
         pub adapter_id: &str,
-        pub codex_reasoning_effort: Option<CodexReasoningEffort>,
         pub reasoning_effort: Option<ReasoningEffort>,
-        pub codex_reasoning_summary: Option<CodexReasoningSummary>,
         pub extension_allowlist: &BTreeSet<ExtensionKey>,
         pub requires_streaming_chat: bool,
         pub requires_function_tools: bool,
@@ -480,18 +403,11 @@ impl ValidatedRoute {
         pub max_output_tokens: Option<u32>,
         /// vLLM chat-template thinking switch; `None` leaves the template default.
         pub enable_thinking: Option<bool>,
-    }
-    pub fn reasoning_summary(&self) -> Option<ReasoningSummary> {
-        self.reasoning_summary.or(self.codex_reasoning_summary)
+        pub reasoning_summary: Option<ReasoningSummary>,
     }
     /// Reasoning effort fixed by the route rather than the client.
     pub fn pinned_reasoning_effort(&self) -> Option<&'static str> {
-        self.reasoning_effort
-            .map(ReasoningEffort::as_str)
-            .or_else(|| {
-                self.codex_reasoning_effort
-                    .map(CodexReasoningEffort::as_str)
-            })
+        self.reasoning_effort.map(ReasoningEffort::as_str)
     }
     /// Published model name for a pinned reasoning route.
     pub fn model_family_alias(&self) -> &str {
@@ -508,7 +424,7 @@ impl ValidatedRoute {
 pub struct ValidatedApplicationKey {
     id: String,
     owner: bool,
-    secret_ref: SecretReference,
+    digest: [u8; 32],
     permissions: Vec<RouteSelector>,
     max_in_flight: Option<u64>,
     rate_limit: Option<KeyRateLimit>,
@@ -518,11 +434,12 @@ pub struct ValidatedApplicationKey {
 impl ValidatedApplicationKey {
     getters! {
         pub daily_quota: Option<crate::keys::quota::DailyQuota>,
-        /// Unix seconds; `None` never expires (always for inline keys).
+        /// Unix seconds; `None` never expires.
         pub expires_at: Option<u64>,
         pub id: &str,
         pub is_owner(owner): bool,
-        pub secret_ref: &SecretReference,
+        /// SHA-256 of the key secret.
+        pub digest: &[u8; 32],
         pub permissions: &[RouteSelector],
         pub max_in_flight: Option<u64>,
         pub rate_limit: Option<KeyRateLimit>,
@@ -586,13 +503,12 @@ pub enum ProviderKind {
     Ollama,
     Vllm,
     Openrouter,
-    Codex,
     Chatgpt,
     /// Apple Foundation Models through macOS `fm serve`.
     AppleFm,
     Speech,
     /// CLIProxyAPI's OpenAI-compatible chat endpoint (account sign-ins behind a local proxy);
-    /// reuses the vLLM chat path and, like Codex and ChatGPT, is never public.
+    /// reuses the vLLM chat path and, like ChatGPT, is never public.
     Cliproxy,
     /// Claude Messages API with a Console API key; never public.
     Anthropic,
@@ -601,23 +517,18 @@ pub enum ProviderKind {
 impl ProviderKind {
     /// Never published, never on the public plane, and keys reaching it stay private.
     pub fn is_private_only(self) -> bool {
-        matches!(
-            self,
-            Self::Codex | Self::Chatgpt | Self::Cliproxy | Self::Anthropic
-        )
+        matches!(self, Self::Chatgpt | Self::Cliproxy | Self::Anthropic)
     }
 
-    /// Whether the adapter applies a route's pinned effort itself (Codex
-    /// `codex_reasoning_effort`, ChatGPT pinned inference). Other reasoning-control adapters
-    /// receive the pin as the request's `reasoning_effort`, so families on them need
-    /// `reasoning_control`.
+    /// Whether the adapter applies a route's pinned effort itself (ChatGPT pinned inference).
+    /// Other reasoning-control adapters receive the pin as the request's `reasoning_effort`,
+    /// so families on them need `reasoning_control`.
     pub fn applies_route_effort_pin(self) -> bool {
-        matches!(self, Self::Codex | Self::Chatgpt)
+        matches!(self, Self::Chatgpt)
     }
 
     pub fn accepts_reasoning_effort(self, effort: ReasoningEffort) -> bool {
         match self {
-            Self::Codex => CodexReasoningEffort::from_request(effort).is_some(),
             Self::Ollama | Self::Vllm | Self::Openrouter | Self::Chatgpt | Self::Cliproxy => true,
             // `output_config.effort` has no off or minimal level.
             Self::Anthropic => !matches!(effort, ReasoningEffort::None | ReasoningEffort::Minimal),
@@ -638,13 +549,13 @@ impl ProviderKind {
 
     /// Whether the upstream receives the request's `prompt_cache_key`.
     pub fn forwards_prompt_cache_key(self) -> bool {
-        matches!(self, Self::Chatgpt | Self::Codex)
+        matches!(self, Self::Chatgpt)
     }
 
     /// Whether assistant `ChatContent::Reasoning` items are replayed upstream; others skip them.
     /// Anthropic replays only the thinking items it produced.
     pub fn replays_encrypted_reasoning(self) -> bool {
-        matches!(self, Self::Chatgpt | Self::Codex | Self::Anthropic)
+        matches!(self, Self::Chatgpt | Self::Anthropic)
     }
 
     /// Whether assistant `ChatContent::ReasoningText` is replayed upstream as the assistant
@@ -663,7 +574,6 @@ impl ProviderKind {
             Self::Ollama => "ollama",
             Self::Vllm => "vllm",
             Self::Openrouter => "openrouter",
-            Self::Codex => "codex",
             Self::Chatgpt => "chatgpt",
             Self::AppleFm => "apple_fm",
             Self::Speech => "speech",
@@ -695,7 +605,7 @@ impl ProviderKind {
     fn supports_chat_options(self) -> (bool, bool, bool) {
         match self {
             Self::Ollama | Self::Vllm | Self::Openrouter | Self::Cliproxy => (true, true, true),
-            Self::Codex | Self::Chatgpt => (false, false, true),
+            Self::Chatgpt => (false, false, true),
             // Claude 4.7+ rejects non-default sampling; the output cap is an adapter setting.
             Self::Anthropic => (true, false, true),
             Self::AppleFm => (true, true, false),
@@ -754,12 +664,10 @@ fn sanitized_deserialize_error(
     let is_config = root == "config";
     let message = error.inner().to_string();
     let mut path = error.path().to_string();
+    let name = message.split('`').nth(1).unwrap_or_default();
     let class = if message.contains("unknown field") || message.contains("unknown key") {
-        if is_config
-            && path.is_empty()
-            && let Some(field) = message.split('`').nth(1).filter(valid_path_token)
-        {
-            path = field.into();
+        if is_config && path.is_empty() && valid_path_token(&name) {
+            path = name.into();
         }
         if !is_config {
             // The last segment is the unknown key itself, i.e. file content.
@@ -767,7 +675,9 @@ fn sanitized_deserialize_error(
                 .rsplit_once('.')
                 .map_or_else(String::new, |(parent, _)| parent.to_owned());
         }
-        "unknown_field"
+        removed_setting_class(name, is_config && path == name).unwrap_or("unknown_field")
+    } else if message.contains("unknown variant") && name == "codex" {
+        "codex_removed"
     } else if message.contains("invalid type") {
         "type_error"
     } else {
@@ -780,6 +690,17 @@ fn sanitized_deserialize_error(
         (_, false) => root.to_owned(),
     };
     ConfigError::new(path, class)
+}
+
+/// Explicit classes for removed settings; `top_level` means a key of the config root.
+fn removed_setting_class(name: &str, top_level: bool) -> Option<&'static str> {
+    match name {
+        "codex_reasoning_summary" => Some("use_reasoning_summary"),
+        "codex_reasoning_effort" => Some("codex_removed"),
+        "codex_auth" if top_level => Some("codex_removed"),
+        "application_keys" if top_level => Some("inline_keys_removed"),
+        _ => None,
+    }
 }
 
 pub fn load(path: impl AsRef<Path>) -> Result<ValidatedConfig, ConfigError> {

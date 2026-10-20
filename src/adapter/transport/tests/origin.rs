@@ -150,23 +150,23 @@ async fn plaintext_credentials_fail_before_connecting() {
     };
     assert_eq!(error.kind, ErrorKind::Internal);
 
-    let codex_request = TransportRequest::json(
+    let header_request = TransportRequest::json(
         Method::POST,
         endpoint(),
         &json!({}),
         Some(
-            CredentialHeader::authorization_with_chatgpt_account_id(
+            CredentialHeader::authorization_with_headers(
                 "Bearer marker-secret".to_owned(),
-                "account-marker",
+                &[("x-provider-account", "account-marker")],
             )
-            .expect("Codex credential headers"),
+            .expect("credential headers"),
         ),
         Some(Accept::EventStream),
         1024,
         COMPLETE_RESPONSE_BYTES,
     )
-    .expect("codex request");
-    let error = match transport.execute(codex_request).await {
+    .expect("header request");
+    let error = match transport.execute(header_request).await {
         Err(error) => error,
         Ok(_) => panic!("plaintext account header accepted"),
     };

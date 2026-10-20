@@ -1,7 +1,7 @@
 # Native (non-container) template for running `kanata serve` directly on a host.
 # For the Docker deployment use container.example.toml instead.
-# Replace .invalid hosts, model IDs, the sample tailnet address and the Codex state_dir.
-# vLLM audio behavior has fixture evidence only. Codex model availability depends on the ChatGPT plan.
+# Replace .invalid hosts, model IDs and the sample tailnet address.
+# vLLM audio behavior has fixture evidence only.
 [listeners.client]
 bind = "127.0.0.1"
 port = 8080
@@ -12,10 +12,6 @@ port = 9090
 
 [publication]
 tailnet_addresses = ["100.64.0.10"]
-
-[codex_auth]
-store = "keyring"
-state_dir = "/replace/with/owner-writable/absolute/path/kanata-codex"
 
 [[adapters]]
 id = "ollama-local"
@@ -71,17 +67,6 @@ transcription_mode = "native_asr"
 operations = ["transcription"]
 streaming_chat = false
 function_tools = false
-
-# Codex configuration is schema-only; no credential is referenced here.
-[[adapters]]
-id = "codex-private"
-kind = "codex"
-base_url = "https://chatgpt.invalid/backend-api/codex"
-trust_zone = "external"
-[adapters.capabilities]
-operations = ["chat"]
-streaming_chat = true
-function_tools = true
 
 [[routes]]
 id = "ollama-small"
@@ -147,35 +132,6 @@ adapter_id = "vllm-native-asr"
 upstream_id = "replace-with-asr-vllm-model-id"
 requires_streaming_chat = false
 requires_function_tools = false
-
-[[routes]]
-id = "codex-chat"
-model_alias = "codex-chat"
-operation = "chat"
-adapter_id = "codex-private"
-upstream_id = "gpt-5-codex"
-requires_streaming_chat = true
-requires_function_tools = true
-
-# These aliases demonstrate static model/effort selection only.
-[[routes]]
-id = "codex-gpt-6-sol"
-model_alias = "gpt-6-sol"
-operation = "chat"
-adapter_id = "codex-private"
-upstream_id = "gpt-6-sol"
-requires_streaming_chat = true
-requires_function_tools = true
-
-[[routes]]
-id = "codex-gpt-6-luna-low"
-model_alias = "gpt-6-luna:low"
-operation = "chat"
-adapter_id = "codex-private"
-upstream_id = "gpt-6-luna"
-codex_reasoning_effort = "low"
-requires_streaming_chat = true
-requires_function_tools = true
 
 # Application keys live in a machine-managed file (paths are relative to this
 # file). Create the owner key with the host CLI:

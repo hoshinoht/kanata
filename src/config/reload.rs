@@ -1,4 +1,4 @@
-use super::{ConfigError, KeySource, ValidatedConfig};
+use super::{ConfigError, ValidatedConfig};
 
 impl ValidatedConfig {
     pub(crate) fn check_reload_compatible(&self, next: &Self) -> Result<(), ConfigError> {
@@ -18,28 +18,15 @@ impl ValidatedConfig {
             (self.limits == next.limits, "limits"),
             (self.timeouts == next.timeouts, "timeouts"),
             (self.logging == next.logging, "logging"),
-            (self.codex_auth == next.codex_auth, "auth"),
             (self.chatgpt_auth == next.chatgpt_auth, "chatgpt_auth"),
         ] {
             if !same {
                 fields.push(field);
             }
         }
-        let same_keys = match (&self.key_source, &next.key_source) {
-            (KeySource::Inline, KeySource::Inline) => true,
-            (
-                KeySource::File {
-                    path, usage_dir, ..
-                },
-                KeySource::File {
-                    path: next_path,
-                    usage_dir: next_usage,
-                    ..
-                },
-            ) => path == next_path && usage_dir == next_usage,
-            _ => false,
-        };
-        if !same_keys {
+        if self.key_source.path != next.key_source.path
+            || self.key_source.usage_dir != next.key_source.usage_dir
+        {
             fields.push("keys");
         }
         for previous in &self.adapters {

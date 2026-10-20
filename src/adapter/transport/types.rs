@@ -12,7 +12,6 @@ pub(super) const MAX_CHUNK_BYTES: usize = 16 * 1024;
 pub(crate) const COMPLETE_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const STREAM_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const OAUTH_RESPONSE_BYTES: usize = 1024 * 1024;
-pub(crate) const AUTH_RESPONSE_BYTES: usize = 16 * 1024;
 
 pub(crate) type Connector = hyper_rustls::HttpsConnector<
     hyper_util::client::legacy::connect::HttpConnector<super::resolver::Resolver>,

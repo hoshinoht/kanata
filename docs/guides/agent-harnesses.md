@@ -1,6 +1,6 @@
 # Agent harnesses
 
-Use an authenticated Kanata base URL and a model alias published by `GET /v1/models`. Keep the key in the harness's environment-backed secret setting, not in a shared config file. ChatGPT, Codex and CLIProxyAPI routes are private-only.
+Use an authenticated Kanata base URL and a model alias published by `GET /v1/models`. Keep the key in the harness's environment-backed secret setting, not in a shared config file. ChatGPT, CLIProxyAPI and Anthropic routes are private-only.
 
 These setup shapes were exercised against a mock upstream on 2026-10-11; that does not establish live-provider availability.
 
@@ -99,11 +99,11 @@ client = OpenAI(
 
 Use `client.chat.completions` or `client.responses` with a published chat alias. See the [Responses subset](responses.md) for its stateless request and history rules. Kanata accepts only its documented wire fields; unknown fields fail with a JSON-path `param` rather than being silently ignored.
 
-Chat assistant turns may replay the reasoning they returned as `reasoning_content` (a string of at most 256 KiB; empty is accepted). Other roles reject it with `param=messages[i].reasoning_content`. Kanata forwards it as the assistant message's `reasoning` to vLLM, Ollama and OpenRouter routes, which pass it to the model's chat template (gpt-oss, Qwen3 and similar); CLIProxyAPI, ChatGPT, Codex and Apple FM routes drop it. ChatGPT and Codex replay only encrypted reasoning through [Responses](responses.md).
+Chat assistant turns may replay the reasoning they returned as `reasoning_content` (a string of at most 256 KiB; empty is accepted). Other roles reject it with `param=messages[i].reasoning_content`. Kanata forwards it as the assistant message's `reasoning` to vLLM, Ollama and OpenRouter routes, which pass it to the model's chat template (gpt-oss, Qwen3 and similar); CLIProxyAPI, ChatGPT and Apple FM routes drop it. ChatGPT replays only encrypted reasoning through [Responses](responses.md).
 
 ## Prompt caching and limits
 
-For ChatGPT/Codex routes, use a stable `prompt_cache_key` (1–64 printable ASCII bytes) and keep the system prompt byte-stable to help reuse upstream prefixes. The key is forwarded to those routes and dropped elsewhere. When the upstream reports cached input, private responses expose it as `usage.prompt_tokens_details.cached_tokens` (Chat), `usage.input_tokens_details.cached_tokens` (Responses), or `usage.cache_read_input_tokens` (Messages). Public listeners omit cached-token counts; missing values are not estimated.
+For ChatGPT routes, use a stable `prompt_cache_key` (1–64 printable ASCII bytes) and keep the system prompt byte-stable to help reuse upstream prefixes. The key is forwarded to those routes and dropped elsewhere. When the upstream reports cached input, private responses expose it as `usage.prompt_tokens_details.cached_tokens` (Chat), `usage.input_tokens_details.cached_tokens` (Responses), or `usage.cache_read_input_tokens` (Messages). Public listeners omit cached-token counts; missing values are not estimated.
 
 Long agent transcripts can exceed the default `limits.max_body_bytes` of 1 MiB. Ask the operator to raise it for long sessions; the request-buffer reservation must still fit within `limits.max_buffered_bytes`. Messages requires `max_tokens` from 1 to 1,048,576 and clamps it to the route cap. On routes without `sampling_controls`, max-token fields are validated and dropped. Messages streams limit each argument delta to 16 KiB and each response to 64 tool calls.
 

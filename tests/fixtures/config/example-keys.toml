@@ -1,0 +1,15 @@
+# Keys file for example.toml; the `personal-client` secret is `test-key`.
+version = 1
+
+[[keys]]
+id = "personal-client"
+digest = "sha256:62af8704764faf8ea82fc61ce9c4c3908b6cb97d463a634e9e587d7c885db0ef"
+created_at = "2026-01-01T00:00:00Z"
+owner = true
+permissions = [
+  { model_alias = "local-chat", operation = "chat" },
+  { model_alias = "private-chat", operation = "chat" },
+  { model_alias = "private-transcribe", operation = "transcription" },
+  { model_alias = "remote-chat", operation = "chat" },
+  { model_alias = "chatgpt-chat", operation = "chat" },
+]

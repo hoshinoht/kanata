@@ -4,8 +4,7 @@ pub mod common;
 use crate::scratch::{fixture_text, load_valid};
 
 use kanata::{
-    auth::{SecretResolutionError, SecretResolver},
-    config::{self, ValidatedConfig, ValidatedRoute},
+    config::{ValidatedConfig, ValidatedRoute},
     core::{
         ChatContent, ChatMessage, ChatRequest, ChatRole, Extensions, InputAudioFormat, ModelAlias,
         Request, RequestContext, RoutedRequest, ToolChoice, TranscriptionRequest, TrustZone,
@@ -17,14 +16,6 @@ pub const TRANSCRIPTION_RESPONSE: &str =
     include_str!("../fixtures/vllm/audio-chat-transcription-response.json");
 pub const NATIVE_ASR_RESPONSE: &str =
     include_str!("../fixtures/vllm/native-asr-transcription-response.json");
-
-pub struct Resolver;
-
-impl SecretResolver for Resolver {
-    fn resolve(&self, _: &config::SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
-        Ok(b"test-key".to_vec())
-    }
-}
 
 #[derive(Clone, Copy)]
 pub struct ConfigOptions {

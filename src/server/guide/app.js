@@ -252,8 +252,8 @@
       ["store", "Omit it, or set it to false or null. previous_response_id and stored conversations are unsupported."],
       ["stream", "Use true on streaming routes for typed response events. Check response.completed, response.incomplete or response.failed; partial text alone is not success."],
       ["tools", "Function declarations and results only. `strict` true/false is accepted and ignored; hosted and other non-function tool types are rejected with `400 param=tools[i]`. Kanata does not execute functions or enforce their schemas."],
-      ["include", "Omit or use [] to skip; [\"reasoning.encrypted_content\"] requests encrypted reasoning on private ChatGPT/Codex routes."],
-      ["prompt_cache_key", "Use a stable 1–64 printable ASCII key; it is forwarded to ChatGPT/Codex routes and dropped elsewhere."],
+      ["include", "Omit or use [] to skip; [\"reasoning.encrypted_content\"] requests encrypted reasoning on private ChatGPT routes."],
+      ["prompt_cache_key", "Use a stable 1–64 printable ASCII key; it is forwarded to ChatGPT routes and dropped elsewhere."],
       ...(model.kanata.reasoning_control === true ? [["reasoning.effort / reasoning.summary", `Choose an advertised effort: ${(model.kanata.reasoning_efforts || []).join(", ")}. reasoning.summary accepts auto, concise, detailed or null but is ignored; the operator setting governs summaries.`]] : []),
     ]);
     const body = {model: model.id, input: "Hello", store: false};

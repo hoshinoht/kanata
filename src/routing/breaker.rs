@@ -24,6 +24,18 @@ struct BreakerState {
     epoch: u64,
 }
 
+str_enum! {
+    /// Point-in-time breaker state.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) enum BreakerStatus {
+        Closed => "closed",
+        Open => "open",
+        /// Cooldown elapsed: a probe is in flight or the next request probes.
+        HalfOpen => "half_open",
+    }
+    pub(crate) const fn as_str;
+}
+
 /// How one upstream attempt reflects on backend health.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Outcome {
@@ -74,6 +86,14 @@ impl Breaker {
 
     pub(crate) fn is_open(&self) -> bool {
         self.lock().open_until.is_some()
+    }
+
+    pub(crate) fn status(&self) -> BreakerStatus {
+        match self.lock().open_until {
+            None => BreakerStatus::Closed,
+            Some(until) if Instant::now() < until => BreakerStatus::Open,
+            Some(_) => BreakerStatus::HalfOpen,
+        }
     }
 
     /// Admits a request, or returns how long the breaker stays open.
@@ -203,15 +223,19 @@ mod tests {
             .record(Outcome::Reachable);
         fail(&breaker);
         assert!(!breaker.is_open(), "success resets the failure count");
+        assert_eq!(breaker.status(), BreakerStatus::Closed);
         fail(&breaker);
         assert!(breaker.is_open());
+        assert_eq!(breaker.status(), BreakerStatus::Open);
         assert_eq!(breaker.admit().err(), Some(Duration::from_millis(1_000)));
 
         tokio::time::advance(Duration::from_millis(1_000)).await;
+        assert_eq!(breaker.status(), BreakerStatus::HalfOpen);
         let probe = breaker.admit().expect("probe").expect("ticket");
         assert!(breaker.admit().is_err(), "only one probe at a time");
         probe.record(Outcome::Unreachable);
         assert!(breaker.admit().is_err(), "a failed probe reopens");
+        assert_eq!(breaker.status(), BreakerStatus::Open);
 
         tokio::time::advance(Duration::from_millis(1_000)).await;
         drop(breaker.admit().expect("probe").expect("ticket"));
@@ -221,6 +245,7 @@ mod tests {
             .expect("ticket");
         probe.record(Outcome::Reachable);
         assert!(!breaker.is_open());
+        assert_eq!(breaker.status(), BreakerStatus::Closed);
     }
 
     #[tokio::test(start_paused = true)]

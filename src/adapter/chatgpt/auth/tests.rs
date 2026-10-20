@@ -29,9 +29,9 @@ use tokio_rustls::{
     },
 };
 
+use super::files::TestDir;
 use super::record::{Identity, Session};
 use super::*;
-use crate::adapter::auth_files::TestDir;
 
 const JWKS: &[u8] = include_bytes!("../../../../tests/fixtures/chatgpt/test-only-jwks.json");
 const PRIVATE_KEY: &[u8] = include_bytes!("../../../../tests/fixtures/chatgpt/test-only-rsa.pk8");

@@ -1,6 +1,6 @@
 # Sign in with ChatGPT
 
-Kanata's `chatgpt` provider uses OpenAI's [documented OAuth integration](https://developers.openai.com/siwc/token-sharing-open-source) for eligible ChatGPT plan usage (preview). Authentication runs on the host; chat routes stay private. The legacy `codex` provider is deprecated and retained for explicit restoration; its credentials are not imported.
+Kanata's `chatgpt` provider uses OpenAI's [documented OAuth integration](https://developers.openai.com/siwc/token-sharing-open-source) for eligible ChatGPT plan usage (preview). Authentication runs on the host; chat routes stay private.
 
 Your account permissions, workspace policy and current model catalog determine what is available. Verify a short inference request with your selected account after configuring a route.
 
@@ -38,7 +38,7 @@ Your account permissions, workspace policy and current model catalog determine w
 
 ## Docker deployment
 
-For an existing Compose deployment, use the [Docker setup](../../deploy/docker/README.md#sign-in-with-chatgpt). It adds the opt-in `deploy/compose/compose.kanata.chatgpt.yml` overlay and a dedicated `KANATA_CHATGPT_STATE_DIR` directory. Set `[chatgpt_auth].state_dir` to the same absolute path; host browser login and the private container use one protected state store. This preserves the existing client key file, provider API-key secrets and Codex credentials.
+For an existing Compose deployment, use the [Docker setup](../../deploy/docker/README.md#sign-in-with-chatgpt). It adds the opt-in `deploy/compose/compose.kanata.chatgpt.yml` overlay and a dedicated `KANATA_CHATGPT_STATE_DIR` directory. Set `[chatgpt_auth].state_dir` to the same absolute path; host browser login and the private container use one protected state store. This preserves the existing client key file and provider API-key secrets.
 
 ```sh
 deploy/scripts/kanata.sh chatgpt login

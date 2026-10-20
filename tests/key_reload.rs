@@ -25,7 +25,7 @@ use support::{Capture, ScratchDir};
 
 const LOCAL: &str = "{ model_alias = \"local-chat\", operation = \"chat\" }";
 const PRIVATE: &str = "{ model_alias = \"private-chat\", operation = \"chat\" }";
-const CODEX: &str = "{ model_alias = \"codex-chat\", operation = \"chat\" }";
+const CHATGPT: &str = "{ model_alias = \"chatgpt-chat\", operation = \"chat\" }";
 
 /// Temp dir with `config.toml` using `[keys] file = "keys.toml"`.
 struct Scratch(ScratchDir);
@@ -103,8 +103,7 @@ async fn reload_revokes_and_adds_keys_without_cancelling_in_flight_requests() {
     let scratch = Scratch::new(false, &keys(&[record("alpha", &[LOCAL], "")]));
     let config = scratch.load();
     let (server, probe) = pending_server(&config);
-    let mut reloader =
-        KeyReloader::new(config, Plane::All, server.key_handle()).expect("file source reloads");
+    let mut reloader = KeyReloader::new(config, Plane::All, server.key_handle());
     assert_eq!(reloader.poll_once(), ReloadOutcome::Unchanged);
 
     let in_flight = {
@@ -154,7 +153,7 @@ fn invalid_keys_files_are_rejected_once_and_keep_the_current_keys() {
     let config = scratch.load();
     let (server, _) = support::server_with(&config, Vec::new());
     let handle = server.key_handle();
-    let mut reloader = KeyReloader::new(config, Plane::All, handle.clone()).expect("reloader");
+    let mut reloader = KeyReloader::new(config, Plane::All, handle.clone());
     // Tracing caches callsite interest process-wide; other tests' reloaders may
     // register the rejection WARN first, so the cache is rebuilt once this
     // subscriber is the thread default.
@@ -231,7 +230,7 @@ async fn expired_keys_get_key_expired_and_revoked_keys_match_unknown_on_both_lis
     );
     let config = scratch.load();
     let server = support::server_without_adapters(&config);
-    let mut reloader = KeyReloader::new(config, Plane::All, server.key_handle()).expect("reloader");
+    let mut reloader = KeyReloader::new(config, Plane::All, server.key_handle());
     scratch.write_keys(
         &keys(&[
             record("expired", &[LOCAL], "expires_at = \"2026-01-02T00:00:00Z\""),
@@ -288,12 +287,11 @@ async fn public_plane_reload_admits_only_narrowed_public_keys() {
             support::chat_outcome("ok"),
         )],
     );
-    let mut reloader =
-        KeyReloader::new(full, Plane::Public, server.key_handle()).expect("reloader");
+    let mut reloader = KeyReloader::new(full, Plane::Public, server.key_handle());
     scratch.write_keys(
         &keys(&[
             record("owner", &[LOCAL], "owner = true"),
-            record("codex", &[LOCAL, CODEX], ""),
+            record("chatgpt", &[LOCAL, CHATGPT], ""),
             record("private", &[PRIVATE], ""),
             record("public", &[LOCAL, PRIVATE], ""),
         ]),
@@ -309,7 +307,7 @@ async fn public_plane_reload_admits_only_narrowed_public_keys() {
     )
     .await;
     assert_eq!(unknown.0, StatusCode::FORBIDDEN);
-    for id in ["owner", "codex", "private"] {
+    for id in ["owner", "chatgpt", "private"] {
         let rejected = parts(server.public_oneshot(models(id)).await.expect("public")).await;
         assert_eq!(rejected, unknown, "{id}");
     }
@@ -335,7 +333,7 @@ async fn per_key_limits_survive_unchanged_reloads_and_changed_limits_apply() {
     let scratch = Scratch::new(false, &keys(&[limited(1)]));
     let config = scratch.load();
     let (server, probe) = pending_server(&config);
-    let mut reloader = KeyReloader::new(config, Plane::All, server.key_handle()).expect("reloader");
+    let mut reloader = KeyReloader::new(config, Plane::All, server.key_handle());
     let spawn = |server: &Arc<TwoPlaneServer>| {
         let server = server.clone();
         tokio::spawn(async move {
@@ -367,19 +365,12 @@ async fn per_key_limits_survive_unchanged_reloads_and_changed_limits_apply() {
     assert_eq!(second.await.expect("task").status(), StatusCode::OK);
 }
 
-#[test]
-fn inline_keys_have_no_reloader() {
-    let config = support::config();
-    let server = support::server_without_adapters(&config);
-    assert!(KeyReloader::new(config, Plane::All, server.key_handle()).is_none());
-}
-
 #[tokio::test]
 async fn reload_health_and_metric_retention_follow_the_current_key_set() {
     let scratch = Scratch::new(false, &keys(&[record("alpha", &[LOCAL], "")]));
     let config = scratch.load();
     let (server, _) = support::server_with(&config, Vec::new());
-    let mut reload = KeyReloader::new(config, Plane::All, server.key_handle()).expect("reload");
+    let mut reload = KeyReloader::new(config, Plane::All, server.key_handle());
     parts(
         server
             .client_oneshot(models("alpha"))

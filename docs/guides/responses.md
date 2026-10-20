@@ -30,7 +30,7 @@ print(response.output_text)
 | `store` | Omitted, `false` or `null`; accepted and ignored |
 | `background` | Omitted or `false` |
 | `parallel_tool_calls` | `true` or `null`; accepted and ignored. `false` is rejected with `param=parallel_tool_calls` |
-| `prompt_cache_key` | 1–64 printable ASCII bytes; forwarded to ChatGPT/Codex routes and dropped elsewhere |
+| `prompt_cache_key` | 1–64 printable ASCII bytes; forwarded to ChatGPT routes and dropped elsewhere |
 | `include` | `[]` or `["reasoning.encrypted_content"]`; other values return `param=include` |
 | `client_metadata` | Object with at most 32 string-valued entries and at most 16 KiB serialized; accepted and dropped |
 | `metadata` | At most 16 entries; keys 1–64 bytes and values at most 512 bytes; accepted and dropped |
@@ -45,7 +45,7 @@ print(response.output_text)
 
 Messages use `role` (`system`, `developer`, `user`, `assistant`) and text `content`, or an array of `input_text` parts. Replayed assistant output may use `output_text` with empty annotations and logprobs. Function calls use `type: "function_call"`, `call_id`, `name`, and string `arguments`; `function_call_output` results preserve their `id` and `status`, and `output` may be an empty string or an array of `input_text` parts. Input message, function-call, function-call-output and reasoning items may carry `id` and `status` (`completed` or `incomplete`). Kanata does not execute functions.
 
-To continue, send the original input, the previous response's `output` items and the function results or next user message. Summary-only reasoning items are accepted during replay and discarded. Reasoning input items with `encrypted_content` are replayed in order on ChatGPT/Codex routes and dropped elsewhere. Kanata keeps no conversation state. Generated response/item IDs are identifiers for that result, not retrieval handles.
+To continue, send the original input, the previous response's `output` items and the function results or next user message. Summary-only reasoning items are accepted during replay and discarded. Reasoning input items with `encrypted_content` are replayed in order on ChatGPT routes and dropped elsewhere. Kanata keeps no conversation state. Generated response/item IDs are identifiers for that result, not retrieval handles.
 
 For grouped reasoning models, send the base model ID and an accessible effort. Omitting the effort requires permission for the unsuffixed default route. See [client integration and migration](service-handoff.md) for migration examples. Responses return the canonical model ID and the explicit requested effort under `reasoning.effort`.
 
@@ -53,9 +53,9 @@ For grouped reasoning models, send the base model ID and an accessible effort. O
 
 ## Private reasoning summaries
 
-A private ChatGPT or Codex route with `reasoning_summary = "auto"`, `"concise"` or `"detailed"` can return a `type: "reasoning"` output item. Its `summary` contains `type: "summary_text"` parts. Summary requests are off by default and controlled by the operator; client `reasoning.summary` values `auto`, `concise`, `detailed` and `null` are accepted and ignored. Account/model support determines whether summary text is returned.
+A private ChatGPT route with `reasoning_summary = "auto"`, `"concise"` or `"detailed"` can return a `type: "reasoning"` output item. Its `summary` contains `type: "summary_text"` parts. Summary requests are off by default and controlled by the operator; client `reasoning.summary` values `auto`, `concise`, `detailed` and `null` are accepted and ignored. Account/model support determines whether summary text is returned.
 
-`include: ["reasoning.encrypted_content"]` requests encrypted reasoning on private ChatGPT/Codex routes. Returned reasoning items carry the upstream `id` and `encrypted_content` separately from summary items; public listeners do not expose encrypted reasoning.
+`include: ["reasoning.encrypted_content"]` requests encrypted reasoning on private ChatGPT routes. Returned reasoning items carry the upstream `id` and `encrypted_content` separately from summary items; public listeners do not expose encrypted reasoning.
 
 Summary output is optional. A missing summary does not mean that the model used zero reasoning tokens; usage reports remain independent, and a reported zero is distinct from a missing count.
 

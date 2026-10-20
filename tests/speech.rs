@@ -46,11 +46,12 @@ upstream_id = "kokoro-fixture"
 requires_streaming_chat = false
 requires_function_tools = false
 speech_voices = ["af_heart", "af_sky"]
-speech_formats = ["mp3", "wav"]
-[[application_keys]]
-id = "speaker-client"
-secret_ref = "env:SPEECH_CLIENT_KEY"
-permissions = [{{ model_alias = "speaker", operation = "speech" }}]"#
+speech_formats = ["mp3", "wav"]"#
+        ),
+        &scratch::key_record(
+            "speaker-client",
+            scratch::TEST_KEY,
+            "permissions = [{ model_alias = \"speaker\", operation = \"speech\" }]",
         ),
     )
 }
@@ -102,7 +103,6 @@ fn actual(config: &config::ValidatedConfig) -> TwoPlaneServer {
         SpeechAdapter::from_config(config, "speaker-adapter", &support::Resolver).unwrap();
     TwoPlaneServer::from_validated_with_adapters(
         config,
-        &support::Resolver,
         Readiness::new(true),
         vec![Arc::new(adapter)],
     )
@@ -153,7 +153,6 @@ fn synthetic(config: &config::ValidatedConfig) -> (TwoPlaneServer, Arc<AtomicUsi
     (
         TwoPlaneServer::from_validated_with_adapters(
             config,
-            &support::Resolver,
             Readiness::new(true),
             vec![Arc::new(adapter)],
         )

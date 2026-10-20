@@ -33,6 +33,7 @@ pub const TEXT_RESPONSE: &str = include_str!("../fixtures/vllm/chat-text-respons
 pub const INVALID_USAGE_RESPONSE: &str =
     include_str!("../fixtures/vllm/chat-inconsistent-usage.json");
 pub const UNEXPECTED_RESPONSE: &str = include_str!("../fixtures/vllm/chat-unexpected-field.json");
+pub const EMBEDDINGS_RESPONSE: &str = include_str!("../fixtures/vllm/embeddings-response.json");
 
 pub struct MockServer {
     pub address: String,

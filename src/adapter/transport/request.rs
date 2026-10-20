@@ -91,26 +91,6 @@ impl TransportRequest {
         )
     }
 
-    pub(crate) fn sensitive_json<T: Serialize>(
-        method: Method,
-        endpoint: Endpoint,
-        value: &T,
-        request_budget: usize,
-        response_budget: usize,
-    ) -> Result<Self, GatewayError> {
-        let body = EncodedBody::sensitive_json(value, request_budget)?;
-        Self::from_body(
-            method,
-            endpoint,
-            body,
-            None,
-            Some(Accept::Json),
-            request_budget,
-            response_budget,
-            true,
-        )
-    }
-
     pub(crate) fn form_encoded(
         method: Method,
         endpoint: Endpoint,
@@ -218,7 +198,6 @@ impl TransportRequest {
                     types::COMPLETE_RESPONSE_BYTES
                         | types::STREAM_RESPONSE_BYTES
                         | types::OAUTH_RESPONSE_BYTES
-                        | types::AUTH_RESPONSE_BYTES
                 ))
         {
             return Err(types::internal_error());
@@ -240,13 +219,6 @@ impl CredentialHeader {
             value,
             extra_headers: Vec::new(),
         }
-    }
-
-    pub(crate) fn authorization_with_chatgpt_account_id(
-        value: String,
-        account_id: &str,
-    ) -> Result<Self, GatewayError> {
-        Self::authorization_with_headers(value, &[("chatgpt-account-id", account_id)])
     }
 
     /// Authorization plus fixed provider headers; values are printable ASCII up to 4 KiB.

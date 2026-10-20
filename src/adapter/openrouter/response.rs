@@ -1,6 +1,9 @@
 use crate::adapter::{
-    chat_completions::response::{
-        self as wire, CompletionTokensDetails, FunctionCallPayload, PromptTokensDetails,
+    chat_completions::{
+        embeddings,
+        response::{
+            self as wire, CompletionTokensDetails, FunctionCallPayload, PromptTokensDetails,
+        },
     },
     upstream_failure,
 };
@@ -156,4 +159,62 @@ pub(super) fn decode_transcription(bytes: &[u8]) -> Result<TranscriptionResponse
     Ok(TranscriptionResponse {
         text: text.to_owned(),
     })
+}
+
+/// The documented `embeddings` response; `id` and `model` are accepted and not forwarded.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct EmbeddingListPayload {
+    #[serde(default, rename = "id")]
+    _id: Option<String>,
+    object: String,
+    #[serde(rename = "model")]
+    _model: String,
+    data: Vec<EmbeddingPayload>,
+    #[serde(default)]
+    usage: Option<EmbeddingUsagePayload>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmbeddingPayload {
+    object: String,
+    index: usize,
+    embedding: Vec<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmbeddingUsagePayload {
+    prompt_tokens: u64,
+    total_tokens: u64,
+    #[serde(default, rename = "cost")]
+    _cost: Option<IgnoredAny>,
+    #[serde(default, rename = "cost_details")]
+    _cost_details: Option<IgnoredAny>,
+    #[serde(default, rename = "is_byok")]
+    _is_byok: Option<IgnoredAny>,
+    #[serde(default, rename = "prompt_tokens_details")]
+    _prompt_tokens_details: Option<IgnoredAny>,
+}
+
+impl From<EmbeddingListPayload> for embeddings::List {
+    fn from(payload: EmbeddingListPayload) -> Self {
+        Self {
+            object: payload.object,
+            data: payload
+                .data
+                .into_iter()
+                .map(|item| embeddings::Item {
+                    object: item.object,
+                    index: item.index,
+                    embedding: item.embedding,
+                })
+                .collect(),
+            usage: payload.usage.map(|usage| embeddings::TokenUsage {
+                prompt_tokens: usage.prompt_tokens,
+                total_tokens: usage.total_tokens,
+            }),
+        }
+    }
 }

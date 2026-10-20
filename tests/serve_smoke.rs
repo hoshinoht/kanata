@@ -1,3 +1,6 @@
+#[path = "support/scratch.rs"]
+mod scratch;
+
 use std::{
     fs,
     io::{Read, Write},
@@ -37,14 +40,26 @@ impl FixtureDir {
         &self.0
     }
 
-    fn write_key(&self, name: &str, value: &str) -> PathBuf {
-        let path = self.path().join(name);
-        if path.exists() {
-            fs::remove_file(&path).expect("replace synthetic key");
-        }
-        fs::write(&path, format!("{value}\n")).expect("write synthetic key");
-        set_mode(&path, 0o400);
-        path
+    /// Writes the owner and restricted key records to `keys.toml`.
+    fn write_keys(&self) {
+        let chat = "  { model_alias = \"fixture-chat\", operation = \"chat\" },\n  { model_alias = \"fixture-asr\", operation = \"transcription\" },\n";
+        let path = self.path().join("keys.toml");
+        fs::write(
+            &path,
+            format!(
+                "version = 1\n{}{}",
+                scratch::key_record(
+                    "fixture-owner",
+                    OWNER_KEY,
+                    &format!(
+                        "owner = true\npermissions = [\n{chat}  {{ model_alias = \"fixture-chatgpt\", operation = \"chat\" }},\n]"
+                    ),
+                ),
+                scratch::key_record("fixture-restricted", RESTRICTED_KEY, &format!("permissions = [\n{chat}]")),
+            ),
+        )
+        .expect("write fixture keys");
+        set_mode(&path, 0o600);
     }
 
     fn write_config(
@@ -61,9 +76,8 @@ impl FixtureDir {
             let port = free_port(bind);
             format!("[listeners.public]\nbind = \"{bind}\"\nport = {port}\n\n")
         });
-        let owner_key = self.write_key("owner.key", OWNER_KEY);
-        let restricted_key = self.write_key("restricted.key", RESTRICTED_KEY);
-        let codex_state = self.path().join("codex-state");
+        self.write_keys();
+        let chatgpt_state = self.path().join("chatgpt-state");
         let contents = format!(
             r#"[listeners.client]
 bind = "127.0.0.1"
@@ -77,8 +91,7 @@ port = {admin_port}
 tailnet_addresses = ["100.64.0.10"]
 public_routes = {public_routes}
 
-[codex_auth]
-store = "file"
+[chatgpt_auth]
 state_dir = "{}"
 
 [[adapters]]
@@ -94,9 +107,9 @@ function_tools = false
 input_audio = true
 
 [[adapters]]
-id = "fixture-codex"
-kind = "codex"
-base_url = "https://chatgpt.com/backend-api/codex"
+id = "fixture-chatgpt"
+kind = "chatgpt"
+base_url = "https://api.openai.com/v1"
 trust_zone = "external"
 [adapters.capabilities]
 operations = ["chat"]
@@ -123,31 +136,16 @@ requires_streaming_chat = false
 requires_function_tools = false
 
 [[routes]]
-id = "fixture-codex-route"
-model_alias = "fixture-codex"
+id = "fixture-chatgpt-route"
+model_alias = "fixture-chatgpt"
 operation = "chat"
-adapter_id = "fixture-codex"
-upstream_id = "fixture-codex-upstream"
+adapter_id = "fixture-chatgpt"
+upstream_id = "fixture-chatgpt-upstream"
 requires_streaming_chat = true
 requires_function_tools = true
 
-[[application_keys]]
-id = "fixture-owner"
-secret_ref = "file:{}"
-owner = true
-permissions = [
-  {{ model_alias = "fixture-chat", operation = "chat" }},
-  {{ model_alias = "fixture-asr", operation = "transcription" }},
-  {{ model_alias = "fixture-codex", operation = "chat" }},
-]
-
-[[application_keys]]
-id = "fixture-restricted"
-secret_ref = "file:{}"
-permissions = [
-  {{ model_alias = "fixture-chat", operation = "chat" }},
-  {{ model_alias = "fixture-asr", operation = "transcription" }},
-]
+[keys]
+file = "keys.toml"
 
 [limits]
 max_queue = 8
@@ -164,9 +162,7 @@ first_byte_ms = 1000
 idle_ms = 1000
 overall_ms = 5000
 "#,
-            toml_path(&codex_state),
-            toml_path(&owner_key),
-            toml_path(&restricted_key),
+            toml_path(&chatgpt_state),
         );
         let path = self.path().join(name);
         fs::write(&path, contents).expect("write fixture config");
@@ -521,40 +517,6 @@ fn model_ids(response: &HttpResponse) -> Vec<String> {
         .collect()
 }
 
-fn run_serve_until_exit(config: &Path, timeout: Duration) -> std::process::Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_kanata"))
-        .args(["serve", "--config"])
-        .arg(config)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start failing serve fixture");
-    let deadline = Instant::now() + timeout;
-    loop {
-        if child
-            .try_wait()
-            .expect("poll failing serve fixture")
-            .is_some()
-        {
-            return child
-                .wait_with_output()
-                .expect("collect failing serve output");
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let output = child
-                .wait_with_output()
-                .expect("collect stuck serve output");
-            panic!(
-                "serve did not fail closed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
 fn start_config(
     fixture: &FixtureDir,
     name: &str,
@@ -614,28 +576,31 @@ fn private_serve_binds_routes_keys_and_admin_separately() {
     let upstream = MockUpstream::start();
     let (config, client, _, admin) =
         start_config(&fixture, "private.toml", upstream.address, None, "[]");
-    let state_dir = fixture.path().join("codex-state");
+    let state_dir = fixture.path().join("chatgpt-state");
     let mut server = RunningServer::start(&config, admin);
     thread::sleep(Duration::from_millis(50));
     upstream.assert_no_request();
     assert!(
         !state_dir.exists(),
-        "startup does not inspect or create Codex storage"
+        "startup does not inspect or create ChatGPT storage"
     );
 
     let owner_models = model_ids(&models_request(client, OWNER_KEY));
     assert_eq!(
         owner_models,
-        ["fixture-asr", "fixture-chat", "fixture-codex"]
+        ["fixture-asr", "fixture-chat", "fixture-chatgpt"]
     );
     let restricted_models = model_ids(&models_request(client, RESTRICTED_KEY));
     assert_eq!(restricted_models, ["fixture-asr", "fixture-chat"]);
 
     assert_eq!(
-        chat_request(client, RESTRICTED_KEY, "fixture-codex").status,
+        chat_request(client, RESTRICTED_KEY, "fixture-chatgpt").status,
         403
     );
-    assert_eq!(chat_request(client, OWNER_KEY, "fixture-codex").status, 503);
+    assert_eq!(
+        chat_request(client, OWNER_KEY, "fixture-chatgpt").status,
+        503
+    );
     upstream.assert_no_request();
 
     let chat = chat_request(client, RESTRICTED_KEY, "fixture-chat");
@@ -649,48 +614,6 @@ fn private_serve_binds_routes_keys_and_admin_separately() {
 
     server.terminate();
     assert!(server.wait_exit(Duration::from_secs(5)).success());
-}
-
-#[test]
-fn startup_secret_failures_are_redacted_before_binding() {
-    let _serial = SERVE_SMOKE_SERIAL
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let fixture = FixtureDir::new();
-    let upstream = MockUpstream::start();
-    let (config, client, _, admin) = start_config(
-        &fixture,
-        "missing-secret.toml",
-        upstream.address,
-        None,
-        "[]",
-    );
-    let owner_path = fixture.path().join("owner.key");
-    let missing_path = fixture.path().join("missing-owner.key");
-    let contents = fs::read_to_string(&config).expect("read fixture config");
-    let contents = contents.replace(&toml_path(&owner_path), &toml_path(&missing_path));
-    assert_ne!(
-        contents,
-        fs::read_to_string(&config).expect("read original config")
-    );
-    fs::write(&config, contents).expect("remove configured key fixture");
-    set_mode(&config, 0o600);
-
-    let output = run_serve_until_exit(&config, Duration::from_secs(5));
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(stderr.trim(), "server initialization failed");
-    assert!(!stderr.contains(&missing_path.to_string_lossy().to_string()));
-    assert!(!stderr.contains(OWNER_KEY));
-    assert!(
-        TcpListener::bind(client).is_ok(),
-        "private bind was not opened"
-    );
-    assert!(
-        TcpListener::bind(admin).is_ok(),
-        "admin bind was not opened"
-    );
-    upstream.assert_no_request();
 }
 
 #[cfg(unix)]
@@ -726,7 +649,10 @@ fn public_serve_enforces_exact_routes_and_drains_both_client_listeners() {
     );
     assert_eq!(chat_request(public, OWNER_KEY, "fixture-chat").status, 403);
     assert_eq!(transcription_request(public, OWNER_KEY).status, 403);
-    assert_eq!(chat_request(public, OWNER_KEY, "fixture-codex").status, 403);
+    assert_eq!(
+        chat_request(public, OWNER_KEY, "fixture-chatgpt").status,
+        403
+    );
     assert_eq!(admin_request(public, "/live").status, 403);
     assert_eq!(
         client_path_request(public, "/live", Some(OWNER_KEY)).status,
@@ -763,8 +689,14 @@ fn public_serve_enforces_exact_routes_and_drains_both_client_listeners() {
     assert!(transcription.body.contains("fixture response"));
     assert!(upstream.next_request().contains("fixture-asr-upstream"));
 
-    assert_eq!(chat_request(public, OWNER_KEY, "fixture-codex").status, 403);
-    assert_eq!(chat_request(client, OWNER_KEY, "fixture-codex").status, 503);
+    assert_eq!(
+        chat_request(public, OWNER_KEY, "fixture-chatgpt").status,
+        403
+    );
+    assert_eq!(
+        chat_request(client, OWNER_KEY, "fixture-chatgpt").status,
+        503
+    );
     upstream.assert_no_request();
     assert_eq!(admin_request(client, "/live").status, 404);
     assert_eq!(admin_request(public, "/live").status, 403);

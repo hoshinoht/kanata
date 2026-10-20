@@ -51,19 +51,21 @@ upstream_id = "qwen3:0.6b"
 adapter_id = "anthropic"
 upstream_id = "claude-opus-5-5"
 default_effort = "medium"
-efforts = ["low", "high"]
-[[application_keys]]
-id = "mixed"
-secret_ref = "env:MIXED_KEY"
-permissions = [
-  {{ model_alias = "local", operation = "chat" }},
-  {{ model_alias = "claude", operation = "chat" }},
-]
-[[application_keys]]
-id = "public-only"
-secret_ref = "env:PUBLIC_ONLY_KEY"
-permissions = [{{ model_alias = "local", operation = "chat" }}]"#
+efforts = ["low", "high"]"#
         ),
+        &[
+            scratch::key_record(
+                "mixed",
+                "mixed-key",
+                "permissions = [\n  { model_alias = \"local\", operation = \"chat\" },\n  { model_alias = \"claude\", operation = \"chat\" },\n]",
+            ),
+            scratch::key_record(
+                "public-only",
+                "public-only-key",
+                "permissions = [{ model_alias = \"local\", operation = \"chat\" }]",
+            ),
+        ]
+        .concat(),
     )
 }
 
@@ -177,14 +179,16 @@ fn config_rejects_publication_and_invalid_adapters() {
 
 #[test]
 fn public_plane_drops_anthropic_routes_adapters_and_scoped_keys() {
-    let file = scratch::TempFile::new("anthropic", "toml", source(""));
+    let dir = scratch::config_dir("anthropic", &source(""));
+    let file = dir.join("config.toml");
+    let file = file.to_str().unwrap();
     let check = |plane: &str| {
-        kanata::cli::run(["check", "--config", file.as_str(), "--plane", plane].map(str::to_owned))
+        kanata::cli::run(["check", "--config", file, "--plane", plane].map(str::to_owned))
     };
     for plane in ["private", "public"] {
         assert_eq!(check(plane), Ok(Some("configuration valid".to_owned())));
     }
-    let (_, public) = kanata::config::load_plane(file.path(), Plane::Public).unwrap();
+    let (_, public) = kanata::config::load_plane(file, Plane::Public).unwrap();
     assert!(
         public
             .adapters()
@@ -197,15 +201,11 @@ fn public_plane_drops_anthropic_routes_adapters_and_scoped_keys() {
         .map(|route| route.identity().selector.model_alias.0.as_str())
         .collect();
     assert_eq!(aliases, ["local"]);
-    let keys: Vec<_> = public
-        .application_keys()
-        .iter()
-        .map(|key| key.id())
-        .collect();
+    let keys: Vec<_> = public.keys().iter().map(|key| key.id()).collect();
     assert_eq!(keys, ["public-only"]);
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_kanata"))
-        .args(["routes", "--config", file.as_str()])
+        .args(["routes", "--config", file])
         .output()
         .unwrap();
     assert!(output.status.success());

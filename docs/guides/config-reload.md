@@ -31,14 +31,14 @@ A config bind-mounted as a single file must expose the updated bytes inside the 
 - Change upstream model IDs, backend URLs, route capabilities, output caps and route options.
 - Add or remove adapters and change their supported operations or credentials.
 - Change the public publication allowlist.
-- Change inline key grants, or apply a matching keys-file update with the new routes.
+- Apply a matching keys-file update with the new routes.
 
 Removing a route also requires removing its active key grants. Save the updated config and keys before sending the signal. A keys-file poll during that transition can reject the intermediate file and retain old grants until the complete config reload succeeds.
 
 These settings require a process restart:
 
 - Listener addresses or ports, process plane, global limits, timeouts and logging settings.
-- Key source type, keys-file path and usage directory.
+- Keys-file path and usage directory.
 - Authentication store settings and state directories.
 - Concurrency limits or circuit-breaker policies for an existing adapter ID, including an ID removed and later restored.
 

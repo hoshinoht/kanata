@@ -97,43 +97,33 @@ fn response_budget_validation_remains_explicit() {
 }
 
 #[test]
-fn codex_account_header_is_validated_sensitive_and_not_arbitrary() {
+fn provider_header_is_validated_sensitive_and_not_arbitrary() {
+    let headers = |value: &str| {
+        CredentialHeader::authorization_with_headers(
+            "Bearer TEST_ONLY_ACCESS".into(),
+            &[("x-provider-account", value)],
+        )
+    };
     for value in ["", "  ", "bad\r\nX-Injected: yes", "bad\u{007f}", "é"] {
-        assert!(matches!(
-            CredentialHeader::authorization_with_chatgpt_account_id(
-                "Bearer TEST_ONLY_ACCESS".into(),
-                value,
-            ),
-            Err(error) if error.kind == ErrorKind::Internal
-        ));
+        assert!(matches!(headers(value), Err(error) if error.kind == ErrorKind::Internal));
     }
     assert!(matches!(
-        CredentialHeader::authorization_with_chatgpt_account_id(
-            "Bearer TEST_ONLY_ACCESS".into(),
-            &"x".repeat(4 * 1024 + 1),
-        ),
+        headers(&"x".repeat(4 * 1024 + 1)),
         Err(error) if error.kind == ErrorKind::Internal
     ));
 
-    let endpoint = Endpoint::new(&["backend-api", "codex", "responses"])
-        .unwrap_or_else(|_| panic!("endpoint"));
+    let endpoint = Endpoint::new(&["v1", "responses"]).unwrap_or_else(|_| panic!("endpoint"));
     let request = TransportRequest::json(
         Method::POST,
         endpoint,
         &json!({"model":"fixture-model"}),
-        Some(
-            CredentialHeader::authorization_with_chatgpt_account_id(
-                "Bearer TEST_ONLY_ACCESS".into(),
-                "TEST_ONLY_ACCOUNT_ID",
-            )
-            .expect("Codex credential headers"),
-        ),
+        Some(headers("TEST_ONLY_ACCOUNT_ID").expect("credential headers")),
         Some(Accept::EventStream),
         1024,
         COMPLETE_RESPONSE_BYTES,
     )
     .expect("request");
-    let origin = Origin::pinned_https("chatgpt.com").expect("pinned origin");
+    let origin = Origin::pinned_https("api.openai.com").expect("pinned origin");
     let uri = origin.uri(&request.endpoint).expect("uri");
     let request = build_request(&origin, uri, request).expect("request headers");
 
@@ -142,11 +132,11 @@ fn codex_account_header_is_validated_sensitive_and_not_arbitrary() {
         "Bearer TEST_ONLY_ACCESS"
     );
     assert_eq!(
-        request.headers()["chatgpt-account-id"],
+        request.headers()["x-provider-account"],
         "TEST_ONLY_ACCOUNT_ID"
     );
     assert!(request.headers()["authorization"].is_sensitive());
-    assert!(request.headers()["chatgpt-account-id"].is_sensitive());
+    assert!(request.headers()["x-provider-account"].is_sensitive());
     assert!(
         request.headers()["user-agent"]
             .to_str()

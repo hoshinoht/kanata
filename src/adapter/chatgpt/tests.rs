@@ -204,18 +204,28 @@ fn config_pins_origin_capabilities_and_public_boundary() {
 
 #[test]
 fn public_process_excludes_keys_with_mixed_private_provider_scopes() {
+    let keys = std::env::temp_dir().join(format!(
+        "kanata-chatgpt-keys-{}-{}.toml",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(
+        &keys,
+        include_str!("../../../tests/fixtures/config/example-keys.toml")
+            .replace("owner = true", "owner = false"),
+    )
+    .unwrap();
     let text = include_str!("../../../tests/fixtures/config/example.toml")
-        .replace("[codex_auth]\nstore = \"keyring\"", "[chatgpt_auth]")
-        .replace("kind = \"codex\"", "kind = \"chatgpt\"")
-        .replace("https://chatgpt.invalid/backend-api/codex", "https://api.openai.com/v1")
-        .replace("owner = true", "owner = false")
+        .replace("\"example-keys.toml\"", &format!("{:?}", keys.display().to_string()))
         .replace("[publication]", "[listeners.public]\nbind = \"172.30.0.3\"\nport = 8081\n\n[publication]\npublic_routes = [{ model_alias = \"local-chat\", operation = \"chat\" }]");
-    let full = load(&text).unwrap();
-    assert_eq!(full.application_keys().len(), 1);
+    let full = load(&text);
+    std::fs::remove_file(&keys).unwrap();
+    let full = full.unwrap();
+    assert_eq!(full.keys().len(), 1);
     let public = full.for_plane(crate::config::Plane::Public).unwrap();
     assert_eq!(public.routes().len(), 1);
     assert!(public.chatgpt_auth().is_none());
-    assert!(public.application_keys().is_empty());
+    assert!(public.keys().is_empty());
     assert!(
         public
             .adapters()
@@ -342,10 +352,6 @@ fn reasoning_config_requires_explicit_matching_private_route_pins() {
         pinned.replace(
             "reasoning_effort = \"medium\"",
             "reasoning_effort = \"ultra\"",
-        ),
-        pinned.replace(
-            "reasoning_effort = \"medium\"",
-            "codex_reasoning_effort = \"medium\"",
         ),
     ] {
         assert!(load(&changed).is_err());

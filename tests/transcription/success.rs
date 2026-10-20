@@ -13,7 +13,7 @@ use kanata::{
 };
 
 use crate::support::{
-    AUDIO, MODEL, MULTIPART_CONTENT_TYPE, Part, RecordingAdapter, Resolver, multipart_with_file,
+    AUDIO, MODEL, MULTIPART_CONTENT_TYPE, Part, RecordingAdapter, multipart_with_file,
     public_config, response_body, server_from_config, transcription_request,
 };
 
@@ -32,13 +32,9 @@ async fn multipart_preserves_fragmented_binary_file_and_exact_route() {
             ..Capabilities::default()
         },
     });
-    let server = TwoPlaneServer::from_validated_with_adapters(
-        &config,
-        &Resolver,
-        Readiness::new(true),
-        vec![adapter],
-    )
-    .expect("server");
+    let server =
+        TwoPlaneServer::from_validated_with_adapters(&config, Readiness::new(true), vec![adapter])
+            .expect("server");
     let boundary = "quoted-boundary";
     let mut body = Vec::new();
     body.extend_from_slice(b"--quoted-boundary\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nprivate-transcribe\r\n");

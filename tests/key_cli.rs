@@ -10,7 +10,7 @@ use std::process::{Command, Output};
 
 use sha2::{Digest, Sha256};
 
-use key_fixtures::{EXAMPLE_INLINE_KEY, keyed_example};
+use key_fixtures::keyed_example;
 use scratch::ScratchDir;
 
 const KEYS_SECTION: &str = "[keys]\nfile = \"keys/keys.toml\"\nusage_dir = \"state\"\n";
@@ -28,7 +28,7 @@ fn embedding_scopes_can_be_created_removed_and_added_without_chat_access() {
     );
     let config = kanata::config::load(scratch.config()).expect("embedding config");
     assert_eq!(
-        config.application_keys()[0].permissions()[0].operation,
+        config.keys()[0].permissions()[0].operation,
         kanata::core::Operation::Embeddings
     );
     let denied = scratch.key(&["edit", "search", "--add-chat", "local-embed"]);
@@ -48,7 +48,7 @@ fn embedding_scopes_can_be_created_removed_and_added_without_chat_access() {
     let added = scratch.key(&["edit", "search", "--add-embeddings", "local-embed"]);
     assert!(added.status.success(), "{}", stderr(&added));
     let config = kanata::config::load(scratch.config()).expect("embedding config");
-    assert_eq!(config.application_keys()[0].permissions().len(), 2);
+    assert_eq!(config.keys()[0].permissions().len(), 2);
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn speech_scopes_are_separate_and_support_add_remove() {
     );
     let config = kanata::config::load(scratch.config()).unwrap();
     assert!(
-        config.application_keys()[0]
+        config.keys()[0]
             .permissions()
             .iter()
             .all(|scope| scope.operation == kanata::core::Operation::Speech)
@@ -88,9 +88,7 @@ fn speech_scopes_are_separate_and_support_add_remove() {
             .success()
     );
     assert_eq!(
-        kanata::config::load(scratch.config())
-            .unwrap()
-            .application_keys()[0]
+        kanata::config::load(scratch.config()).unwrap().keys()[0]
             .permissions()
             .len(),
         2
@@ -114,9 +112,7 @@ fn daily_quota_flags_validate_preserve_rotation_and_clear_independently() {
         ],
     );
     let quota = || {
-        kanata::config::load(scratch.config())
-            .unwrap()
-            .application_keys()[0]
+        kanata::config::load(scratch.config()).unwrap().keys()[0]
             .daily_quota()
             .unwrap()
     };
@@ -138,9 +134,7 @@ fn daily_quota_flags_validate_preserve_rotation_and_clear_independently() {
     let cleared = scratch.key(&["edit", "metered", "--clear-quota"]);
     assert!(cleared.status.success(), "{}", stderr(&cleared));
     assert!(
-        kanata::config::load(scratch.config())
-            .unwrap()
-            .application_keys()[0]
+        kanata::config::load(scratch.config()).unwrap().keys()[0]
             .daily_quota()
             .is_none()
     );
@@ -421,7 +415,7 @@ fn new_stores_only_the_digest_in_private_files_and_the_server_loads_it() {
     assert_eq!(audit[0]["owner"], false);
 
     let config = kanata::config::load(scratch.config()).expect("config loads");
-    let loaded = &config.application_keys()[0];
+    let loaded = &config.keys()[0];
     assert_eq!(loaded.id(), "t");
     assert_eq!(loaded.permissions().len(), 1);
 }
@@ -710,12 +704,12 @@ fn edit_changes_metadata_and_guards_the_public_plane() {
     assert_eq!(line["changes"]["added"][0]["model_alias"], "private-chat");
 
     assert_failed(
-        &scratch.key(&["edit", "t", "--add-chat", "codex-chat"]),
+        &scratch.key(&["edit", "t", "--add-chat", "chatgpt-chat"]),
         "--force",
     );
     assert!(
         scratch
-            .key(&["edit", "t", "--add-chat", "codex-chat", "--force"])
+            .key(&["edit", "t", "--add-chat", "chatgpt-chat", "--force"])
             .status
             .success()
     );
@@ -728,7 +722,7 @@ fn edit_changes_metadata_and_guards_the_public_plane() {
             "--remove-chat",
             "private-chat",
             "--remove-chat",
-            "codex-chat",
+            "chatgpt-chat",
         ]),
         "at least one scope",
     );
@@ -772,117 +766,12 @@ fn routes_lists_aliases_with_public_classification_only() {
         row("private-transcribe"),
         ["private-transcribe", "transcription", "vllm", "no"]
     );
-    assert_eq!(row("codex-chat"), ["codex-chat", "chat", "codex", "never"]);
-    for secret in ["llama3.2", "whisper-1", "gpt-5-codex", ".invalid", "http"] {
-        assert!(!text.contains(secret), "{secret}");
-    }
-}
-
-#[test]
-fn migrate_moves_digest_keys_and_refuses_references() {
-    let refs = Scratch::with(|config| config.to_owned() + "\n");
-    let config_bytes = fs::read(refs.config()).expect("config");
-    assert_failed(
-        &kanata(&["key", "migrate", "--config", &refs.config()]),
-        "personal-client",
-    );
-    assert_eq!(fs::read(refs.config()).expect("config"), config_bytes);
-
-    let owner = digest_ref("kanata_sk_SYNTHETIC_owner");
-    let friend = digest_ref("kanata_sk_SYNTHETIC_friend");
-    let inline = format!(
-        "[[application_keys]]\nid = \"owner\"\nsecret_ref = \"{owner}\"\nowner = true\nmax_in_flight = 2\nrate_limit = {{ requests = 5, per_ms = 1000 }}\npermissions = [{{ model_alias = \"codex-chat\", operation = \"chat\" }}]\n\n\
-         [[application_keys]]\nid = \"friend\"\nsecret_ref = \"{friend}\"\npermissions = [{{ model_alias = \"local-chat\", operation = \"chat\" }}]\n"
-    );
-    let scratch = Scratch::with(|config| config.replace(EXAMPLE_INLINE_KEY, &inline));
-    let config_bytes = fs::read(scratch.config()).expect("config");
-    let before = kanata::config::load(scratch.config()).expect("inline config");
-
-    let output = kanata(&["key", "migrate", "--config", &scratch.config()]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert!(stdout(&output).contains("file = \"keys/keys.toml\""));
-    assert_eq!(fs::read(scratch.config()).expect("config"), config_bytes);
-    assert_eq!(scratch.audit().len(), 2);
-
-    fs::write(
-        scratch.config(),
-        String::from_utf8(config_bytes.clone())
-            .expect("utf8")
-            .replace(&inline, "[keys]\nfile = \"keys/keys.toml\"\n"),
-    )
-    .expect("config writes");
-    let after = kanata::config::load(scratch.config()).expect("migrated config");
     assert_eq!(
-        after.application_keys().len(),
-        before.application_keys().len()
+        row("chatgpt-chat"),
+        ["chatgpt-chat", "chat", "chatgpt", "never"]
     );
-    for (old, new) in before
-        .application_keys()
-        .iter()
-        .zip(after.application_keys())
-    {
-        assert_eq!(old.id(), new.id());
-        assert_eq!(old.is_owner(), new.is_owner());
-        assert_eq!(old.secret_ref(), new.secret_ref());
-        assert_eq!(old.permissions(), new.permissions());
-        assert_eq!(old.max_in_flight(), new.max_in_flight());
-        assert_eq!(old.rate_limit(), new.rate_limit());
-        assert_eq!(new.expires_at(), None);
-    }
-
-    fs::write(scratch.config(), &config_bytes).expect("restore inline config");
-    assert_failed(
-        &kanata(&["key", "migrate", "--config", &scratch.config()]),
-        "already has keys",
-    );
-}
-
-#[test]
-fn migrate_resolves_a_relative_keys_path_for_the_snippet() {
-    let friend = digest_ref("kanata_sk_SYNTHETIC_friend");
-    let inline = format!(
-        "[[application_keys]]\nid = \"friend\"\nsecret_ref = \"{friend}\"\npermissions = [{{ model_alias = \"local-chat\", operation = \"chat\" }}]\n"
-    );
-    let scratch = Scratch::with(|config| config.replace(EXAMPLE_INLINE_KEY, &inline));
-    let inline_config = fs::read_to_string(scratch.config()).expect("config");
-    fs::create_dir(scratch.0.join("conf")).expect("conf dir");
-    fs::write(scratch.0.join("conf/config.toml"), &inline_config).expect("config writes");
-
-    // cwd is the scratch root, not the config dir.
-    for (keys_arg, expected) in [
-        ("conf/k/keys.toml", "k/keys.toml".to_owned()),
-        (
-            "outside/keys.toml",
-            fs::canonicalize(&scratch.0)
-                .expect("canonical scratch")
-                .join("outside/keys.toml")
-                .display()
-                .to_string(),
-        ),
-    ] {
-        fs::write(scratch.0.join("conf/config.toml"), &inline_config).expect("reset config");
-        let output = Command::new(env!("CARGO_BIN_EXE_kanata"))
-            .current_dir(&scratch.0)
-            .args([
-                "key",
-                "migrate",
-                "--config",
-                "conf/config.toml",
-                "--keys",
-                keys_arg,
-            ])
-            .output()
-            .expect("binary runs");
-        assert!(output.status.success(), "{}", stderr(&output));
-        let snippet = format!("file = \"{expected}\"");
-        assert!(stdout(&output).contains(&snippet), "{}", stdout(&output));
-        fs::write(
-            scratch.0.join("conf/config.toml"),
-            inline_config.replace(&inline, &format!("[keys]\n{snippet}\n")),
-        )
-        .expect("config writes");
-        let loaded = kanata::config::load(scratch.0.join("conf/config.toml")).expect("loads");
-        assert_eq!(loaded.application_keys()[0].id(), "friend");
+    for secret in ["llama3.2", "whisper-1", "gpt-5", ".invalid", "http"] {
+        assert!(!text.contains(secret), "{secret}");
     }
 }
 

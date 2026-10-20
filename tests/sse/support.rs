@@ -143,13 +143,9 @@ fn server_with_options(
         },
     });
     let probe = adapter.probe.clone();
-    let server = TwoPlaneServer::from_validated_with_adapters(
-        &config,
-        &crate::gateway::Resolver,
-        Readiness::new(true),
-        vec![adapter],
-    )
-    .expect("synthetic server");
+    let server =
+        TwoPlaneServer::from_validated_with_adapters(&config, Readiness::new(true), vec![adapter])
+            .expect("synthetic server");
     (server, probe)
 }
 

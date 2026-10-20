@@ -17,7 +17,7 @@ You should get an acknowledgement within a week. Fixes are released as soon as p
 
 ## In scope
 
-- Authentication bypass or key-scope escalation, including reaching a private-only provider (Codex, ChatGPT or CLIProxyAPI) through the public listener.
+- Authentication bypass or key-scope escalation, including reaching a private-only provider (ChatGPT, CLIProxyAPI or Anthropic) through the public listener.
 - Leaking keys, tokens, prompts or bodies through logs, metrics or error responses.
 - Leaking configured model inventory through the public guide, broadening its exact unauthenticated `GET`/`HEAD /v1` and `/v1/` exception, or persisting bearer keys in its browser storage. The generic reference page is intentionally public; personalized model discovery remains authenticated.
 - Request validation or bounds bypasses that cause unbounded resource use.
@@ -28,9 +28,9 @@ You should get an acknowledgement within a week. Fixes are released as soon as p
 ## Out of scope
 
 - Weaknesses of the host, Docker daemon, firewall, Tailscale or Cloudflare configuration you operate. See the host-isolation notes in the [README](README.md#security).
-- The documented residual risks of the public profile: `kanata-public` shares the host, Docker daemon and backends with the private container, and `--plane all` runs both listeners in one process with the Codex credentials.
+- The documented residual risks of the public profile: `kanata-public` shares the host, Docker daemon and backends with the private container, and `--plane all` runs both listeners in one process with the private-only provider credentials.
 - Documented key-lifecycle residuals: the public container can read key digests and `audit.jsonl` (key ids, local usernames) through the read-only keys mount; with `--plane all` an expired owner key gets `401 key_expired` on the public listener (visible only to its holder); revoked records count toward the 1000-record cap; a revoked key's request already in progress (including a stream) runs to completion.
-- Behaviour of upstream providers, including changes to ChatGPT's private Codex backend.
+- Behaviour of upstream providers.
 
 ## Sign in with ChatGPT
 
@@ -38,4 +38,4 @@ The `chatgpt` provider is private-only. Its authentication commands run on the h
 
 ## CLIProxyAPI
 
-The `cliproxy` provider (a local CLIProxyAPI in front of account sign-ins) is private-only on the same terms as ChatGPT and Codex: listing one of its routes in `publication.public_routes` is a config error, and the public process loads neither the adapter, its CLIProxyAPI client key, nor any application key holding one of its scopes. It requires `trust_zone = "external"` and a `secret_ref`, sent only over HTTPS (optionally pinned with `ca_file`) or plain HTTP to a literal loopback IP. CLIProxyAPI itself, and the account credentials it holds, are operated by you and out of scope.
+The `cliproxy` provider (a local CLIProxyAPI in front of account sign-ins) is private-only on the same terms as ChatGPT and Anthropic: listing one of its routes in `publication.public_routes` is a config error, and the public process loads neither the adapter, its CLIProxyAPI client key, nor any application key holding one of its scopes. It requires `trust_zone = "external"` and a `secret_ref`, sent only over HTTPS (optionally pinned with `ca_file`) or plain HTTP to a literal loopback IP. CLIProxyAPI itself, and the account credentials it holds, are operated by you and out of scope.

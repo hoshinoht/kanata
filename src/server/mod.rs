@@ -21,10 +21,8 @@ use serde_json::json;
 use tower::{ServiceBuilder, ServiceExt, util::BoxCloneSyncService};
 
 use crate::adapter::Adapter;
-use crate::auth::{
-    ApplicationAuth, AuthBuildError, AuthContext, AuthError, KeyHandle, SecretResolver,
-};
-use crate::config::{KeySource, Plane, ValidatedConfig};
+use crate::auth::{ApplicationAuth, AuthBuildError, AuthContext, AuthError, KeyHandle};
+use crate::config::{Plane, ValidatedConfig};
 use crate::core::RouteSelector;
 use crate::keys::usage::UsageHandle;
 use crate::routing::{Registry, admission::Admission};
@@ -213,40 +211,35 @@ type PublicClientService = BoxCloneSyncService<Request<Body>, Response, Infallib
 impl TwoPlaneServer {
     pub fn from_validated(
         config: &ValidatedConfig,
-        resolver: &impl SecretResolver,
         readiness: Readiness,
     ) -> Result<Self, ServerBuildError> {
-        Self::build(config, resolver, readiness, Router::new(), Vec::new())
+        Self::build(config, readiness, Router::new(), Vec::new())
     }
 
     pub fn from_validated_with_adapters(
         config: &ValidatedConfig,
-        resolver: &impl SecretResolver,
         readiness: Readiness,
         adapters: Vec<Arc<dyn Adapter>>,
     ) -> Result<Self, ServerBuildError> {
-        Self::build(config, resolver, readiness, Router::new(), adapters)
+        Self::build(config, readiness, Router::new(), adapters)
     }
 
     #[allow(dead_code)]
     pub(crate) fn from_validated_with_client_routes(
         config: &ValidatedConfig,
-        resolver: &impl SecretResolver,
         readiness: Readiness,
         client_routes: Router<ClientState>,
     ) -> Result<Self, ServerBuildError> {
-        Self::build(config, resolver, readiness, client_routes, Vec::new())
+        Self::build(config, readiness, client_routes, Vec::new())
     }
 
     fn build(
         config: &ValidatedConfig,
-        resolver: &impl SecretResolver,
         readiness: Readiness,
         client_routes: Router<ClientState>,
         adapters: Vec<Arc<dyn Adapter>>,
     ) -> Result<Self, ServerBuildError> {
-        let auth =
-            ApplicationAuth::from_validated(config, resolver).map_err(ServerBuildError::Auth)?;
+        let auth = ApplicationAuth::from_validated(config).map_err(ServerBuildError::Auth)?;
         let plan = ServerPlan::from_validated(config).map_err(ServerBuildError::Plan)?;
         let bound = bind_adapters(config, adapters)?;
         let registry = Arc::new(Registry::from_validated(config));
@@ -257,14 +250,11 @@ impl TwoPlaneServer {
         let telemetry = Arc::new(crate::telemetry::Telemetry::new());
         let keys = KeyHandle::new(auth);
         let usage = Arc::new(OnceLock::new());
-        let usage_paths = match config.key_source() {
-            KeySource::File {
-                path,
-                usage_dir: Some(usage_dir),
-                ..
-            } => Some((usage_dir.clone(), path.clone())),
-            _ => None,
-        };
+        let usage_paths = config
+            .key_source()
+            .usage_dir
+            .as_ref()
+            .map(|usage_dir| (usage_dir.clone(), config.key_source().path.clone()));
         let uploads = Arc::new(crate::routing::uploads::Uploads::new(
             config.limits().max_uploads(),
             config.limits().max_buffered_bytes(),
@@ -595,7 +585,7 @@ async fn list_models(auth: Authenticated, State(state): State<ClientState>) -> R
             .or_default()
             .push(route);
     }
-    // Capacity settings are published to private clients only.
+    // Capacity settings and live load are published to private clients only.
     let publish_admission = state.listener() == crate::telemetry::Listener::Private;
     let limits = state.admission().limits();
     let data: Vec<_> = aliases
@@ -638,16 +628,20 @@ async fn list_models(auth: Authenticated, State(state): State<ClientState>) -> R
                 });
             }
             if publish_admission {
-                let adapter = routes
+                let load = routes
                     .iter()
                     .find(|route| route.identity.selector.operation == crate::core::Operation::Chat)
                     .or(routes.first())
-                    .and_then(|route| state.admission().adapter_max_in_flight(&route.adapter_id));
+                    .and_then(|route| state.admission().route_load(route));
                 kanata["admission"] = json!({
                     "max_in_flight": limits.max_in_flight,
                     "max_queue": limits.max_queue,
                     "queue_ms": limits.queue_ms,
-                    "adapter_max_in_flight": adapter,
+                    "adapter_max_in_flight": load.and_then(|load| load.adapter_max_in_flight),
+                    "in_flight": load.map(|load| load.in_flight),
+                    "queued": load.map(|load| load.queued),
+                    "adapter_in_flight": load.and_then(|load| load.adapter_in_flight),
+                    "breaker": load.map(|load| load.breaker.as_str()),
                 });
             }
             json!({

@@ -1,6 +1,6 @@
 # Public ingress through a Cloudflare tunnel
 
-Public clients reach Kanata's **public listener** through a remotely managed Cloudflare tunnel. The public listener runs in its own `kanata-public` container (`kanata serve --plane public`), started from the same image and config. That process loads only the routes in `public_routes`, the adapters they use, and keys without Codex scopes trimmed to their public permissions. It never loads the owner key or any key with Codex scopes, so use a separate non-owner key for public routes (`kanata key new`). It has no Codex adapter, credentials or volume, and no private listener. The private `kanata` container runs `--plane private` and is not on the public network.
+Public clients reach Kanata's **public listener** through a remotely managed Cloudflare tunnel. The public listener runs in its own `kanata-public` container (`kanata serve --plane public`), started from the same image and config. That process loads only the routes in `public_routes`, the adapters they use, and keys without private-only provider scopes (ChatGPT, CLIProxyAPI, Anthropic), trimmed to their public permissions. It never loads the owner key or any key with such scopes, so use a separate non-owner key for public routes (`kanata key new`). It has no private-only adapters or credentials, and no private listener. The private `kanata` container runs `--plane private` and is not on the public network.
 
 Nothing is host-published: `cloudflared` makes outbound connections to Cloudflare, and the tunnel forwards to `172.29.0.2:8081` on the internal `kanata_public_origin` network, which only `kanata-public` and `cloudflared` join.
 
@@ -10,7 +10,7 @@ The examples use `api.example.com`; replace it with your own hostname. Pick a **
 
 - `GET`/`HEAD` at exactly `/v1` or `/v1/` serve the generic API guide without a key. Every other forwarded request without a valid key gets **403** before routing. The guide’s optional key entry requests `/v1/models` with bearer authentication; it never exposes the complete route inventory.
 - A valid key sees and calls only models that are both in `publication.public_routes` **and** in that key's permissions. Everything else gets 403. Unknown paths get 404.
-- Codex can never be public, even with the owner key. `kanata check` rejects Codex entries in `public_routes`.
+- Private-only providers (ChatGPT, CLIProxyAPI, Anthropic) can never be public, even with the owner key. `kanata check` rejects their routes in `public_routes`.
 - Cloudflare Access is optional extra protection; it never replaces bearer keys.
 - Responses and `/v1/models` show only the alias, never the upstream model id. To keep the model private, give public routes an opaque alias (e.g. `kanata-mini`) with its own `[[routes]]` entry. The model may still name itself when asked.
 
@@ -61,7 +61,7 @@ kanata key new --config config/config.toml --id alice --chat qwen3-0.6b --expire
 3. **Rotate:** `kanata key rotate alice --config config/config.toml --expires 30 --key-out ...`. **Change scopes or expiry** without a new secret: `kanata key edit alice --config config/config.toml --add-chat <alias>`; adding a non-public alias to a public key needs `--force`.
 4. An expired key gets `401 key_expired`; check expiries with `kanata key list --config config/config.toml`.
 
-Scope these keys only to public-allowed, non-Codex aliases. A key also works on the private route for anyone who can reach it.
+Scope these keys only to public-allowed aliases, never private-only ones. A key also works on the private route for anyone who can reach it.
 
 ## Verify
 
@@ -80,4 +80,4 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "$H" https://api.example.com/nope   
 
 ## Residual risk
 
-The public process holds no Codex credentials and never accepts the owner key. It still mounts the whole read-only config file, so a compromised container could read key ids and digests, private route names and adapter URLs (but no plaintext keys or Codex credentials). It also shares the host, the Docker daemon and backends such as Ollama with the private one. Docker networks alone don't isolate containers from each other or from the host (on macOS/OrbStack, bridges can reach each other), so a compromised public container could still reach the private listener's address, where it would need a valid key. A public route on an adapter that needs a secret (e.g. OpenRouter) needs that secret mounted into `kanata-public` too; without it, `kanata-public` fails to start. Expose publicly only models and keys whose compromise you'd accept.
+The public process holds no private-only provider credentials and never accepts the owner key. It still mounts the whole read-only config file, so a compromised container could read key ids and digests, private route names and adapter URLs (but no plaintext keys or provider credentials). It also shares the host, the Docker daemon and backends such as Ollama with the private one. Docker networks alone don't isolate containers from each other or from the host (on macOS/OrbStack, bridges can reach each other), so a compromised public container could still reach the private listener's address, where it would need a valid key. A public route on an adapter that needs a secret (e.g. OpenRouter) needs that secret mounted into `kanata-public` too; without it, `kanata-public` fails to start. Expose publicly only models and keys whose compromise you'd accept.

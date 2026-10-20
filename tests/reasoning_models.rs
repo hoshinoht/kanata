@@ -15,52 +15,70 @@ use support::{
     response_json, server_with,
 };
 
+/// The schema fixture's ChatGPT route as `reasoning-model` with `reasoning_control`, a base
+/// pinned to medium, `:low`/`:medium`/`:high` variants, a public listener, and one owner key
+/// (secret `test-key`) granted exactly `permissions`.
 fn source(permissions: &[&str]) -> String {
     let mut text = std::fs::read_to_string("tests/fixtures/config/example.toml").unwrap();
-    text = text.replace("codex-chat", "reasoning-model");
-    let marker = "id = \"codex-private\"";
+    text = text.replace("chatgpt-chat", "reasoning-model").replace(
+        "model_alias = \"reasoning-model\"\noperation",
+        "model_alias = \"reasoning-model\"\nreasoning_effort = \"medium\"\noperation",
+    );
+    let marker = "id = \"chatgpt-private\"";
     let start = text.find(marker).unwrap();
     let insert = text[start..].find("function_tools = true").unwrap() + start;
     text.insert_str(insert, "reasoning_control = true\n");
     let mut variants = String::new();
     for effort in ["low", "medium", "high"] {
-        variants.push_str(&format!(
-            r#"
-[[routes]]
-id = "reasoning-{effort}"
-model_alias = "reasoning-model:{effort}"
-operation = "chat"
-adapter_id = "codex-private"
-upstream_id = "gpt-5-codex"
-codex_reasoning_effort = "{effort}"
-requires_streaming_chat = true
-requires_function_tools = true
-
-"#
-        ));
+        variants.push_str(&variant(effort));
     }
-    let insert = text.find("[[application_keys]]").unwrap();
+    let insert = text.find("[keys]").unwrap();
     text.insert_str(insert, &variants);
-    let start = text.find("permissions = [").unwrap();
-    let end = text[start..].find("\n]").unwrap() + start + 2;
+    text = text
+        .replace(
+            "[keys]\nfile = \"example-keys.toml\"\n",
+            scratch::KEYS_SECTION,
+        )
+        .replace(
+            "[listeners.admin]",
+            "[listeners.public]\nbind = \"172.30.0.3\"\nport = 8081\n\n[listeners.admin]",
+        );
     let grants = permissions
         .iter()
         .map(|alias| format!("{{ model_alias = \"{alias}\", operation = \"chat\" }}"))
         .collect::<Vec<_>>()
         .join(", ");
-    text.replace_range(start..end, &format!("permissions = [{grants}]"));
-    text = text.replace(
-        "[listeners.admin]",
-        "[listeners.public]\nbind = \"172.30.0.3\"\nport = 8081\n\n[listeners.admin]",
+    let key = scratch::key_record(
+        "personal-client",
+        scratch::TEST_KEY,
+        &format!("owner = true\npermissions = [{grants}]"),
     );
-    text
+    format!("{text}{}{key}", scratch::KEYS_FILE_MARKER)
+}
+
+/// One pinned `reasoning-model:{effort}` route on the ChatGPT adapter.
+fn variant(effort: &str) -> String {
+    format!(
+        r#"
+[[routes]]
+id = "reasoning-{effort}"
+model_alias = "reasoning-model:{effort}"
+operation = "chat"
+adapter_id = "chatgpt-private"
+upstream_id = "gpt-5"
+reasoning_effort = "{effort}"
+requires_streaming_chat = true
+requires_function_tools = true
+
+"#
+    )
 }
 
 fn server(permissions: &[&str]) -> support::ServerWithRequests {
     let config = load(&source(permissions)).unwrap();
     let specs = vec![adapter_spec(
-        "codex-private",
-        capabilities(&config, "codex-private"),
+        "chatgpt-private",
+        capabilities(&config, "chatgpt-private"),
         chat_outcome("fixture answer"),
     )];
     server_with(&config, specs)
@@ -188,14 +206,15 @@ async fn default_and_duplicate_medium_use_authorized_exact_routes() {
 fn reasoning_families_reject_conflicting_backends_and_capabilities() {
     let base = source(&["reasoning-model:low"]);
     for replacement in [
-        "upstream_id = \"different-upstream\"\ncodex_reasoning_effort = \"low\"",
-        "upstream_id = \"gpt-5-codex\"\ncontext_tokens = 4096\ncodex_reasoning_effort = \"low\"",
-        "upstream_id = \"gpt-5-codex\"\ncodex_reasoning_summary = \"auto\"\ncodex_reasoning_effort = \"low\"",
+        "upstream_id = \"different-upstream\"\nreasoning_effort = \"low\"",
+        "upstream_id = \"gpt-5\"\ncontext_tokens = 4096\nreasoning_effort = \"low\"",
+        "upstream_id = \"gpt-5\"\nreasoning_summary = \"auto\"\nreasoning_effort = \"low\"",
     ] {
         let text = base.replace(
-            "upstream_id = \"gpt-5-codex\"\ncodex_reasoning_effort = \"low\"",
+            "upstream_id = \"gpt-5\"\nreasoning_effort = \"low\"",
             replacement,
         );
+        assert_ne!(text, base);
         let error = load(&text).expect_err("inconsistent family");
         assert!(
             error.to_string().contains("inconsistent_reasoning_family"),
@@ -205,7 +224,7 @@ fn reasoning_families_reject_conflicting_backends_and_capabilities() {
 }
 
 #[test]
-fn summaries_validate_provider_operation_and_legacy_compatibility() {
+fn summaries_validate_provider_operation_and_reject_the_removed_field() {
     let fixture = std::fs::read_to_string("tests/fixtures/config/example.toml").unwrap();
     for id in ["ollama-chat", "vllm-transcription"] {
         let text = fixture.replace(
@@ -221,31 +240,26 @@ fn summaries_validate_provider_operation_and_legacy_compatibility() {
         );
     }
     let generic = fixture.replace(
-        "id = \"codex-chat\"\nmodel_alias",
-        "id = \"codex-chat\"\nreasoning_summary = \"detailed\"\nmodel_alias",
+        "id = \"chatgpt-chat\"\nmodel_alias",
+        "id = \"chatgpt-chat\"\nreasoning_summary = \"detailed\"\nmodel_alias",
     );
-    let legacy = generic.replace("reasoning_summary =", "codex_reasoning_summary =");
+    assert_ne!(generic, fixture);
     let generic_config = load(&generic).unwrap();
-    let legacy_config = load(&legacy).unwrap();
-    let summary = |config: &kanata::config::ValidatedConfig| {
-        config
+    assert_eq!(
+        generic_config
             .routes()
             .iter()
-            .find(|route| route.identity().route_id == "codex-chat")
+            .find(|route| route.identity().route_id == "chatgpt-chat")
             .unwrap()
-            .reasoning_summary()
-    };
-    assert_eq!(
-        summary(&generic_config),
+            .reasoning_summary(),
         Some(kanata::config::ReasoningSummary::Detailed)
     );
-    assert_eq!(summary(&generic_config), summary(&legacy_config));
     let mut wrong_operation: toml::Value = toml::from_str(&generic).unwrap();
     let route = wrong_operation["routes"]
         .as_array_mut()
         .unwrap()
         .iter_mut()
-        .find(|route| route["id"].as_str() == Some("codex-chat"))
+        .find(|route| route["id"].as_str() == Some("chatgpt-chat"))
         .unwrap();
     route["operation"] = toml::Value::String("transcription".into());
     assert!(
@@ -254,32 +268,42 @@ fn summaries_validate_provider_operation_and_legacy_compatibility() {
             .to_string()
             .contains("reasoning_summary: unsupported_by_adapter")
     );
-    let conflict = generic.replace(
-        "reasoning_summary = \"detailed\"",
-        "reasoning_summary = \"detailed\"\ncodex_reasoning_summary = \"detailed\"",
-    );
-    assert!(
-        load(&conflict)
-            .unwrap_err()
-            .to_string()
-            .contains("conflicting_summary_options")
-    );
+    // The Codex-era spelling names its replacement, alone or next to the new field.
+    for legacy in [
+        generic.replace("reasoning_summary =", "codex_reasoning_summary ="),
+        generic.replace(
+            "reasoning_summary = \"detailed\"",
+            "reasoning_summary = \"detailed\"\ncodex_reasoning_summary = \"detailed\"",
+        ),
+    ] {
+        assert_eq!(
+            load(&legacy).unwrap_err().to_string(),
+            "config error at routes[4].codex_reasoning_summary: use_reasoning_summary"
+        );
+    }
 }
 
 #[test]
 fn summary_policy_must_match_every_private_reasoning_variant() {
     let source = chatgpt_source(&["reasoning-model"]);
-    let mut document: toml::Value = toml::from_str(&source).unwrap();
+    let (config, keys) = source.split_once(scratch::KEYS_FILE_MARKER).unwrap();
+    let with_keys = |document: &toml::Value| {
+        format!(
+            "{}{}{keys}",
+            toml::to_string(document).unwrap(),
+            scratch::KEYS_FILE_MARKER
+        )
+    };
+    let mut document: toml::Value = toml::from_str(config).unwrap();
     for route in document["routes"].as_array_mut().unwrap() {
-        if route["adapter_id"].as_str() == Some("codex-private") {
+        if route["adapter_id"].as_str() == Some("chatgpt-private") {
             route.as_table_mut().unwrap().insert(
                 "reasoning_summary".into(),
                 toml::Value::String("auto".into()),
             );
         }
     }
-    let configured = toml::to_string(&document).unwrap();
-    assert!(load(&configured).is_ok());
+    assert!(load(&with_keys(&document)).is_ok());
     let routes = document["routes"].as_array_mut().unwrap();
     let low = routes
         .iter_mut()
@@ -287,7 +311,7 @@ fn summary_policy_must_match_every_private_reasoning_variant() {
         .unwrap();
     low["reasoning_summary"] = toml::Value::String("concise".into());
     assert!(
-        load(&toml::to_string(&document).unwrap())
+        load(&with_keys(&document))
             .unwrap_err()
             .to_string()
             .contains("inconsistent_reasoning_family")
@@ -301,7 +325,7 @@ struct StreamAdapter {
 
 impl kanata::adapter::Adapter for StreamAdapter {
     fn id(&self) -> &str {
-        "codex-private"
+        "chatgpt-private"
     }
     fn capabilities(&self) -> &kanata::core::Capabilities {
         &self.caps
@@ -332,12 +356,11 @@ async fn streams_publish_canonical_model_but_validate_exact_adapter_model() {
     for wrong_model in [false, true] {
         let config = load(&source(&["reasoning-model:low"])).unwrap();
         let adapter = StreamAdapter {
-            caps: capabilities(&config, "codex-private"),
+            caps: capabilities(&config, "chatgpt-private"),
             wrong_model,
         };
         let server = kanata::server::TwoPlaneServer::from_validated_with_adapters(
             &config,
-            &support::Resolver,
             kanata::server::Readiness::new(true),
             vec![std::sync::Arc::new(adapter)],
         )
@@ -381,14 +404,14 @@ async fn streams_publish_canonical_model_but_validate_exact_adapter_model() {
 async fn unconfigured_or_malformed_efforts_are_client_errors() {
     let mut text = source(&["reasoning-model:low"]);
     let start = text.find("[[routes]]\nid = \"reasoning-high\"").unwrap();
-    let end = text[start..].find("[[application_keys]]").unwrap() + start;
+    let end = text[start..].find("[keys]").unwrap() + start;
     text.replace_range(start..end, "");
     let config = load(&text).unwrap();
     let (server, requests) = server_with(
         &config,
         vec![adapter_spec(
-            "codex-private",
-            capabilities(&config, "codex-private"),
+            "chatgpt-private",
+            capabilities(&config, "chatgpt-private"),
             chat_outcome("unused"),
         )],
     );
@@ -419,74 +442,14 @@ async fn unconfigured_or_malformed_efforts_are_client_errors() {
     assert!(requests.lock().unwrap().is_empty());
 }
 
-#[tokio::test]
-async fn disabled_reasoning_control_preserves_exact_legacy_discovery_and_calls() {
-    let config = load(
-        &source(&["reasoning-model:low"])
-            .replace("reasoning_control = true", "reasoning_control = false")
-            .replace(
-                "upstream_id = \"gpt-5-codex\"\ncodex_reasoning_effort = \"low\"",
-                "upstream_id = \"legacy-low-upstream\"\ncodex_reasoning_effort = \"low\"",
-            ),
-    )
-    .unwrap();
-    let (server, requests) = server_with(
-        &config,
-        vec![adapter_spec(
-            "codex-private",
-            capabilities(&config, "codex-private"),
-            chat_outcome("fixture"),
-        )],
-    );
-    let models = response_json(server.client_oneshot(models_request()).await.unwrap()).await;
-    assert_eq!(models["data"][0]["id"], "reasoning-model:low");
-    assert_eq!(models["data"][0]["kanata"]["reasoning_control"], false);
-    assert_eq!(
-        models["data"][0]["kanata"]["reasoning_efforts"],
-        Value::Null
-    );
-    let response = server.client_oneshot(chat_request(&json!({"model":"reasoning-model:low","messages":[{"role":"user","content":"fixture"}]}).to_string())).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response_json(response).await["model"],
-        "reasoning-model:low"
-    );
-    let response = server.client_oneshot(chat_request(&json!({"model":"reasoning-model","messages":[{"role":"user","content":"fixture"}],"reasoning_effort":"low"}).to_string())).await.unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(requests.lock().unwrap().len(), 1);
-}
-
+/// [`source`] plus the ChatGPT-only `none`, `xhigh` and `max` variants.
 fn chatgpt_source(permissions: &[&str]) -> String {
-    let mut text = source(permissions)
-        .replace("[codex_auth]\nstore = \"keyring\"", "[chatgpt_auth]")
-        .replace("kind = \"codex\"", "kind = \"chatgpt\"")
-        .replace(
-            "https://chatgpt.invalid/backend-api/codex",
-            "https://api.openai.com/v1",
-        )
-        .replace("codex_reasoning_effort =", "reasoning_effort =")
-        .replace(
-            "model_alias = \"reasoning-model\"\noperation",
-            "model_alias = \"reasoning-model\"\nreasoning_effort = \"medium\"\noperation",
-        );
+    let mut text = source(permissions);
     let mut variants = String::new();
     for effort in ["none", "xhigh", "max"] {
-        variants.push_str(&format!(
-            r#"
-[[routes]]
-id = "reasoning-{effort}"
-model_alias = "reasoning-model:{effort}"
-reasoning_effort = "{effort}"
-operation = "chat"
-adapter_id = "codex-private"
-upstream_id = "gpt-5-codex"
-requires_streaming_chat = true
-requires_function_tools = true
-
-"#
-        ));
+        variants.push_str(&variant(effort));
     }
-    let insert = text.find("[[application_keys]]").unwrap();
+    let insert = text.find("[keys]").unwrap();
     text.insert_str(insert, &variants);
     text
 }
@@ -502,8 +465,8 @@ async fn generic_private_reasoning_families_are_key_scoped_and_exact() {
     let (server, requests) = server_with(
         &config,
         vec![adapter_spec(
-            "codex-private",
-            capabilities(&config, "codex-private"),
+            "chatgpt-private",
+            capabilities(&config, "chatgpt-private"),
             chat_outcome("fixture"),
         )],
     );
@@ -548,8 +511,8 @@ async fn generic_private_reasoning_families_are_key_scoped_and_exact() {
         server_with(
             &config,
             vec![adapter_spec(
-                "codex-private",
-                capabilities(&config, "codex-private"),
+                "chatgpt-private",
+                capabilities(&config, "chatgpt-private"),
                 chat_outcome("fixture"),
             )],
         )
@@ -608,10 +571,8 @@ adapter_id = "cliproxy"
 upstream_id = "installed-claude"
 default_effort = "medium"
 efforts = ["low", "medium", "high"]
-[[application_keys]]
-id = "family-client"
-secret_ref = "env:FAMILY_CLIENT_KEY"
-permissions = [{grants}]
+[keys]
+file = "keys.toml"
 [limits]
 max_queue = 4
 max_in_flight = 2
@@ -625,7 +586,13 @@ headers_ms = 1000
 first_byte_ms = 1000
 idle_ms = 1000
 overall_ms = 5000
-"#
+{marker}{key}"#,
+        marker = scratch::KEYS_FILE_MARKER,
+        key = scratch::key_record(
+            "family-client",
+            scratch::TEST_KEY,
+            &format!("permissions = [{grants}]")
+        ),
     )
 }
 
@@ -682,7 +649,6 @@ async fn vllm_call(permissions: &[&str], body: Value) -> (StatusCode, Value, Opt
         kanata::adapter::vllm::VllmAdapter::from_config(&config, "cliproxy", "claude").unwrap();
     let server = kanata::server::TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &support::Resolver,
         kanata::server::Readiness::new(true),
         vec![std::sync::Arc::new(adapter)],
     )
@@ -706,7 +672,6 @@ async fn vllm_families_advertise_scoped_efforts_and_forward_the_selected_effort(
     let config = load(&vllm_source("127.0.0.1:9", &["claude", "claude:high"])).unwrap();
     let server = kanata::server::TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &support::Resolver,
         kanata::server::Readiness::new(true),
         vec![std::sync::Arc::new(
             kanata::adapter::vllm::VllmAdapter::from_config(&config, "cliproxy", "claude").unwrap(),

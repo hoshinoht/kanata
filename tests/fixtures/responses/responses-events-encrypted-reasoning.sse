@@ -1,0 +1,16 @@
+data: {"type":"response.created","sequence_number":0,"response":{"id":"TEST_ONLY_RESPONSE_ID_NOT_SECRET_0003","created_at":1700000002,"model":"fixture-responses-model"}}
+
+data: {"type":"response.output_item.added","output_index":0,"sequence_number":1,"item":{"type":"reasoning","id":"rs_TEST_ONLY_REASONING_ID_NOT_SECRET_0001","summary":[]}}
+
+data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_TEST_ONLY_REASONING_ID_NOT_SECRET_0001","output_index":0,"summary_index":0,"sequence_number":2,"delta":"TEST_ONLY_SUMMARY_NOT_SECRET_0002"}
+
+data: {"type":"response.output_item.done","output_index":0,"sequence_number":3,"item":{"type":"reasoning","id":"rs_TEST_ONLY_REASONING_ID_NOT_SECRET_0001","summary":[{"type":"summary_text","text":"TEST_ONLY_SUMMARY_NOT_SECRET_0002"}],"encrypted_content":"TEST_ONLY_ENCRYPTED_REASONING_NOT_SECRET_0001"}}
+
+data: {"type":"response.output_item.added","output_index":1,"sequence_number":4,"item":{"type":"function_call","id":"fc_TEST_ONLY_ITEM_ID_NOT_SECRET_0001","call_id":"call_TEST_ONLY_CALL_ID_NOT_SECRET_0004","name":"lookup","arguments":"","status":"in_progress"}}
+
+data: {"type":"response.output_item.done","output_index":1,"sequence_number":5,"item":{"type":"function_call","id":"fc_TEST_ONLY_ITEM_ID_NOT_SECRET_0001","call_id":"call_TEST_ONLY_CALL_ID_NOT_SECRET_0004","name":"lookup","arguments":"{}","status":"completed"}}
+
+data: {"type":"response.completed","sequence_number":6,"response":{"id":"TEST_ONLY_RESPONSE_ID_NOT_SECRET_0003","created_at":1700000002,"model":"fixture-responses-model","usage":{"input_tokens":2048,"input_tokens_details":{"cached_tokens":1024},"output_tokens":40,"output_tokens_details":{"reasoning_tokens":32},"total_tokens":2088}}}
+
+data: [DONE]
+

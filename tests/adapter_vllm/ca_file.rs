@@ -167,8 +167,7 @@ fn config_text(base_url: &str, ca_file: Option<&str>) -> String {
 }
 
 fn load(contents: &str) -> Result<ValidatedConfig, String> {
-    let file = TempFile::new(contents.as_bytes());
-    config::load(&file.0).map_err(|error| error.to_string())
+    crate::scratch::load_text(contents).map_err(|error| error.to_string())
 }
 
 async fn call(
@@ -294,7 +293,7 @@ fn ca_file_is_validated_when_the_config_loads() {
     );
 
     // Pinned or plain-HTTP origins cannot take a private CA.
-    for kind in ["chatgpt", "codex", "apple_fm"] {
+    for kind in ["chatgpt", "apple_fm"] {
         let text = config_text("https://api.openai.com/v1", Some(bundle.path()))
             .replace("kind = \"vllm\"", &format!("kind = \"{kind}\""));
         assert_eq!(
@@ -312,8 +311,9 @@ fn deferred_loading_skips_the_file_but_never_falls_back_to_platform_roots() {
         "https://vllm.invalid/v1",
         Some(missing.to_str().unwrap_or_else(|| panic!("utf-8 path"))),
     );
-    let file = TempFile::new(text.as_bytes());
-    let config = config::load_deferring_keys(&file.0).unwrap_or_else(|error| panic!("{error}"));
+    let dir = crate::scratch::config_dir("ca-file", &text);
+    let config = config::load_deferring_keys(dir.join("config.toml"))
+        .unwrap_or_else(|error| panic!("{error}"));
     assert!(config.adapters()[0].ca_bundle().is_some());
     assert!(
         VllmAdapter::from_config_with_secrets(&config, "vllm-fixture", "vllm-chat", &Resolver)

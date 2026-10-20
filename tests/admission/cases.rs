@@ -58,6 +58,93 @@ async fn queue_is_bounded_and_rejects_without_dispatch() {
 }
 
 #[tokio::test]
+async fn private_models_report_live_route_load() {
+    let config = support::config_with(
+        1,
+        1,
+        1_000,
+        &[
+            (
+                "transcription_mode = \"native_asr\"\n",
+                "transcription_mode = \"native_asr\"\nmax_in_flight = 1\n",
+            ),
+            (
+                "[listeners.admin]",
+                "[listeners.public]\nbind = \"172.30.0.3\"\nport = 8081\n\n[listeners.admin]",
+            ),
+            (
+                "tailnet_addresses = [\"100.64.0.10\", \"fd7a:115c:a1e0::10\"]",
+                "tailnet_addresses = [\"100.64.0.10\", \"fd7a:115c:a1e0::10\"]\npublic_routes = [{ model_alias = \"private-chat\", operation = \"chat\" }]",
+            ),
+        ],
+    );
+    let (adapter, probe) = support::pending_adapter(
+        "vllm-private",
+        support::capabilities(&config, "vllm-private"),
+    );
+    let server = support::server(&config, vec![adapter]);
+    let load = |in_flight: u64, queued: u64, adapter_in_flight: u64| {
+        serde_json::json!({
+            "max_in_flight": 1, "max_queue": 1, "queue_ms": 1000, "adapter_max_in_flight": 1,
+            "in_flight": in_flight, "queued": queued, "adapter_in_flight": adapter_in_flight,
+            "breaker": "closed",
+        })
+    };
+
+    let first_server = server.clone();
+    let first = tokio::spawn(async move {
+        first_server
+            .client_oneshot(support::chat_request("private-chat"))
+            .await
+            .expect("first response")
+    });
+    probe.wait_for_dispatch(1).await;
+    let second_server = server.clone();
+    let mut second = Box::pin(async move {
+        second_server
+            .client_oneshot(support::chat_request("private-chat"))
+            .await
+            .expect("second response")
+    });
+    assert!(matches!(support::poll_once(second.as_mut()), Poll::Pending));
+    assert_eq!(
+        support::private_admission(&server, "private-chat").await,
+        load(1, 1, 1)
+    );
+
+    let public = server
+        .public_oneshot(support::models_request())
+        .await
+        .expect("public listener");
+    let public = support::response_json(public).await;
+    assert_eq!(public["data"][0]["id"], "private-chat");
+    assert!(public["data"][0]["kanata"].get("admission").is_none());
+    let public = public.to_string();
+    for field in [
+        "\"in_flight\"",
+        "\"queued\"",
+        "\"adapter_in_flight\"",
+        "\"breaker\"",
+    ] {
+        assert!(!public.contains(field), "public listing exposes {field}");
+    }
+
+    probe.release();
+    assert_eq!(first.await.expect("first task").status(), StatusCode::OK);
+    probe.release();
+    let second = loop {
+        if let Poll::Ready(response) = support::poll_once(second.as_mut()) {
+            break response;
+        }
+    };
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(
+        support::private_admission(&server, "private-chat").await,
+        load(0, 0, 0)
+    );
+}
+
+#[tokio::test]
 async fn queued_requests_are_served_in_fifo_order() {
     let config = support::config(2, 1, 1_000);
     let (adapter, probe) = support::pending_adapter(
@@ -449,6 +536,10 @@ async fn open_circuit_fails_fast_without_dispatch() {
         kanata::core::ErrorKind::UpstreamUnavailable,
     );
     let server = support::server(&config, vec![adapter]);
+    assert_eq!(
+        support::private_admission(&server, "private-chat").await["breaker"],
+        "closed"
+    );
 
     for _ in 0..2 {
         let failed = server
@@ -458,6 +549,10 @@ async fn open_circuit_fails_fast_without_dispatch() {
         assert_eq!(failed.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert!(failed.headers().get("retry-after").is_none());
     }
+    assert_eq!(
+        support::private_admission(&server, "private-chat").await["breaker"],
+        "open"
+    );
 
     let fast = server
         .client_oneshot(support::chat_request("private-chat"))

@@ -2,13 +2,31 @@
 
 ## [Unreleased]
 
+### Added
+
+- vLLM and OpenRouter adapters accept `operations = ["embeddings"]` (previously Ollama only) through the same `POST /v1/embeddings` bounds, validation and key scopes. OpenRouter embeddings use `https://openrouter.ai/api/v1/embeddings` with `provider.allow_fallbacks = false`. Other kinds still fail with `embeddings_unsupported_by_adapter_kind`. Verified against mock upstreams only.
+- The private `/v1/models` `kanata.admission` object adds a live snapshot of the listed route: `in_flight`, `queued`, `adapter_in_flight` (`null` without an adapter cap) and the backend circuit breaker as `breaker` (`closed`, `open` or `half_open`). The public listener's listing is unchanged and shows no load data.
+
+## [1.0.0-beta.9] - 2026-10-20
+
+Removal of the deprecated Codex provider and inline keys, deployment files under `deploy/`, and a `rustls` security update.
+
 ### Changed
 
 - Deployment files moved under `deploy/`: Compose files to `deploy/compose/`, the `Dockerfile` (with `Dockerfile.dockerignore`) to `deploy/docker/`, and `kanata.sh`, `cliproxy-tls-certs.sh` and `container-smoke.sh` to `deploy/scripts/`. Run Compose and the helper from the repo root as before; existing deployments must prefix each `COMPOSE_FILE` entry in `.env` with `deploy/compose/` (see `.env.example`). The project name, build context, mounts, volumes and networks are unchanged, so running containers are not recreated.
 
+### Removed
+
+**Breaking.** Before upgrading, run `kanata key migrate --config <path>` with 1.0.0-beta.8 if the config still has inline keys, move Codex routes to the `chatgpt` provider (`reasoning_effort`/`reasoning_summary` instead of their `codex_` forms), and drop `deploy/compose/compose.kanata.chatgpt-only.yml` from `COMPOSE_FILE`. The old `kanata_codex_state` Docker volume is left on disk for you to delete. See `docs/guides/service-handoff.md#codex-removal`.
+
+- The deprecated Codex provider: `kind = "codex"`, `[codex_auth]`, `kanata auth codex login|status|logout`, the route setting `codex_reasoning_summary`, the `codex_state` Compose volume, the image's `/var/lib/kanata/codex` directory, `deploy/compose/compose.kanata.chatgpt-only.yml`, `deploy/scripts/kanata.sh codex` and the `keyring` dependency. `kanata check` now rejects `adapters[N].kind = "codex"` and a `codex_auth` table with `codex_removed`, and `routes[N].codex_reasoning_summary` with `use_reasoning_summary`.
+- Inline `[[application_keys]]` and `kanata key migrate`: keys come only from the `[keys]` file, which is now required. `kanata check` rejects `application_keys` with `inline_keys_removed` and a missing `[keys]` with `keys: required`.
+- The deprecated `deploy/scripts/kanata.sh key new ID OUT ...` and `owner-key rotate` wrappers; use `kanata key new --id ID --key-out OUT ...` and `kanata key rotate --owner` (or `deploy/scripts/kanata.sh key ...`).
+
 ### Security
 
 - `rustls` 0.23.46 fixes RUSTSEC-2026-0346 (TLS secrets in `Debug` output), -0347, -0348 and -0349.
+- No retries at all: Codex's single token refresh after a 401, the only retry exception, is gone with the provider.
 
 ## [1.0.0-beta.8] - 2026-10-16
 

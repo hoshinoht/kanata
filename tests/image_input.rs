@@ -43,11 +43,12 @@ adapter_id = "vision-adapter"
 upstream_id = "installed-vision-model"
 requires_streaming_chat = false
 requires_function_tools = false
-allows_input_images = {allowed}
-[[application_keys]]
-id = "vision-client"
-secret_ref = "env:VISION_CLIENT_KEY"
-permissions = [{{ model_alias = "vision", operation = "chat" }}]"#
+allows_input_images = {allowed}"#
+        ),
+        &scratch::key_record(
+            "vision-client",
+            scratch::TEST_KEY,
+            "permissions = [{ model_alias = \"vision\", operation = \"chat\" }]",
         ),
     )
 }
@@ -208,7 +209,10 @@ fn image_config_rejects_unsupported_provider_and_missing_capability() {
             .to_string()
             .contains("input_images")
     );
-    let text = include_str!("fixtures/config/example.toml").replace("https://chatgpt.invalid/backend-api/codex\"\ntrust_zone = \"external\"\n[adapters.capabilities]", "https://chatgpt.invalid/backend-api/codex\"\ntrust_zone = \"external\"\n[adapters.capabilities]\ninput_images = true");
+    let chatgpt = "https://api.openai.com/v1\"\ntrust_zone = \"external\"\n[adapters.capabilities]";
+    let example = include_str!("fixtures/config/example.toml");
+    let text = example.replace(chatgpt, &format!("{chatgpt}\ninput_images = true"));
+    assert_ne!(text, example);
     assert!(
         load(&text)
             .unwrap_err()
@@ -233,7 +237,6 @@ async fn configured_compatible_adapters_forward_inline_images_without_fetching_t
         };
         let server = TwoPlaneServer::from_validated_with_adapters(
             &config,
-            &support::Resolver,
             Readiness::new(true),
             vec![adapter],
         )

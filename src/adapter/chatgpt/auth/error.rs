@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::adapter::auth_files::FileError;
+use super::files::FileError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthError {

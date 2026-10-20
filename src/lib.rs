@@ -29,18 +29,8 @@ mod api_test_surface {
         routing::get,
     };
 
-    use crate::auth::{SecretResolutionError, SecretResolver};
-    use crate::config::SecretReference;
     use crate::core::{ModelAlias, Operation, RouteSelector};
     use crate::server::{Authenticated, ClientState, ForbiddenResponse, Readiness, TwoPlaneServer};
-
-    struct Resolver;
-
-    impl SecretResolver for Resolver {
-        fn resolve(&self, _: &SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
-            Ok(b"test-key".to_vec())
-        }
-    }
 
     fn routes() -> Router<ClientState> {
         Router::new()
@@ -79,7 +69,6 @@ mod api_test_surface {
         let config = crate::config::load("tests/fixtures/config/example.toml").expect("config");
         let server = TwoPlaneServer::from_validated_with_client_routes(
             &config,
-            &Resolver,
             Readiness::new(false),
             routes(),
         )

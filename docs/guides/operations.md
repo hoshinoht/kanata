@@ -8,7 +8,7 @@ kanata doctor --config config/config.toml --plane private --probe-backends
 kanata health --config config/config.toml
 ```
 
-Doctor checks configuration and key-file permissions, then reads `/status` from the configured loopback admin listener. The report shows whether the process is ready and whether its latest key-file poll succeeded. An invalid replacement key file keeps the previous keys active; inspect reload health after changing keys. Inline keys have automatic keys-file polling disabled; they follow explicit configuration reload.
+Doctor checks configuration and key-file permissions, then reads `/status` from the configured loopback admin listener. The report shows whether the process is ready and whether its latest key-file poll succeeded. An invalid replacement key file keeps the previous keys active; inspect reload health after changing keys.
 
 Run diagnostics in the process's network namespace. For Compose:
 
@@ -61,7 +61,7 @@ The loopback admin `/metrics` exposes these additional series:
 | `kanata_reserved_request_bytes` | Reserved raw/decoded/outbound payload allowance |
 | `kanata_key_reload_failures_total` | Failed key-file polls, including a missing file at startup |
 | `kanata_key_reload_enabled` | Whether this process polls a keys file |
-| `kanata_key_reload_healthy` | Whether the latest key-file poll succeeded; inspect `/status.key_reload.enabled` for inline keys |
+| `kanata_key_reload_healthy` | Whether the latest key-file poll succeeded |
 | `kanata_key_reload_last_success_seconds` | Unix timestamp of the last successful key-file read |
 
 Timing labels use a fixed endpoint set. Key/model counters retain current key IDs at scrape time and have a 16,384-series process cap; new combinations beyond the cap are omitted. Removal or revocation can therefore remove historical series from the process. Keep long-term history in your monitoring system.

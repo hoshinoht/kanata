@@ -115,12 +115,12 @@ fn canonical(mut config: ValidatedConfig) -> ValidatedConfig {
     config
         .routes
         .sort_by(|a, b| a.identity.route_id.cmp(&b.identity.route_id));
-    config.application_keys.sort_by(|a, b| a.id.cmp(&b.id));
+    config.keys.sort_by(|a, b| a.id.cmp(&b.id));
     let selector = |a: &RouteSelector, b: &RouteSelector| {
         (&a.model_alias, a.operation).cmp(&(&b.model_alias, b.operation))
     };
     config.publication.public_routes.sort_by(selector);
-    for key in &mut config.application_keys {
+    for key in &mut config.keys {
         key.permissions.sort_by(selector);
     }
     config
@@ -138,12 +138,7 @@ fn model_from_route(route: &RawRoute) -> Result<toml::Table, ConfigError> {
 
 fn family_policy(route: &RawRoute) -> Result<toml::Table, ConfigError> {
     let mut policy = table(route)?;
-    for field in [
-        "id",
-        "model_alias",
-        "reasoning_effort",
-        "codex_reasoning_effort",
-    ] {
+    for field in ["id", "model_alias", "reasoning_effort"] {
         policy.remove(field);
     }
     Ok(policy)
@@ -192,7 +187,6 @@ fn compact_routes(raw: &mut RawConfig, config: &ValidatedConfig) -> Result<(), C
                     .all(|other| family_policy(other).is_ok_and(|other| other == policy))
             {
                 model.remove("reasoning_effort");
-                model.remove("codex_reasoning_effort");
                 model.insert("default_effort".into(), default.into());
                 let mut efforts = Vec::new();
                 let mut ids = toml::Table::new();
@@ -234,7 +228,7 @@ fn compact_routes(raw: &mut RawConfig, config: &ValidatedConfig) -> Result<(), C
         for field in fields {
             if matches!(
                 field.as_str(),
-                "id" | "upstream_id" | "route_ids" | "reasoning_effort" | "codex_reasoning_effort"
+                "id" | "upstream_id" | "route_ids" | "reasoning_effort"
             ) {
                 continue;
             }
@@ -320,9 +314,6 @@ fn render(raw: &RawConfig, compact: bool) -> Result<String, ConfigError> {
     }
     if raw.routes.is_empty() {
         root.remove("routes");
-    }
-    if raw.application_keys.is_empty() {
-        root.remove("application_keys");
     }
     let mut output = toml::to_string_pretty(&root)
         .map_err(|_| ConfigError::new("config", "serialization_error"))?;
@@ -473,9 +464,7 @@ fn route_changes(a: &ValidatedRoute, b: &ValidatedRoute) -> Vec<&'static str> {
     changed!(
         adapter_id,
         reasoning_effort,
-        codex_reasoning_effort,
         reasoning_summary,
-        codex_reasoning_summary,
         extension_allowlist,
         requires_streaming_chat,
         requires_function_tools,
@@ -513,33 +502,23 @@ fn adapter_changes(a: &ValidatedAdapter, b: &ValidatedAdapter) -> Vec<&'static s
 
 fn key_views(config: &ValidatedConfig) -> Result<BTreeMap<String, serde_json::Value>, ConfigError> {
     let mut keys = BTreeMap::new();
-    if let KeySource::File {
+    let KeySource {
         path, usage_dir, ..
-    } = &config.key_source
-    {
-        if let Some(bytes) = keys::file::read(path)? {
-            let file = keys::file::parse_without_routes(&bytes)?;
-            for key in file.active() {
-                if usage_dir.is_none() && key.daily_quota().is_some() {
-                    return Err(ConfigError::new(
-                        "keys.usage_dir",
-                        "required_for_daily_quota",
-                    ));
-                }
-                keys.insert(key.id().to_owned(), serde_json::json!({
-                    "permissions": key.permissions(), "owner": key.is_owner(), "digest": key.digest(),
-                    "expires_at": key.expires_at(), "daily_quota": key.daily_quota(),
-                    "max_in_flight": key.max_in_flight(),
-                    "rate_limit": key.rate_limit().map(|rate| (rate.requests, rate.per_ms)),
-                }));
+    } = &config.key_source;
+    if let Some(bytes) = keys::file::read(path)? {
+        let file = keys::file::parse_without_routes(&bytes)?;
+        for key in file.active() {
+            if usage_dir.is_none() && key.daily_quota().is_some() {
+                return Err(ConfigError::new(
+                    "keys.usage_dir",
+                    "required_for_daily_quota",
+                ));
             }
-        }
-    } else {
-        for key in &config.application_keys {
-            keys.insert(key.id.clone(), serde_json::json!({
-                "permissions": key.permissions, "owner": key.owner,
-                "reference": format!("{:?}", key.secret_ref), "max_in_flight": key.max_in_flight,
-                "rate_limit": key.rate_limit.map(|rate| (rate.requests, rate.per_ms)),
+            keys.insert(key.id().to_owned(), serde_json::json!({
+                "permissions": key.permissions(), "owner": key.is_owner(), "digest": key.digest(),
+                "expires_at": key.expires_at(), "daily_quota": key.daily_quota(),
+                "max_in_flight": key.max_in_flight(),
+                "rate_limit": key.rate_limit().map(|rate| (rate.requests, rate.per_ms)),
             }));
         }
     }

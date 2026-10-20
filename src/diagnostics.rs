@@ -1,4 +1,4 @@
-use crate::config::{self, KeySource, Plane};
+use crate::config::{self, Plane};
 use crate::{
     adapter::Adapter,
     auth::EnvironmentSecretResolver,
@@ -77,13 +77,13 @@ pub(crate) async fn run(
         };
     }
     let mut report = vec![format!("config: valid ({} routes)", config.routes().len())];
-    report.push(match config.key_source() {
-        KeySource::Inline => "keys: inline (reload disabled)".into(),
-        KeySource::File { missing: true, .. } => "keys: missing; no keys loaded".into(),
-        KeySource::File { .. } => format!(
+    report.push(if config.key_source().missing {
+        "keys: missing; no keys loaded".into()
+    } else {
+        format!(
             "keys: readable; permissions checked; {} active records",
-            config.application_keys().len()
-        ),
+            config.keys().len()
+        )
     });
     for warning in config.key_warnings(crate::keys::time::now()) {
         report.push(format!("warning: {warning}"));

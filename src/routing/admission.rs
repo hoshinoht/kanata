@@ -17,7 +17,7 @@ use crate::core::{ErrorKind, GatewayError};
 
 use super::{
     Registry, RouteEntry,
-    breaker::{Breaker, BreakerTicket, Outcome},
+    breaker::{Breaker, BreakerStatus, BreakerTicket, Outcome},
 };
 
 pub(crate) struct Admission {
@@ -36,6 +36,17 @@ pub(crate) struct AdmissionLimits {
     pub(crate) queue_ms: u64,
 }
 
+/// Point-in-time load of one route and its adapter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RouteLoad {
+    pub(crate) in_flight: u64,
+    pub(crate) queued: u64,
+    pub(crate) adapter_max_in_flight: Option<u64>,
+    /// `None` when the adapter has no concurrency limit.
+    pub(crate) adapter_in_flight: Option<u64>,
+    pub(crate) breaker: BreakerStatus,
+}
+
 struct AdmissionPools {
     routes: BTreeMap<String, RouteAdmission>,
     adapters: BTreeMap<String, AdapterAdmission>,
@@ -46,6 +57,8 @@ struct AdmissionPools {
 struct RouteAdmission {
     tickets: Arc<Semaphore>,
     active: Arc<Semaphore>,
+    queued: Arc<AtomicU64>,
+    in_flight: Arc<AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -73,6 +86,7 @@ struct TokenBucket {
 
 pub(crate) struct AdmissionPermit {
     breaker: Option<BreakerTicket>,
+    _in_flight: Gauge,
     // Release capacity innermost first: adapter, route, queue ticket, then key.
     _adapter: Option<OwnedSemaphorePermit>,
     _active: OwnedSemaphorePermit,
@@ -119,6 +133,8 @@ impl Admission {
                     RouteAdmission {
                         tickets: Arc::new(Semaphore::new(ticket_capacity)),
                         active: Arc::new(Semaphore::new(max_in_flight)),
+                        queued: Arc::default(),
+                        in_flight: Arc::default(),
                     },
                 )
             })
@@ -223,11 +239,20 @@ impl Admission {
         self.limits
     }
 
-    pub(crate) fn adapter_max_in_flight(&self, adapter_id: &str) -> Option<u64> {
-        self.pools()
-            .adapters
-            .get(adapter_id)
-            .and_then(|adapter| adapter.max_in_flight)
+    pub(crate) fn route_load(&self, route: &RouteEntry) -> Option<RouteLoad> {
+        let pools = self.pools();
+        let route_admission = pools.routes.get(&route.identity.route_id)?;
+        let adapter = pools.adapters.get(&route.adapter_id)?;
+        Some(RouteLoad {
+            in_flight: route_admission.in_flight.load(Ordering::Relaxed),
+            queued: route_admission.queued.load(Ordering::Relaxed),
+            adapter_max_in_flight: adapter.max_in_flight,
+            adapter_in_flight: adapter
+                .max_in_flight
+                .zip(adapter.active.as_ref())
+                .map(|(limit, active)| limit.saturating_sub(active.available_permits() as u64)),
+            breaker: adapter.breaker.status(),
+        })
     }
 
     pub(crate) fn open_breakers(&self) -> usize {
@@ -314,7 +339,10 @@ impl Admission {
             return Err(AdmissionError::Closed);
         }
         self.queued.fetch_add(1, Ordering::Relaxed);
-        let waiting = QueueGuard(&self.queued);
+        let waiting = (
+            QueueGuard(&self.queued),
+            Gauge::enter(&route_admission.queued),
+        );
         let wait = async {
             let active = route_admission.active.clone().acquire_owned().await?;
             let adapter = match &adapter.active {
@@ -334,6 +362,7 @@ impl Admission {
         drop(waiting);
         Ok(AdmissionPermit {
             breaker,
+            _in_flight: Gauge::enter(&route_admission.in_flight),
             _adapter: adapter,
             _active: active,
             _ticket: ticket,
@@ -462,6 +491,22 @@ fn try_acquire(
 
 struct QueueGuard<'a>(&'a AtomicU64);
 impl Drop for QueueGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Counts its holder in a shared gauge until dropped.
+struct Gauge(Arc<AtomicU64>);
+
+impl Gauge {
+    fn enter(counter: &Arc<AtomicU64>) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self(counter.clone())
+    }
+}
+
+impl Drop for Gauge {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
     }

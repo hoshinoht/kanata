@@ -93,8 +93,12 @@ impl VllmAdapter {
         let configured = adapter.capabilities();
         let supports_chat = configured.operations.contains(&Operation::Chat);
         let supports_transcription = configured.operations.contains(&Operation::Transcription);
+        let supports_embeddings = configured.operations.contains(&Operation::Embeddings);
         let transcription_mode = adapter.transcription_mode();
-        let supported_operations = match (configured.operations.len(), transcription_mode) {
+        // Embeddings may join any otherwise valid chat/transcription set, or stand alone.
+        let other_operations = configured.operations.len() - usize::from(supports_embeddings);
+        let supported_operations = match (other_operations, transcription_mode) {
+            (0, None) => supports_embeddings,
             (1, None) => supports_chat && !supports_transcription,
             (2, Some(VllmTranscriptionMode::AudioChat)) => {
                 supports_chat && supports_transcription && configured.input_audio
@@ -118,7 +122,9 @@ impl VllmAdapter {
         // CLIProxyAPI reuses this chat path only: chat, always with its client key.
         let kind_allowed = match adapter.kind() {
             ProviderKind::Vllm => true,
-            ProviderKind::Cliproxy => bearer_token.is_some() && !supports_transcription,
+            ProviderKind::Cliproxy => {
+                bearer_token.is_some() && !supports_transcription && !supports_embeddings
+            }
             _ => false,
         };
         if !kind_allowed
@@ -318,9 +324,21 @@ impl Adapter for VllmAdapter {
         let credential = self.credential();
         let enable_thinking = self.enable_thinking(&context.route.route_id);
         match request {
-            Request::Speech(_) | Request::Embeddings(_) => {
+            Request::Speech(_) => {
                 Box::pin(async { Err(GatewayError::from(ErrorKind::UnsupportedOperation)) })
             }
+            Request::Embeddings(embedding) => Box::pin(chat_completions::embeddings::execute::<
+                chat_completions::embeddings::List,
+                _,
+            >(
+                transport,
+                embedding,
+                context.route.upstream_id,
+                (),
+                credential,
+                self.max_body_bytes,
+                label,
+            )),
             Request::Chat(chat) => {
                 let public_model = context.route.selector.model_alias.clone();
                 let request_budget = if has_input_audio(&chat) {

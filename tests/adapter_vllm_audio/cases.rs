@@ -596,7 +596,6 @@ async fn from_config_binds_all_routes_on_one_adapter_in_two_plane_server() {
 
     let server = TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &crate::support::Resolver,
         Readiness::new(true),
         vec![std::sync::Arc::new(adapter)],
     )

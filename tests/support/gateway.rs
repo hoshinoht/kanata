@@ -213,17 +213,13 @@ pub fn try_server_with(
             }) as Arc<dyn Adapter>
         })
         .collect();
-    let server = TwoPlaneServer::from_validated_with_adapters(
-        config,
-        &Resolver,
-        Readiness::new(true),
-        adapters,
-    )?;
+    let server =
+        TwoPlaneServer::from_validated_with_adapters(config, Readiness::new(true), adapters)?;
     Ok((server, requests))
 }
 
 pub fn server_without_adapters(config: &ValidatedConfig) -> TwoPlaneServer {
-    TwoPlaneServer::from_validated(config, &Resolver, Readiness::new(true)).expect("server")
+    TwoPlaneServer::from_validated(config, Readiness::new(true)).expect("server")
 }
 
 pub fn assistant_text(text: &str) -> ChatMessage {

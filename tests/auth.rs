@@ -12,37 +12,14 @@ use axum::{
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
 };
 use kanata::adapter::{Adapter, AdapterFuture};
-use kanata::auth::{
-    ApplicationAuth, AuthBuildError, AuthError, EnvironmentSecretResolver, SecretResolutionError,
-    SecretResolver,
-};
-use kanata::config::{self, SecretReference};
+use kanata::auth::{ApplicationAuth, AuthError};
+use kanata::config;
 use kanata::core::{
     Capabilities, ErrorKind, GatewayError, ModelAlias, Operation, RouteSelector, RoutedRequest,
 };
 use kanata::routing::Registry;
 use kanata::server::{Readiness, TwoPlaneServer};
 use serde_json::Value;
-
-struct MemoryResolver(Vec<u8>);
-
-impl SecretResolver for MemoryResolver {
-    fn resolve(&self, _: &SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
-        Ok(self.0.clone())
-    }
-}
-
-struct DistinctScopeResolver;
-
-impl SecretResolver for DistinctScopeResolver {
-    fn resolve(&self, reference: &SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
-        match reference.env_name() {
-            Some("KANATA_CLIENT_KEY") => Ok(b"OWNER_SYNTHETIC_KEY_001".to_vec()),
-            Some("KANATA_EXTERNAL_CLIENT_KEY") => Ok(b"EXTERNAL_SYNTHETIC_KEY_001".to_vec()),
-            _ => Err(SecretResolutionError),
-        }
-    }
-}
 
 struct DispatchCounter {
     adapter_id: &'static str,
@@ -73,11 +50,19 @@ fn config() -> config::ValidatedConfig {
     config::load("tests/fixtures/config/example.toml").expect("example config validates")
 }
 
-/// The personal template's former inline keys, kept here now that the template uses `[keys]`.
-const PERSONAL_INLINE_KEYS: &str = r#"[[application_keys]]
-id = "personal-client"
-secret_ref = "env:KANATA_CLIENT_KEY"
-owner = true
+const OWNER_KEY: &str = "OWNER_SYNTHETIC_KEY_001";
+const EXTERNAL_KEY: &str = "EXTERNAL_SYNTHETIC_KEY_001";
+
+/// The personal template with a ChatGPT adapter ([`scratch::personal_with_chatgpt`]) and two
+/// keys-file records: the owner key and an external key scoped to one vLLM route.
+fn personal_config(edit: impl FnOnce(String) -> String) -> config::ValidatedConfig {
+    let template = scratch::personal_with_chatgpt();
+    let keys_start = template.find("[keys]\n").expect("template keys table");
+    let keys_end = keys_start + template[keys_start..].find("\n\n").expect("keys table end");
+    let owner = scratch::key_record(
+        "personal-client",
+        OWNER_KEY,
+        r#"owner = true
 permissions = [
   { model_alias = "local-chat", operation = "chat" },
   { model_alias = "ollama-cloud", operation = "chat" },
@@ -86,34 +71,33 @@ permissions = [
   { model_alias = "private-audio-chat", operation = "chat" },
   { model_alias = "private-audio-transcribe", operation = "transcription" },
   { model_alias = "private-native-asr", operation = "transcription" },
-  { model_alias = "codex-chat", operation = "chat" },
+  { model_alias = "chatgpt-chat", operation = "chat" },
   { model_alias = "gpt-6-sol", operation = "chat" },
   { model_alias = "gpt-6-luna:low", operation = "chat" },
-]
-
-[[application_keys]]
-id = "external-client"
-secret_ref = "env:KANATA_EXTERNAL_CLIENT_KEY"
-permissions = [
+]"#,
+    );
+    let external = scratch::key_record(
+        "external-client",
+        EXTERNAL_KEY,
+        r#"permissions = [
   { model_alias = "private-chat-a", operation = "chat" },
-]
-"#;
-
-fn personal_inline_config(edit: impl FnOnce(String) -> String) -> config::ValidatedConfig {
-    let template =
-        fs::read_to_string("config/personal.example.toml").expect("personal example reads");
-    let keys_start = template.find("[keys]\n").expect("template keys table");
-    let keys_end = keys_start + template[keys_start..].find("\n\n").expect("keys table end");
+]"#,
+    );
     let contents = edit(format!(
-        "{}{PERSONAL_INLINE_KEYS}{}",
+        "{}{}{}",
         &template[..keys_start],
+        scratch::KEYS_SECTION,
         &template[keys_end + 1..]
     ));
-    scratch::load_text(&contents).expect("personal config validates")
+    scratch::load_text(&format!(
+        "{contents}{}{owner}{external}",
+        scratch::KEYS_FILE_MARKER
+    ))
+    .expect("personal config validates")
 }
 
 fn personal_public_config(public_routes: &str) -> config::ValidatedConfig {
-    personal_inline_config(|contents| {
+    personal_config(|contents| {
         contents
             .replace(
                 "[listeners.admin]",
@@ -124,21 +108,6 @@ fn personal_public_config(public_routes: &str) -> config::ValidatedConfig {
                 &format!("tailnet_addresses = [\"100.64.0.10\"]\npublic_routes = {public_routes}"),
             )
     })
-}
-
-fn file_key_config(secret_path: &std::path::Path) -> config::ValidatedConfig {
-    let contents = fs::read_to_string("tests/fixtures/config/example.toml").expect("example reads");
-    let contents = contents.replace(
-        "env:KANATA_CLIENT_KEY",
-        &format!("file:{}", secret_path.display()),
-    );
-    scratch::load_text(&contents).expect("file-key config validates")
-}
-
-fn secret_file(contents: &[u8]) -> std::path::PathBuf {
-    let path = scratch::unique_path("auth-secret");
-    fs::write(&path, contents).expect("secret writes");
-    path
 }
 
 fn selector(alias: &str, operation: Operation) -> RouteSelector {
@@ -215,8 +184,7 @@ async fn model_ids(response: axum::response::Response) -> Vec<String> {
 
 #[test]
 fn bearer_authentication_is_strict_and_non_enumerating() {
-    let auth = ApplicationAuth::from_validated(&config(), &MemoryResolver(b"test-key".to_vec()))
-        .expect("auth builds");
+    let auth = ApplicationAuth::from_validated(&config()).expect("auth builds");
     let cases = [
         headers(None),
         headers(Some(HeaderValue::from_static("Basic test-key"))),
@@ -258,8 +226,7 @@ fn bearer_authentication_is_strict_and_non_enumerating() {
 
 #[test]
 fn api_key_header_alone_or_matching_bearer_authenticates() {
-    let auth = ApplicationAuth::from_validated(&config(), &MemoryResolver(b"test-key".to_vec()))
-        .expect("auth builds");
+    let auth = ApplicationAuth::from_validated(&config()).expect("auth builds");
     let with = |pairs: &[(&'static str, &'static str)]| {
         let mut headers = HeaderMap::new();
         for (name, value) in pairs {
@@ -322,7 +289,7 @@ fn api_key_header_alone_or_matching_bearer_authenticates() {
 fn permissions_are_exact_and_model_filtering_is_stable() {
     let config = config();
     let registry = Registry::from_validated(&config);
-    let context = ApplicationAuth::from_validated(&config, &MemoryResolver(b"test-key".to_vec()))
+    let context = ApplicationAuth::from_validated(&config)
         .expect("auth builds")
         .authenticate_headers(&headers(Some(HeaderValue::from_static("Bearer test-key"))))
         .expect("authenticates");
@@ -354,7 +321,7 @@ fn permissions_are_exact_and_model_filtering_is_stable() {
             .map(|alias| alias.0)
             .collect::<Vec<_>>(),
         vec![
-            "codex-chat",
+            "chatgpt-chat",
             "local-chat",
             "private-chat",
             "private-transcribe",
@@ -363,91 +330,10 @@ fn permissions_are_exact_and_model_filtering_is_stable() {
     );
 }
 
-#[test]
-fn resolved_key_failures_do_not_expose_secret_material() {
-    let config = config();
-    let empty = match ApplicationAuth::from_validated(&config, &MemoryResolver(Vec::new())) {
-        Ok(_) => panic!("empty key must fail"),
-        Err(error) => error,
-    };
-    assert_eq!(empty, AuthBuildError::InvalidSecret);
-
-    let contents = fs::read_to_string("tests/fixtures/config/example.toml").expect("example reads");
-    let duplicate = contents.replace(
-        "[limits]",
-        "[[application_keys]]\nid = \"second-client\"\nsecret_ref = \"env:KANATA_SECOND_CLIENT_KEY\"\npermissions = [{ model_alias = \"local-chat\", operation = \"chat\" }]\n\n[limits]",
-    );
-    let duplicate_config = scratch::load_text(&duplicate).expect("duplicate config validates");
-    let error = match ApplicationAuth::from_validated(
-        &duplicate_config,
-        &MemoryResolver(b"DUPLICATE_MARKER".to_vec()),
-    ) {
-        Ok(_) => panic!("duplicate key must fail"),
-        Err(error) => error.to_string(),
-    };
-    assert_eq!(error, "application keys contain duplicate material");
-    assert!(!error.contains("DUPLICATE_MARKER"));
-}
-
-#[test]
-fn configured_keys_use_the_same_b64token_grammar_as_bearer_headers() {
-    for invalid in [
-        b"comma,value".as_slice(),
-        b"colon:value",
-        b"middle=padding",
-        b"embedded whitespace",
-        b"control\x01",
-        b"\xff",
-    ] {
-        let error =
-            match ApplicationAuth::from_validated(&config(), &MemoryResolver(invalid.to_vec())) {
-                Ok(_) => panic!("invalid key must fail"),
-                Err(error) => error,
-            };
-        assert_eq!(error, AuthBuildError::InvalidSecret);
-    }
-    ApplicationAuth::from_validated(&config(), &MemoryResolver(b"AZaz09-._~+/==".to_vec()))
-        .expect("RFC 6750 b64token builds");
-}
-
-#[test]
-fn production_file_keys_normalize_one_terminal_newline_and_stay_bounded() {
-    for contents in [b"file-token\n".as_slice(), b"file-token\r\n"] {
-        let path = secret_file(contents);
-        let config = file_key_config(&path);
-        let auth = ApplicationAuth::from_validated(&config, &EnvironmentSecretResolver)
-            .expect("terminal newline normalizes");
-        fs::remove_file(path).expect("secret removes");
-        assert!(
-            auth.authenticate_headers(&headers(Some(HeaderValue::from_static(
-                "Bearer file-token"
-            ))))
-            .is_ok()
-        );
-    }
-
-    for contents in [b"file-token\n\n".as_slice(), b"file token", b"\xff"] {
-        let path = secret_file(contents);
-        let config = file_key_config(&path);
-        let result = ApplicationAuth::from_validated(&config, &EnvironmentSecretResolver);
-        fs::remove_file(path).expect("secret removes");
-        assert_eq!(result.err(), Some(AuthBuildError::InvalidSecret));
-    }
-
-    let path = secret_file(&vec![b'a'; 4099]);
-    let config = file_key_config(&path);
-    let result = ApplicationAuth::from_validated(&config, &EnvironmentSecretResolver);
-    fs::remove_file(path).expect("secret removes");
-    assert_eq!(result.err(), Some(AuthBuildError::SecretResolution));
-}
-
 #[tokio::test]
-async fn personal_codex_keys_filter_models_and_block_forbidden_dispatch() {
-    const OWNER_KEY: &str = "OWNER_SYNTHETIC_KEY_001";
-    const EXTERNAL_KEY: &str = "EXTERNAL_SYNTHETIC_KEY_001";
-    let config = personal_inline_config(|contents| contents);
-    let auth = ApplicationAuth::from_validated(&config, &DistinctScopeResolver)
-        .expect("distinct scoped keys build");
+async fn personal_chatgpt_keys_filter_models_and_block_forbidden_dispatch() {
+    let config = personal_config(|contents| contents);
+    let auth = ApplicationAuth::from_validated(&config).expect("distinct scoped keys build");
     let owner = auth
         .authenticate_headers(&headers(Some(bearer(OWNER_KEY))))
         .expect("owner key authenticates");
@@ -506,27 +392,26 @@ async fn personal_codex_keys_filter_models_and_block_forbidden_dispatch() {
         ["private-chat-a"]
     );
 
-    let codex = config
+    let chatgpt = config
         .adapters()
         .iter()
-        .find(|adapter| adapter.id() == "codex-private")
-        .expect("configured Codex adapter");
+        .find(|adapter| adapter.id() == "chatgpt-private")
+        .expect("configured ChatGPT adapter");
     let vllm = config
         .adapters()
         .iter()
         .find(|adapter| adapter.id() == "vllm-text-a")
-        .expect("configured non-Codex adapter");
-    let codex_dispatches = Arc::new(AtomicUsize::new(0));
+        .expect("configured non-ChatGPT adapter");
+    let chatgpt_dispatches = Arc::new(AtomicUsize::new(0));
     let vllm_dispatches = Arc::new(AtomicUsize::new(0));
     let server = TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &DistinctScopeResolver,
         Readiness::new(true),
         vec![
             Arc::new(DispatchCounter {
-                adapter_id: "codex-private",
-                calls: codex_dispatches.clone(),
-                capabilities: codex.capabilities().clone(),
+                adapter_id: "chatgpt-private",
+                calls: chatgpt_dispatches.clone(),
+                capabilities: chatgpt.capabilities().clone(),
             }),
             Arc::new(DispatchCounter {
                 adapter_id: "vllm-text-a",
@@ -542,14 +427,10 @@ async fn personal_codex_keys_filter_models_and_block_forbidden_dispatch() {
         .await
         .expect("owner models response");
     assert_eq!(owner_models.status(), StatusCode::OK);
+    // ChatGPT reasoning routes are discovered under their family name.
     assert_eq!(
         model_ids(owner_models).await,
-        [
-            "codex-chat",
-            "gpt-6-luna:low",
-            "gpt-6-sol",
-            "private-chat-a"
-        ]
+        ["chatgpt-chat", "gpt-6-luna", "gpt-6-sol", "private-chat-a"]
     );
     let external_models = server
         .client_oneshot(models_request_for(EXTERNAL_KEY))
@@ -565,12 +446,12 @@ async fn personal_codex_keys_filter_models_and_block_forbidden_dispatch() {
     server
         .client_oneshot(chat_request_for("private-chat-a", OWNER_KEY))
         .await
-        .expect("owner non-Codex chat response");
+        .expect("owner non-ChatGPT chat response");
     server
         .client_oneshot(chat_request_for("private-chat-a", EXTERNAL_KEY))
         .await
-        .expect("external non-Codex chat response");
-    assert_eq!(codex_dispatches.load(Ordering::SeqCst), 1);
+        .expect("external non-ChatGPT chat response");
+    assert_eq!(chatgpt_dispatches.load(Ordering::SeqCst), 1);
     assert_eq!(vllm_dispatches.load(Ordering::SeqCst), 2);
 
     let denied_chat = server
@@ -578,35 +459,33 @@ async fn personal_codex_keys_filter_models_and_block_forbidden_dispatch() {
         .await
         .expect("denied chat response");
     assert_eq!(denied_chat.status(), StatusCode::FORBIDDEN);
-    let denied_non_codex = server
+    let denied_non_chatgpt = server
         .client_oneshot(chat_request_for("private-chat-b", EXTERNAL_KEY))
         .await
-        .expect("unscoped non-Codex route response");
-    assert_eq!(denied_non_codex.status(), StatusCode::FORBIDDEN);
+        .expect("unscoped non-ChatGPT route response");
+    assert_eq!(denied_non_chatgpt.status(), StatusCode::FORBIDDEN);
     let denied_transcription = server
         .client_oneshot(transcription_request_for("private-chat-a", EXTERNAL_KEY))
         .await
         .expect("denied transcription response");
     assert_eq!(denied_transcription.status(), StatusCode::FORBIDDEN);
-    assert_eq!(codex_dispatches.load(Ordering::SeqCst), 1);
+    assert_eq!(chatgpt_dispatches.load(Ordering::SeqCst), 1);
     assert_eq!(vllm_dispatches.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
-async fn public_scopes_intersect_keys_and_exact_routes_without_public_codex() {
-    const OWNER_KEY: &str = "OWNER_SYNTHETIC_KEY_001";
-    const EXTERNAL_KEY: &str = "EXTERNAL_SYNTHETIC_KEY_001";
+async fn public_scopes_intersect_keys_and_exact_routes_without_public_chatgpt() {
     let config = personal_public_config(
         r#"[
           { model_alias = "private-chat-a", operation = "chat" },
           { model_alias = "private-native-asr", operation = "transcription" },
         ]"#,
     );
-    let codex = config
+    let chatgpt = config
         .adapters()
         .iter()
-        .find(|adapter| adapter.id() == "codex-private")
-        .expect("Codex adapter");
+        .find(|adapter| adapter.id() == "chatgpt-private")
+        .expect("ChatGPT adapter");
     let chat = config
         .adapters()
         .iter()
@@ -617,18 +496,17 @@ async fn public_scopes_intersect_keys_and_exact_routes_without_public_codex() {
         .iter()
         .find(|adapter| adapter.id() == "vllm-native-asr")
         .expect("transcription adapter");
-    let codex_dispatches = Arc::new(AtomicUsize::new(0));
+    let chatgpt_dispatches = Arc::new(AtomicUsize::new(0));
     let chat_dispatches = Arc::new(AtomicUsize::new(0));
     let transcription_dispatches = Arc::new(AtomicUsize::new(0));
     let server = TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &DistinctScopeResolver,
         Readiness::new(true),
         vec![
             Arc::new(DispatchCounter {
-                adapter_id: "codex-private",
-                calls: codex_dispatches.clone(),
-                capabilities: codex.capabilities().clone(),
+                adapter_id: "chatgpt-private",
+                calls: chatgpt_dispatches.clone(),
+                capabilities: chatgpt.capabilities().clone(),
             }),
             Arc::new(DispatchCounter {
                 adapter_id: "vllm-text-a",
@@ -660,12 +538,12 @@ async fn public_scopes_intersect_keys_and_exact_routes_without_public_codex() {
     assert_eq!(external_models.status(), StatusCode::OK);
     assert_eq!(model_ids(external_models).await, ["private-chat-a"]);
 
-    let public_codex = server
+    let public_chatgpt = server
         .public_oneshot(chat_request_for("gpt-6-sol", OWNER_KEY))
         .await
         .expect("configured public router");
-    assert_eq!(public_codex.status(), StatusCode::FORBIDDEN);
-    assert_eq!(codex_dispatches.load(Ordering::SeqCst), 0);
+    assert_eq!(public_chatgpt.status(), StatusCode::FORBIDDEN);
+    assert_eq!(chatgpt_dispatches.load(Ordering::SeqCst), 0);
 
     let external_chat = server
         .public_oneshot(chat_request_for("private-chat-a", EXTERNAL_KEY))
@@ -691,33 +569,37 @@ async fn public_scopes_intersect_keys_and_exact_routes_without_public_codex() {
     assert_eq!(owner_asr.status(), StatusCode::BAD_REQUEST);
     assert_eq!(transcription_dispatches.load(Ordering::SeqCst), 1);
 
-    let private_codex = server
+    let private_chatgpt = server
         .client_oneshot(chat_request_for("gpt-6-sol", OWNER_KEY))
         .await
         .expect("private owner route");
-    assert_eq!(private_codex.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(codex_dispatches.load(Ordering::SeqCst), 1);
+    assert_eq!(private_chatgpt.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(chatgpt_dispatches.load(Ordering::SeqCst), 1);
 }
 
-fn sha256_hex(value: &[u8]) -> String {
-    use sha2::Digest as _;
-    sha2::Sha256::digest(value)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+/// The example config with its keys file replaced by `records`.
+fn keyed_example(records: &str) -> String {
+    let example = fs::read_to_string("tests/fixtures/config/example.toml").expect("example reads");
+    let keyed = example.replace(
+        "[keys]\nfile = \"example-keys.toml\"\n",
+        scratch::KEYS_SECTION,
+    );
+    assert_ne!(keyed, example);
+    format!("{keyed}{}{records}", scratch::KEYS_FILE_MARKER)
 }
 
 #[test]
-fn digest_keys_authenticate_without_resolution_and_collide_with_resolved_keys() {
+fn key_digests_authenticate_exact_tokens_and_reject_duplicate_material() {
     let token = "kanata_sk_DIGEST_SYNTHETIC_KEY_001";
-    let example = fs::read_to_string("tests/fixtures/config/example.toml").expect("example reads");
-    let digest_ref = format!("sha256:{}", sha256_hex(token.as_bytes()));
-    let digest_config = scratch::load_text(&example.replace("env:KANATA_CLIENT_KEY", &digest_ref))
-        .expect("digest config validates");
+    let local = "permissions = [{ model_alias = \"local-chat\", operation = \"chat\" }]";
+    let digest_config = scratch::load_text(&keyed_example(&scratch::key_record(
+        "personal-client",
+        token,
+        local,
+    )))
+    .expect("digest config validates");
 
-    // Resolving anything would fail, so success proves the digest is used directly.
-    let auth = ApplicationAuth::from_validated(&digest_config, &DistinctScopeResolver)
-        .expect("digest auth builds");
+    let auth = ApplicationAuth::from_validated(&digest_config).expect("digest auth builds");
     assert_eq!(
         auth.authenticate_headers(&headers(Some(bearer(token))))
             .expect("digest key authenticates")
@@ -734,14 +616,13 @@ fn digest_keys_authenticate_without_resolution_and_collide_with_resolved_keys() 
         );
     }
 
-    let secret_path = secret_file(format!("{token}\n").as_bytes());
-    let duplicate = scratch::load_text(&format!(
-        "{}\n[[application_keys]]\nid = \"friend\"\nsecret_ref = \"file:{}\"\npermissions = [\n  {{ model_alias = \"local-chat\", operation = \"chat\" }},\n]\n",
-        example.replace("env:KANATA_CLIENT_KEY", &digest_ref),
-        secret_path.display()
-    ))
-    .expect("duplicate-material config validates offline");
-    let result = ApplicationAuth::from_validated(&duplicate, &EnvironmentSecretResolver);
-    fs::remove_file(secret_path).expect("secret removes");
-    assert!(matches!(result, Err(AuthBuildError::DuplicateSecret)));
+    let duplicate = scratch::load_text(&keyed_example(&format!(
+        "{}{}",
+        scratch::key_record("personal-client", token, local),
+        scratch::key_record("friend", token, local)
+    )));
+    assert_eq!(
+        duplicate.unwrap_err().to_string(),
+        "config error at keys_file.keys[1].digest: duplicate_secret"
+    );
 }

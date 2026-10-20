@@ -10,7 +10,7 @@
 - `macros.rs`: `str_enum!` (enum ↔ string tables) and `getters!` (trivial field getters); use them instead of hand-writing either.
 
 ## Layering
-- `tests/architecture_boundaries.rs` fails if `ollama`, `openrouter`, `codex`, `openai` or `cliproxy` appear (case-insensitive, comments included) in any `.rs` file under `src/` outside `adapter/`, `config/`, `main.rs`, `config.rs` and `cli.rs`. Other layers use `core` types and `ProviderKind` methods (e.g. `label()`).
+- `tests/architecture_boundaries.rs` fails if `ollama`, `openrouter`, `codex`, `openai` or `cliproxy` appear (case-insensitive, comments included) in any `.rs` file under `src/` outside `adapter/`, `config/`, `main.rs`, `config.rs` and `cli.rs` (`codex` stays banned after the provider's removal). Other layers use `core` types and `ProviderKind` methods (e.g. `label()`).
 - Metric labels are bounded enums, never adapter IDs or free text. The only keyed series uses configured key IDs and aliases.
 
 ## Config conventions

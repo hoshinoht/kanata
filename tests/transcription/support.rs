@@ -17,8 +17,7 @@ use axum::{
 use futures_util::stream;
 use kanata::{
     adapter::{Adapter, AdapterFuture, AdapterOutput},
-    auth::{SecretResolutionError, SecretResolver},
-    config::{SecretReference, ValidatedConfig, load},
+    config::{ValidatedConfig, load},
     core::{Capabilities, Operation, Response, RoutedRequest, TranscriptionResponse},
     server::{Readiness, TwoPlaneServer},
 };
@@ -48,13 +47,6 @@ pub(crate) const REDACTION_MARKERS: &[&str] = &[
     "EMPTY_FILE_MARKER",
     "TRUNCATED_MARKER",
 ];
-
-pub(crate) struct Resolver;
-impl SecretResolver for Resolver {
-    fn resolve(&self, _: &SecretReference) -> Result<Vec<u8>, SecretResolutionError> {
-        Ok(b"test-key".to_vec())
-    }
-}
 
 pub(crate) struct RecordingAdapter {
     pub(crate) requests: Arc<Mutex<Vec<RoutedRequest>>>,
@@ -94,13 +86,9 @@ pub(crate) fn server_from_config(
             ..Capabilities::default()
         },
     });
-    let server = TwoPlaneServer::from_validated_with_adapters(
-        config,
-        &Resolver,
-        Readiness::new(true),
-        vec![adapter],
-    )
-    .expect("server");
+    let server =
+        TwoPlaneServer::from_validated_with_adapters(config, Readiness::new(true), vec![adapter])
+            .expect("server");
     (server, requests)
 }
 

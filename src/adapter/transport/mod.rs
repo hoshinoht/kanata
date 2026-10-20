@@ -36,8 +36,8 @@ pub(crate) use multipart::{MultipartFile, MultipartRequest};
 pub(crate) use request::{Accept, CredentialHeader, Endpoint, TransportRequest};
 #[allow(unused_imports)]
 pub(crate) use types::{
-    AUTH_RESPONSE_BYTES, COMPLETE_RESPONSE_BYTES, OAUTH_RESPONSE_BYTES, ResponseBody,
-    ResponseContentType, STREAM_RESPONSE_BYTES, TransportResponse,
+    COMPLETE_RESPONSE_BYTES, OAUTH_RESPONSE_BYTES, ResponseBody, ResponseContentType,
+    STREAM_RESPONSE_BYTES, TransportResponse,
 };
 
 pub(crate) struct Transport {

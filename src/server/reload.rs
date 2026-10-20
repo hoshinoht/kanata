@@ -8,7 +8,7 @@ use super::{
     ClientState, PublicClientService, ServerBuildError, client_router, public_client_router,
 };
 use crate::adapter::Adapter;
-use crate::auth::{ApplicationAuth, KeyHandle, SecretResolver};
+use crate::auth::{ApplicationAuth, KeyHandle};
 use crate::config::ValidatedConfig;
 use crate::routing::Registry;
 
@@ -100,11 +100,10 @@ impl ConfigurationHandle {
     pub(crate) fn apply(
         &self,
         config: &ValidatedConfig,
-        resolver: &impl SecretResolver,
         adapters: Vec<Arc<dyn Adapter>>,
     ) -> Result<(), ServerBuildError> {
         let previous = self.snapshot();
-        let auth = ApplicationAuth::rebuild(config, resolver, &previous.state.keys.current())
+        let auth = ApplicationAuth::rebuild(config, &previous.state.keys.current())
             .map_err(ServerBuildError::Auth)?;
         let adapters = super::bind_adapters(config, adapters)?;
         let registry = Arc::new(Registry::from_validated(config));

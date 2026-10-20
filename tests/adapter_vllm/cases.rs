@@ -4,15 +4,18 @@ use kanata::{
     adapter::{Adapter, AdapterOutput, vllm::VllmAdapter},
     auth::{SecretResolutionError, SecretResolver},
     config::SecretReference,
-    core::{ErrorKind, ModelAlias, Operation, ReasoningEffort, Request as CoreRequest, TrustZone},
+    core::{
+        EmbeddingRequest, ErrorKind, ModelAlias, Operation, ReasoningEffort,
+        Request as CoreRequest, TrustZone,
+    },
 };
 use serde_json::{Value, json};
 
 use crate::support::{
-    INVALID_USAGE_RESPONSE, MockServer, TEXT_RESPONSE, UNEXPECTED_RESPONSE, adapter, config_at,
-    config_for, config_text_at, config_with, error_kind, expected_capabilities, expected_text,
-    fixture_finish_reason, load_config, routed, routed_transcription, routed_with_zone,
-    text_request, tool_history_request, tool_request, transcription_request,
+    EMBEDDINGS_RESPONSE, INVALID_USAGE_RESPONSE, MockServer, TEXT_RESPONSE, UNEXPECTED_RESPONSE,
+    adapter, config_at, config_for, config_text_at, config_with, error_kind, expected_capabilities,
+    expected_text, fixture_finish_reason, load_config, routed, routed_transcription,
+    routed_with_zone, text_request, tool_history_request, tool_request, transcription_request,
 };
 
 fn decode_request(body: &[u8]) -> Value {
@@ -375,4 +378,124 @@ async fn dropping_inflight_nonstream_request_cancels_the_upstream_body() {
         .unwrap_or_else(|_| panic!("upstream connection remained open after cancellation"));
     assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
     mock.finish().await;
+}
+
+fn embedding_request(dimensions: Option<usize>) -> CoreRequest {
+    CoreRequest::Embeddings(EmbeddingRequest {
+        model: ModelAlias("vllm-public".into()),
+        input: vec!["alpha".into(), "beta".into()],
+        dimensions,
+    })
+}
+
+#[tokio::test]
+async fn embeddings_post_the_openai_shape_with_the_configured_credential() {
+    for (dimensions, secret_ref) in [(None, false), (Some(3), true)] {
+        let mut mock = MockServer::json(EMBEDDINGS_RESPONSE).await;
+        let (zone, trust_zone) = if secret_ref {
+            ("external", TrustZone::External)
+        } else {
+            ("local", TrustZone::Local)
+        };
+        let config = config_at(
+            &format!("http://{}/v1", mock.address),
+            zone,
+            Operation::Embeddings,
+            false,
+            false,
+            secret_ref,
+        );
+        let adapter = VllmAdapter::from_config_with_secrets(
+            &config,
+            "vllm-fixture",
+            "vllm-chat",
+            &FixtureResolver,
+        )
+        .unwrap_or_else(|error| panic!("embeddings adapter: {error:?}"));
+        let request = embedding_request(dimensions);
+        let Ok(AdapterOutput::Complete(kanata::core::Response::Embeddings(response))) = adapter
+            .execute(routed_with_zone(&config, request, trust_zone))
+            .await
+        else {
+            panic!("embeddings response for {dimensions:?}")
+        };
+        assert_eq!(response.model, ModelAlias("vllm-public".into()));
+        assert_eq!(
+            response.vectors,
+            vec![vec![0.1, 0.2, 0.3], vec![0.4, 0.5, 0.6]]
+        );
+        assert_eq!(
+            response
+                .usage
+                .map(|usage| (usage.input_tokens, usage.total_tokens)),
+            Some((4, 4))
+        );
+        mock.finish().await;
+
+        let record = mock
+            .requests
+            .lock()
+            .unwrap_or_else(|_| panic!("request lock"))[0]
+            .clone();
+        assert_eq!(record.path, "/v1/embeddings");
+        assert_eq!(
+            record.headers.get("authorization").map(String::as_str),
+            secret_ref.then_some("Bearer fixture-vllm-key")
+        );
+        let mut expected = json!({
+            "model": "served-checkpoint-alias",
+            "input": ["alpha", "beta"],
+            "encoding_format": "float",
+        });
+        if let Some(dimensions) = dimensions {
+            expected["dimensions"] = json!(dimensions);
+        }
+        assert_eq!(decode_request(&record.body), expected);
+    }
+}
+
+#[tokio::test]
+async fn embeddings_failures_map_to_gateway_errors() {
+    let item = |index: u8, embedding: &str| {
+        format!(r#"{{"object":"embedding","index":{index},"embedding":{embedding}}}"#)
+    };
+    let list = |data: &[String]| format!(r#"{{"object":"list","data":[{}]}}"#, data.join(","));
+    let wrong_object = list(&[item(0, "[0.1]"), item(1, "[0.2]")]).replace("list", "dict");
+    let one_vector = list(&[item(0, "[0.1]")]);
+    let duplicate_index = list(&[item(0, "[0.1]"), item(0, "[0.2]")]);
+    let ragged = list(&[item(0, "[0.1]"), item(1, "[0.1,0.2]")]);
+    let inconsistent_usage =
+        EMBEDDINGS_RESPONSE.replace("\"total_tokens\": 4", "\"total_tokens\": 5");
+    assert_ne!(inconsistent_usage, EMBEDDINGS_RESPONSE);
+    let error = r#"{"detail":"secret-marker"}"#;
+    for (status, body, dimensions, expected) in [
+        (400, error, None, ErrorKind::InvalidRequest),
+        (404, error, None, ErrorKind::NotFound),
+        (429, error, None, ErrorKind::RateLimited),
+        (500, error, None, ErrorKind::UpstreamFailure),
+        (503, error, None, ErrorKind::UpstreamUnavailable),
+        (200, "not json", None, ErrorKind::UpstreamFailure),
+        (200, &wrong_object, None, ErrorKind::UpstreamFailure),
+        (200, &one_vector, None, ErrorKind::UpstreamFailure),
+        (200, &duplicate_index, None, ErrorKind::UpstreamFailure),
+        (200, &ragged, None, ErrorKind::UpstreamFailure),
+        (200, &inconsistent_usage, None, ErrorKind::UpstreamFailure),
+        (
+            200,
+            EMBEDDINGS_RESPONSE,
+            Some(2),
+            ErrorKind::UpstreamFailure,
+        ),
+    ] {
+        let mut mock = MockServer::response(status, "application/json", body).await;
+        let config = config_with(&mock.address, Operation::Embeddings, false, false, false);
+        let request = routed(&config, embedding_request(dimensions));
+        assert_eq!(
+            error_kind(adapter(&config).execute(request).await),
+            expected,
+            "{status} {body}"
+        );
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1, "{status} {body}");
+        mock.finish().await;
+    }
 }

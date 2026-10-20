@@ -15,11 +15,9 @@ const META_FIELDS: [&str; 7] = [
     "unset",
     "upstream_id",
 ];
-const CLEARABLE: [&str; 10] = [
+const CLEARABLE: [&str; 8] = [
     "reasoning_effort",
     "reasoning_summary",
-    "codex_reasoning_effort",
-    "codex_reasoning_summary",
     "context_tokens",
     "max_output_tokens",
     "enable_thinking",
@@ -292,18 +290,12 @@ fn expand(
         {
             return Err(ConfigError::new(source, "reasoning_chat_family_required"));
         }
-        if effective.reasoning_effort.is_some() || effective.codex_reasoning_effort.is_some() {
+        if effective.reasoning_effort.is_some() {
             return Err(ConfigError::new(source, "conflicting_effort_options"));
         }
         let default = effective
             .default_effort
             .ok_or_else(|| ConfigError::new(format!("{source}.default_effort"), "required"))?;
-        if adapter.kind == ProviderKind::Codex && default != ReasoningEffort::Medium {
-            return Err(ConfigError::new(
-                format!("{source}.default_effort"),
-                "medium_required",
-            ));
-        }
         variants[0].2 = Some(default);
         if let Some(efforts) = &effective.efforts {
             if efforts.is_empty() {
@@ -367,16 +359,7 @@ fn expand(
             route.insert("id".into(), route_id.into());
             route.insert("model_alias".into(), alias.into());
             if family && let Some(effort) = effort {
-                match adapter.kind {
-                    // Codex's unsuffixed route is implicitly medium.
-                    ProviderKind::Codex if variant == "base" => {}
-                    ProviderKind::Codex => {
-                        route.insert("codex_reasoning_effort".into(), effort.as_str().into());
-                    }
-                    _ => {
-                        route.insert("reasoning_effort".into(), effort.as_str().into());
-                    }
-                }
+                route.insert("reasoning_effort".into(), effort.as_str().into());
             }
             parse_toml(
                 &toml::to_string(&route)

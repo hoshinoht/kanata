@@ -92,10 +92,7 @@ fn decision(
     configured: bool,
     public: bool,
 ) -> Value {
-    let key = config
-        .application_keys()
-        .iter()
-        .find(|key| key.id() == key_id);
+    let key = config.keys().iter().find(|key| key.id() == key_id);
     let loaded = config
         .routes()
         .iter()

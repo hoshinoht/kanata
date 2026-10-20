@@ -137,11 +137,11 @@ impl Adapter for FixtureAdapter {
     }
 }
 
-/// The example fixture with a public listener publishing `private-chat`, sampling
-/// controls on its route (Messages always sends `max_tokens`), and `edits` applied.
+/// The example fixture (keys file records included) with a public listener publishing
+/// `private-chat`, sampling controls on its route (Messages always sends `max_tokens`), and
+/// `edits` applied.
 pub fn config_with(edits: &[(&str, &str)]) -> ValidatedConfig {
-    let mut contents =
-        std::fs::read_to_string("tests/fixtures/config/example.toml").expect("example config");
+    let mut contents = scratch::example_with_keys_text();
     for (from, to) in [
         (
             "[listeners.admin]",
@@ -165,10 +165,10 @@ pub fn config_with(edits: &[(&str, &str)]) -> ValidatedConfig {
     scratch::load_text(&contents).expect("config validates")
 }
 
-/// `private-chat` (public and private), `local-chat` and `codex-chat` (private only).
+/// `private-chat` (public and private), `local-chat` and `chatgpt-chat` (private only).
 pub fn server_with(config: &ValidatedConfig) -> (TwoPlaneServer, Recorded) {
     let recorded = Recorded::default();
-    let adapters: Vec<Arc<dyn Adapter>> = ["ollama-local", "vllm-private", "codex-private"]
+    let adapters: Vec<Arc<dyn Adapter>> = ["ollama-local", "vllm-private", "chatgpt-private"]
         .into_iter()
         .map(|id| {
             Arc::new(FixtureAdapter {
@@ -178,13 +178,9 @@ pub fn server_with(config: &ValidatedConfig) -> (TwoPlaneServer, Recorded) {
             }) as Arc<dyn Adapter>
         })
         .collect();
-    let server = TwoPlaneServer::from_validated_with_adapters(
-        config,
-        &crate::gateway::Resolver,
-        Readiness::new(true),
-        adapters,
-    )
-    .expect("server");
+    let server =
+        TwoPlaneServer::from_validated_with_adapters(config, Readiness::new(true), adapters)
+            .expect("server");
     (server, recorded)
 }
 

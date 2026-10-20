@@ -710,7 +710,6 @@ fn summary_server(
     };
     kanata::server::TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &gateway::Resolver,
         kanata::server::Readiness::new(true),
         vec![std::sync::Arc::new(adapter)],
     )
@@ -1086,7 +1085,6 @@ fn harness_server() -> gateway::ServerWithRequests {
     assert!(adapter.capabilities.sampling_controls);
     let server = kanata::server::TwoPlaneServer::from_validated_with_adapters(
         &config,
-        &gateway::Resolver,
         kanata::server::Readiness::new(true),
         vec![std::sync::Arc::new(adapter)],
     )
@@ -1112,11 +1110,11 @@ async fn recorded_harness_request_shapes_are_accepted() {
         ("omp_chat", "/v1/chat/completions"),
         ("opencode", "/v1/chat/completions"),
         ("omp_responses", "/v1/responses"),
-        ("codex_t1", "/v1/responses"),
-        ("codex_t2", "/v1/responses"),
+        ("responses_cli_t1", "/v1/responses"),
+        ("responses_cli_t2", "/v1/responses"),
     ] {
         let mut body = harness_fixture(name);
-        // Hosted and grouped tools are rejected by design; Codex can turn them off.
+        // Hosted and grouped tools are rejected by design; the recorded CLI can turn them off.
         if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
             tools.retain(|tool| tool["type"] == "function");
         }
@@ -1137,10 +1135,10 @@ async fn recorded_harness_request_shapes_are_accepted() {
         );
         assert_eq!(
             chat.include_encrypted_reasoning,
-            name.starts_with("codex"),
+            name.starts_with("responses_cli"),
             "{name}"
         );
-        if name == "codex_t2" {
+        if name == "responses_cli_t2" {
             assert!(matches!(
                 &chat.messages.last().expect("tool result").content[..],
                 [ChatContent::ToolResult { content, .. }] if content == "TEST_ONLY tool output"
@@ -1151,7 +1149,7 @@ async fn recorded_harness_request_shapes_are_accepted() {
     let response = server
         .client_oneshot(harness_request(
             "/v1/responses",
-            &harness_fixture("codex_t1"),
+            &harness_fixture("responses_cli_t1"),
         ))
         .await
         .expect("response");

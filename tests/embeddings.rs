@@ -38,33 +38,34 @@ fn config(address: &str, public: bool, permission: bool) -> ValidatedConfig {
             "operations = [\"chat\", \"embeddings\"]",
             1,
         )
-        .replace("owner = true", "owner = false")
         .replace(
-            "  { model_alias = \"codex-chat\", operation = \"chat\" },\n",
-            "",
+            "[keys]\nfile = \"example-keys.toml\"\n",
+            scratch::KEYS_SECTION,
         );
-    if permission {
-        contents = contents.replace(
-            "permissions = [",
-            "permissions = [\n  { model_alias = \"local-embed\", operation = \"embeddings\" },",
-        );
-    }
     if public {
         contents = contents.replace("[publication]", "[listeners.public]\nbind = \"172.30.0.3\"\nport = 8081\n\n[publication]\npublic_routes = [{ model_alias = \"local-embed\", operation = \"embeddings\" }]");
     }
     contents.push_str("\n[[routes]]\nid = \"ollama-embed\"\nmodel_alias = \"local-embed\"\noperation = \"embeddings\"\nadapter_id = \"ollama-local\"\nupstream_id = \"embedding-upstream\"\nrequires_streaming_chat = false\nrequires_function_tools = false\n");
     assert_ne!(original, contents);
-    gateway::load_valid(&contents)
+    // A non-owner key without private-only scopes, so the public plane keeps it.
+    let embed = if permission {
+        "\n  { model_alias = \"local-embed\", operation = \"embeddings\" },"
+    } else {
+        ""
+    };
+    let key = scratch::key_record(
+        "personal-client",
+        scratch::TEST_KEY,
+        &format!(
+            "permissions = [{embed}\n  {{ model_alias = \"local-chat\", operation = \"chat\" }},\n  {{ model_alias = \"private-chat\", operation = \"chat\" }},\n  {{ model_alias = \"private-transcribe\", operation = \"transcription\" }},\n  {{ model_alias = \"remote-chat\", operation = \"chat\" }},\n]"
+        ),
+    );
+    gateway::load_valid(&format!("{contents}{}{key}", scratch::KEYS_FILE_MARKER))
 }
 
 fn server(config: &ValidatedConfig, adapter: Arc<dyn Adapter>) -> TwoPlaneServer {
-    TwoPlaneServer::from_validated_with_adapters(
-        config,
-        &gateway::Resolver,
-        Readiness::new(true),
-        vec![adapter],
-    )
-    .unwrap()
+    TwoPlaneServer::from_validated_with_adapters(config, Readiness::new(true), vec![adapter])
+        .unwrap()
 }
 
 fn request(body: Value) -> Request<Body> {

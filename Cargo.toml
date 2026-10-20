@@ -1,6 +1,6 @@
 [package]
 name = "kanata"
-version = "1.0.0-beta.8"
+version = "1.0.0-beta.9"
 edition = "2024"
 rust-version = "1.98"
 license = "GPL-3.0-only"
@@ -20,7 +20,6 @@ http-body-util = "0.1.5"
 hyper = { version = "1.11.1", features = ["client", "http1", "server"] }
 hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "tls12", "ring", "rustls-platform-verifier"] }
 hyper-util = { version = "0.1.20", features = ["client-legacy", "http1", "service", "tokio"] }
-keyring = { version = "=4.2.0", default-features = false, features = ["v1", "apple-native-keyring-store", "zbus-secret-service-keyring-store"] }
 multer = "3.1"
 ring = "=0.17.14"
 rustix = { version = "=1.1.5", default-features = false, features = ["fs", "process", "std"] }
