@@ -18,7 +18,6 @@ mod responses;
 pub mod speech;
 pub mod vllm;
 
-#[allow(dead_code)]
 pub(crate) mod transport;
 
 pub type AdapterFuture =

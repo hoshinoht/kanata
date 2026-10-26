@@ -30,11 +30,8 @@ use self::{
     types::{Connector, headers_within_limit, non_identity, parse_response_content_type},
 };
 
-#[allow(unused_imports)]
 pub(crate) use multipart::{MultipartFile, MultipartRequest};
-#[allow(unused_imports)]
 pub(crate) use request::{Accept, CredentialHeader, Endpoint, TransportRequest};
-#[allow(unused_imports)]
 pub(crate) use types::{
     COMPLETE_RESPONSE_BYTES, OAUTH_RESPONSE_BYTES, ResponseBody, ResponseContentType,
     STREAM_RESPONSE_BYTES, TransportResponse,

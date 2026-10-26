@@ -50,11 +50,6 @@ impl PhaseDeadline {
     pub(super) fn expired(self) -> bool {
         tokio::time::Instant::now() >= self.at
     }
-
-    #[cfg(test)]
-    pub(super) fn at(self) -> tokio::time::Instant {
-        self.at
-    }
 }
 
 pub(super) struct PhaseTimer {

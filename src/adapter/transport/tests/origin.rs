@@ -171,22 +171,6 @@ async fn plaintext_credentials_fail_before_connecting() {
         Ok(_) => panic!("plaintext account header accepted"),
     };
     assert_eq!(error.kind, ErrorKind::Internal);
-
-    let form = TransportRequest::form(
-        Method::POST,
-        endpoint(),
-        vec![("oauth_token".to_owned(), "form-secret".to_owned())],
-        None,
-        Some(Accept::Json),
-        1024,
-        COMPLETE_RESPONSE_BYTES,
-    )
-    .unwrap_or_else(|_| panic!("form request"));
-    let error = match transport.execute(form).await {
-        Err(error) => error,
-        Ok(_) => panic!("plaintext form accepted"),
-    };
-    assert_eq!(error.kind, ErrorKind::Internal);
 }
 
 #[test]

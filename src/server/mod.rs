@@ -224,7 +224,7 @@ impl TwoPlaneServer {
         Self::build(config, readiness, Router::new(), adapters)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn from_validated_with_client_routes(
         config: &ValidatedConfig,
         readiness: Readiness,
@@ -403,7 +403,6 @@ impl Authenticated {
         self.context.key_limits()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn authorize(&self, selector: &RouteSelector) -> Result<(), ForbiddenResponse> {
         self.context
             .authorize(selector)
@@ -456,7 +455,6 @@ impl FromRequestParts<ClientState> for Authenticated {
 struct PublicAuthContext(AuthContext);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(crate) struct ForbiddenResponse;
 
 impl IntoResponse for ForbiddenResponse {

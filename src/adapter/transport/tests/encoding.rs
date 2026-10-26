@@ -139,58 +139,6 @@ async fn preencoded_form_bodies_preserve_their_contract() {
 }
 
 #[tokio::test]
-async fn form_encoding_preserves_order_unicode_spaces_and_reserved_bytes() {
-    let request = TransportRequest::form(
-        Method::POST,
-        endpoint(),
-        vec![
-            ("a b".to_owned(), "c+d & café".to_owned()),
-            ("a b".to_owned(), "second".to_owned()),
-        ],
-        None,
-        Some(Accept::Json),
-        128,
-        COMPLETE_RESPONSE_BYTES,
-    )
-    .unwrap_or_else(|_| panic!("form request"));
-    assert!(request.body.is_sensitive());
-    let bytes = encoded_frames(request.body, 128)
-        .await
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    assert_eq!(
-        String::from_utf8(bytes).unwrap_or_else(|_| panic!("form utf8")),
-        "a+b=c%2Bd+%26+caf%C3%A9&a+b=second"
-    );
-
-    let exact = TransportRequest::form(
-        Method::POST,
-        endpoint(),
-        vec![("x".to_owned(), "y".to_owned())],
-        None,
-        Some(Accept::Json),
-        3,
-        COMPLETE_RESPONSE_BYTES,
-    );
-    assert!(exact.is_ok());
-    let over = TransportRequest::form(
-        Method::POST,
-        endpoint(),
-        vec![("x".to_owned(), "y".to_owned())],
-        None,
-        Some(Accept::Json),
-        2,
-        COMPLETE_RESPONSE_BYTES,
-    );
-    let error = match over {
-        Err(error) => error,
-        Ok(_) => panic!("over-budget form accepted"),
-    };
-    assert_eq!(error.kind, ErrorKind::Internal);
-}
-
-#[tokio::test]
 async fn multipart_preserves_binary_file_fields_and_exact_budget() {
     let marker = b"\x00--kanata-boundary-0000000000000000\xff\r\n";
     let mut file_data = vec![b'x'; MAX_CHUNK_BYTES * 2 + 1];

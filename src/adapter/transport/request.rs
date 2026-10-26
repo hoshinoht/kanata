@@ -111,28 +111,6 @@ impl TransportRequest {
         )
     }
 
-    pub(crate) fn form(
-        method: Method,
-        endpoint: Endpoint,
-        fields: Vec<(String, String)>,
-        credential: Option<CredentialHeader>,
-        accept: Option<Accept>,
-        request_budget: usize,
-        response_budget: usize,
-    ) -> Result<Self, GatewayError> {
-        let body = EncodedBody::form(&fields, request_budget)?;
-        Self::from_body(
-            method,
-            endpoint,
-            body,
-            credential,
-            accept,
-            request_budget,
-            response_budget,
-            true,
-        )
-    }
-
     pub(crate) fn multipart(
         method: Method,
         endpoint: Endpoint,

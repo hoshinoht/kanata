@@ -49,31 +49,6 @@ impl EncodedBody {
         )
     }
 
-    pub(crate) fn form(fields: &[(String, String)], budget: usize) -> Result<Self, GatewayError> {
-        if budget == 0 {
-            return Err(types::internal_error());
-        }
-        let mut writer = BoundedWriter::new(budget);
-        for (index, (name, value)) in fields.iter().enumerate() {
-            if index != 0 {
-                writer
-                    .write_all(b"&")
-                    .map_err(|_| types::internal_error())?;
-            }
-            write_form_component(&mut writer, name)?;
-            writer
-                .write_all(b"=")
-                .map_err(|_| types::internal_error())?;
-            write_form_component(&mut writer, value)?;
-        }
-        Self::from_chunks(
-            "application/x-www-form-urlencoded".to_owned(),
-            vec![Bytes::from(writer.into_inner())],
-            true,
-            budget,
-        )
-    }
-
     pub(crate) fn form_encoded(value: &str, budget: usize) -> Result<Self, GatewayError> {
         if budget == 0 || !valid_form_encoded(value.as_bytes()) {
             return Err(types::internal_error());
@@ -212,29 +187,6 @@ impl Write for BoundedWriter {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
-}
-
-fn write_form_component(writer: &mut BoundedWriter, value: &str) -> Result<(), GatewayError> {
-    for byte in value.bytes() {
-        match byte {
-            b' ' => writer
-                .write_all(b"+")
-                .map_err(|_| types::internal_error())?,
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'*' => writer
-                .write_all(&[byte])
-                .map_err(|_| types::internal_error())?,
-            _ => {
-                let hex = [
-                    b"0123456789ABCDEF"[(byte >> 4) as usize],
-                    b"0123456789ABCDEF"[(byte & 0x0f) as usize],
-                ];
-                writer
-                    .write_all(&[b'%', hex[0], hex[1]])
-                    .map_err(|_| types::internal_error())?;
-            }
-        }
-    }
-    Ok(())
 }
 
 fn valid_form_encoded(value: &[u8]) -> bool {
