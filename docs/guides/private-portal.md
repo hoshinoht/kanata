@@ -12,7 +12,7 @@ Open the printed address, normally **http://127.0.0.1:9091**, in a browser on th
 kanata portal --config config/config.toml --port 9092
 ```
 
-The config must use `[keys] file = "..."`; inline keys were removed (see the [upgrade path](service-handoff.md#codex-removal)). The portal does not read or reveal provider credentials.
+The config must use `[keys] file = "..."`; inline keys were removed. The portal does not read or reveal provider credentials.
 
 ## Manage a Docker deployment
 

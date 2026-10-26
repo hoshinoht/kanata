@@ -47,27 +47,6 @@ Add a custom provider to `opencode.json` and use the published chat alias as the
 }
 ```
 
-## Codex CLI 0.154
-
-In the user `config.toml`, select the custom Responses provider. Disable tools that Kanata does not host:
-
-```toml
-model = "<chat-alias>"
-model_provider = "kanata"
-web_search = "disabled"
-
-[features]
-multi_agent = false
-
-[model_providers.kanata]
-name = "Kanata"
-base_url = "https://<kanata>/v1"
-env_key = "KANATA_API_KEY"
-wire_api = "responses"
-```
-
-Set `KANATA_API_KEY` in the environment. `web_search = "disabled"` and `features.multi_agent = false` are required: Codex's `web_search` and `namespace` tools are non-function tools, which Kanata rejects with `param=tools[i]`.
-
 ## Claude Code
 
 Claude Code uses the Messages endpoint. Set the base URL to the Kanata host **without** `/v1`, and use one of these credentials:
@@ -113,6 +92,5 @@ The optional `timeouts.sse_keepalive_ms` defaults to 15000 ms, capped by `timeou
 
 - [OMP model and provider configuration](https://github.com/can1357/oh-my-pi/blob/main/docs/models.md)
 - [OpenCode custom providers](https://opencode.ai/docs/providers/)
-- [Codex CLI configuration reference](https://developers.openai.com/codex/config-reference/)
 - [Claude Code gateway setup](https://code.claude.com/docs/en/llm-gateway-connect)
 - [OpenAI Python SDK](https://github.com/openai/openai-python)

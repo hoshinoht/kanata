@@ -15,7 +15,7 @@
 
 The offline schema fixture used by the tests lives in `tests/fixtures/config/example.toml`. Never serve it.
 
-The Codex provider, `[codex_auth]` and inline `[[application_keys]]` were removed; old configs fail `kanata check` with `codex_removed`, `use_reasoning_summary` or `inline_keys_removed`. See the [upgrade path](../docs/guides/service-handoff.md#codex-removal). Use `chatgpt.example.toml` for ChatGPT plan integrations.
+Inline `[[application_keys]]` were removed; old configs fail `kanata check` with `inline_keys_removed`. Use `chatgpt.example.toml` for ChatGPT plan integrations.
 
 For Docker sign-in with ChatGPT, add `deploy/compose/compose.kanata.chatgpt.yml` and set `KANATA_CHATGPT_STATE_DIR` to the same absolute path as `[chatgpt_auth].state_dir`. It is a dedicated owner-only writable directory outside the checkout, shared by host sign-in and the private container. See [deployment setup](../deploy/docker/README.md#sign-in-with-chatgpt). Manage the deployed client key file with `deploy/scripts/kanata.sh portal`.
 

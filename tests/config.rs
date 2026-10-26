@@ -1682,26 +1682,6 @@ fn removed_settings_upload_budgets_and_unsupported_output_caps_are_rejected() {
         ),
         // Removed settings name what replaced them.
         (
-            "kind = \"chatgpt\"",
-            "kind = \"codex\"",
-            "adapters[3].kind: codex_removed",
-        ),
-        (
-            "[chatgpt_auth]",
-            "[codex_auth]\nstore = \"file\"\n\n[chatgpt_auth]",
-            "codex_auth: codex_removed",
-        ),
-        (
-            "upstream_id = \"gpt-5\"",
-            "upstream_id = \"gpt-5\"\ncodex_reasoning_summary = \"auto\"",
-            "routes[4].codex_reasoning_summary: use_reasoning_summary",
-        ),
-        (
-            "upstream_id = \"gpt-5\"",
-            "upstream_id = \"gpt-5\"\ncodex_reasoning_effort = \"low\"",
-            "routes[4].codex_reasoning_effort: codex_removed",
-        ),
-        (
             "[keys]",
             "[[application_keys]]\nid = \"inline\"\nsecret_ref = \"env:KANATA_CLIENT_KEY\"\npermissions = [{ model_alias = \"local-chat\", operation = \"chat\" }]\n\n[keys]",
             "application_keys: inline_keys_removed",

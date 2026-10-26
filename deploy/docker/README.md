@@ -70,10 +70,6 @@ On macOS, verify that the Docker runtime maps host ownership and the private con
 
 The directory must stay writable because refresh rotates saved credentials. A static Compose secret cannot replace this state store. Verify sign-in consent, the account catalog and a short inference request with your account before relying on the integration.
 
-### Upgrading from the Codex provider
-
-The Codex provider was removed in this release. Before upgrading, move Codex routes to the `chatgpt` provider (see [service handoff](../../docs/guides/service-handoff.md#codex-removal)) and drop `deploy/compose/compose.kanata.chatgpt-only.yml` from `COMPOSE_FILE`. The base Compose file no longer mounts the old `kanata_codex_state` volume; it stays on disk until you delete it (`docker volume rm kanata_codex_state`).
-
 ## CLIProxyAPI upstream
 
 A local [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) can serve its OpenAI-compatible models (for example Claude via account sign-in) through a `cliproxy` adapter. Like ChatGPT and Anthropic, these routes are private-only: they cannot be listed in `publication.public_routes`, the `kanata-public` container never loads the adapter, its client key or any application key holding a CLIProxyAPI scope, and `kanata routes` shows them as `never` public. Kanata only sends credentials over HTTPS or to a loopback IP, so the container path terminates TLS in a sidecar and pins a private CA with the adapter's `ca_file`.

@@ -676,8 +676,6 @@ fn sanitized_deserialize_error(
                 .map_or_else(String::new, |(parent, _)| parent.to_owned());
         }
         removed_setting_class(name, is_config && path == name).unwrap_or("unknown_field")
-    } else if message.contains("unknown variant") && name == "codex" {
-        "codex_removed"
     } else if message.contains("invalid type") {
         "type_error"
     } else {
@@ -695,9 +693,6 @@ fn sanitized_deserialize_error(
 /// Explicit classes for removed settings; `top_level` means a key of the config root.
 fn removed_setting_class(name: &str, top_level: bool) -> Option<&'static str> {
     match name {
-        "codex_reasoning_summary" => Some("use_reasoning_summary"),
-        "codex_reasoning_effort" => Some("codex_removed"),
-        "codex_auth" if top_level => Some("codex_removed"),
         "application_keys" if top_level => Some("inline_keys_removed"),
         _ => None,
     }

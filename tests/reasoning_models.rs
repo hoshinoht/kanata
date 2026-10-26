@@ -268,19 +268,6 @@ fn summaries_validate_provider_operation_and_reject_the_removed_field() {
             .to_string()
             .contains("reasoning_summary: unsupported_by_adapter")
     );
-    // The Codex-era spelling names its replacement, alone or next to the new field.
-    for legacy in [
-        generic.replace("reasoning_summary =", "codex_reasoning_summary ="),
-        generic.replace(
-            "reasoning_summary = \"detailed\"",
-            "reasoning_summary = \"detailed\"\ncodex_reasoning_summary = \"detailed\"",
-        ),
-    ] {
-        assert_eq!(
-            load(&legacy).unwrap_err().to_string(),
-            "config error at routes[4].codex_reasoning_summary: use_reasoning_summary"
-        );
-    }
 }
 
 #[test]

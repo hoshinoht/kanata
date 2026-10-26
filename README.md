@@ -82,8 +82,6 @@ A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md
 
 The private `chatgpt` provider uses OpenAI's [documented OAuth flow](https://developers.openai.com/siwc/token-sharing-open-source) for eligible ChatGPT plan usage and the [public Responses API](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference). It supports host browser sign-in, protected account profiles, model discovery, and text/function chat. Start with [the setup and trial guide](docs/guides/sign-in-with-chatgpt.md) and [`config/chatgpt.example.toml`](config/chatgpt.example.toml). Compose deployments can use the [ChatGPT overlay and host sign-in helper](deploy/docker/README.md#sign-in-with-chatgpt). Verify model access with your own account after sign-in.
 
-The Codex provider was removed in this release; see the [upgrade path](docs/guides/service-handoff.md#codex-removal).
-
 ### 🎛️ Typed generation options
 - **Supported fields:** `response_format` (JSON object / JSON schema), `temperature`, `top_p`, `seed`, `max_tokens` / `max_completion_tokens` and `reasoning_effort`.
 - **Bounds:** each field is validated and size-limited.
