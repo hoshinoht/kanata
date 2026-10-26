@@ -14,6 +14,7 @@
 ## [1.0.0-beta.9] - 2026-10-20
 
 Removal of the deprecated Codex provider and inline keys, deployment files under `deploy/`, and a `rustls` security update.
+- `tokio` 1.54.1 fixes the unsound `AsyncFd` constructors (RUSTSEC-2026-0386); Kanata does not use `AsyncFd`. CI now runs `cargo-deny` (`deny.toml`) instead of `cargo audit`, which also fails on unsound and yanked crates, licenses not compatible with GPL-3.0-only and crates from outside crates.io.
 
 ### Changed
 
