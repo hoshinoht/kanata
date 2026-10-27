@@ -133,7 +133,7 @@ struct Observation {
 impl Observer {
     pub(crate) async fn reserve_usage(
         &self,
-        quota: Option<crate::keys::quota::DailyQuota>,
+        quota: crate::keys::quota::KeyQuotas,
     ) -> Result<(), crate::keys::quota::QuotaError> {
         let inputs = {
             let annotations = self.annotations();

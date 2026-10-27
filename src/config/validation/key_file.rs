@@ -105,6 +105,12 @@ pub(in crate::config) fn load_key_file(
             ConfigErrorClass::RequiredForDailyQuota,
         ));
     }
+    if usage_dir.is_none() && file.active().any(|key| key.monthly_quota().is_some()) {
+        return Err(ConfigError::new(
+            "keys.usage_dir",
+            ConfigErrorClass::RequiredForMonthlyQuota,
+        ));
+    }
     Ok((
         keys_from_file(&file, routes)?,
         KeySource {
@@ -147,6 +153,7 @@ pub(in crate::config) fn keys_from_file(
             rate_limit: record.rate_limit(),
             expires_at: record.expires_at(),
             daily_quota: record.daily_quota(),
+            monthly_quota: record.monthly_quota(),
         });
     }
     Ok(keys)

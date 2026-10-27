@@ -563,6 +563,7 @@ struct KeyView {
     digest: [u8; 32],
     expires_at: Option<u64>,
     daily_quota: Option<keys::quota::DailyQuota>,
+    monthly_quota: Option<keys::quota::DailyQuota>,
     max_in_flight: Option<u64>,
     rate_limit: Option<KeyRateLimit>,
 }
@@ -581,6 +582,12 @@ fn key_views(config: &ValidatedConfig) -> Result<BTreeMap<String, KeyView>, Conf
                     ConfigErrorClass::RequiredForDailyQuota,
                 ));
             }
+            if usage_dir.is_none() && key.monthly_quota().is_some() {
+                return Err(ConfigError::new(
+                    "keys.usage_dir",
+                    ConfigErrorClass::RequiredForMonthlyQuota,
+                ));
+            }
             let mut permissions = key.permissions().to_vec();
             permissions.sort_by(|a, b| {
                 (&a.model_alias.0, a.operation).cmp(&(&b.model_alias.0, b.operation))
@@ -593,6 +600,7 @@ fn key_views(config: &ValidatedConfig) -> Result<BTreeMap<String, KeyView>, Conf
                     digest: *key.digest(),
                     expires_at: key.expires_at(),
                     daily_quota: key.daily_quota(),
+                    monthly_quota: key.monthly_quota(),
                     max_in_flight: key.max_in_flight(),
                     rate_limit: key.rate_limit(),
                 },

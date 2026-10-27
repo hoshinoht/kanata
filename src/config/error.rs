@@ -117,6 +117,7 @@ str_enum! {
         UnknownVariant => "unknown_variant",
         // Keys.
         RequiredForDailyQuota => "required_for_daily_quota",
+        RequiredForMonthlyQuota => "required_for_monthly_quota",
         NotFound => "not_found",
         InsecurePermissions => "insecure_permissions",
         UnsupportedVersion => "unsupported_version",

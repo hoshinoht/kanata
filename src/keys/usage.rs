@@ -39,7 +39,7 @@ pub struct TokenUsage {
 }
 
 impl TokenUsage {
-    fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.reported = self.reported.saturating_add(other.reported);
         self.missing = self.missing.saturating_add(other.missing);
         self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);

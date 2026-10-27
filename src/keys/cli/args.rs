@@ -13,14 +13,14 @@ pub(crate) enum KeyCommand {
     List(ListArgs),
     /// Show one key.
     Show(ShowArgs),
-    /// Change a key's scopes, expiry, limits or daily quota.
+    /// Change a key's scopes, expiry, limits or daily and monthly quotas.
     #[command(after_help = "Without change flags, a terminal offers a route picker.")]
     Edit(EditArgs),
     /// Revoke a key.
     Rm(RmArgs),
     /// Replace a key's secret.
     Rotate(RotateArgs),
-    /// Report daily usage per key, model and plane.
+    /// Report daily or monthly usage per key, model and plane.
     #[command(after_help = "Reads --usage-dir, or the configured [keys] usage_dir.")]
     Usage(UsageArgs),
 }
@@ -59,7 +59,7 @@ pub(crate) struct LimitArgs {
     pub(super) rate_limit: Option<KeyRateLimit>,
 }
 
-/// Daily quota flags; they need `[keys] usage_dir`.
+/// Daily and monthly quota flags; they need `[keys] usage_dir`.
 #[derive(Debug, Args)]
 pub(crate) struct QuotaArgs {
     /// Requests per UTC day.
@@ -71,14 +71,51 @@ pub(crate) struct QuotaArgs {
     /// Tokens reserved per request until usage is reported.
     #[arg(long, value_name = "N", value_parser = parse_positive)]
     pub(super) reservation_tokens: Option<u64>,
+    /// Requests per UTC calendar month.
+    #[arg(long, value_name = "N", value_parser = parse_positive)]
+    pub(super) monthly_requests: Option<u64>,
+    /// Charged tokens per UTC calendar month.
+    #[arg(long, value_name = "N", value_parser = parse_positive)]
+    pub(super) monthly_tokens: Option<u64>,
+    /// Tokens reserved per request against the monthly allowance.
+    #[arg(long, value_name = "N", value_parser = parse_positive)]
+    pub(super) monthly_reservation_tokens: Option<u64>,
+}
+
+/// One allowance's `requests`, `tokens` and `reservation_tokens` flags.
+#[derive(Clone, Copy)]
+pub(super) struct QuotaFlags(pub(super) [Option<u64>; 3]);
+
+impl QuotaFlags {
+    pub(super) fn given(self) -> bool {
+        self.0.iter().any(Option::is_some)
+    }
 }
 
 impl QuotaArgs {
-    pub(super) fn given(&self) -> bool {
-        self.daily_requests.is_some()
-            || self.daily_tokens.is_some()
-            || self.reservation_tokens.is_some()
+    pub(super) fn daily(&self) -> QuotaFlags {
+        QuotaFlags([
+            self.daily_requests,
+            self.daily_tokens,
+            self.reservation_tokens,
+        ])
     }
+
+    pub(super) fn monthly(&self) -> QuotaFlags {
+        QuotaFlags([
+            self.monthly_requests,
+            self.monthly_tokens,
+            self.monthly_reservation_tokens,
+        ])
+    }
+}
+
+/// `--period`: rows per UTC day or per UTC month.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+pub(crate) enum Period {
+    #[default]
+    Day,
+    Month,
 }
 
 /// Expiry in days; `None` for `unlimited`.
@@ -198,9 +235,12 @@ pub(crate) struct EditArgs {
     pub(super) limits: LimitArgs,
     #[command(flatten)]
     pub(super) quota: QuotaArgs,
-    /// Remove the daily quota.
+    /// Remove the daily quota; the monthly quota is kept.
     #[arg(long, conflicts_with_all = ["daily_requests", "daily_tokens", "reservation_tokens"])]
     pub(super) clear_quota: bool,
+    /// Remove the monthly quota.
+    #[arg(long, conflicts_with_all = ["monthly_requests", "monthly_tokens", "monthly_reservation_tokens"])]
+    pub(super) clear_monthly_quota: bool,
     /// Remove --max-in-flight and --rate-limit.
     #[arg(long, conflicts_with_all = ["max_in_flight", "rate_limit"])]
     pub(super) clear_limits: bool,
@@ -229,7 +269,15 @@ impl EditArgs {
     }
 
     pub(super) fn quota_given(&self) -> bool {
-        self.clear_quota || self.quota.given()
+        self.daily_quota_given() || self.monthly_quota_given()
+    }
+
+    pub(super) fn daily_quota_given(&self) -> bool {
+        self.clear_quota || self.quota.daily().given()
+    }
+
+    pub(super) fn monthly_quota_given(&self) -> bool {
+        self.clear_monthly_quota || self.quota.monthly().given()
     }
 
     pub(super) fn limits_given(&self) -> bool {
@@ -291,6 +339,9 @@ pub(crate) struct UsageArgs {
     /// Last UTC day.
     #[arg(long, value_name = "YYYY-MM-DD", value_parser = parse_day)]
     pub(super) to: Option<u64>,
+    /// One row per UTC day or per UTC month (`YYYY-MM`).
+    #[arg(long, value_enum, default_value_t = Period::Day)]
+    pub(super) period: Period,
     /// Input token rate per million for a cost estimate.
     #[arg(long, value_name = "N", value_parser = parse_rate)]
     pub(super) input_cost_per_million: Option<f64>,

@@ -1,4 +1,5 @@
-//! Durable daily admission reservations and per-model usage reports.
+//! Durable daily and monthly admission reservations and per-model usage reports.
+//! Month-to-date usage is the sum of the current UTC month's day rows.
 
 use std::{
     fs::{self, File, OpenOptions, TryLockError},
@@ -21,6 +22,7 @@ const RETENTION_DAYS: u64 = 90;
 const MAX_ROWS: usize = 100_000;
 const MAX_BYTES: u64 = 32 * 1024 * 1024;
 
+/// One allowance; `daily_quota` and `monthly_quota` share this shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DailyQuota {
@@ -48,6 +50,35 @@ impl DailyQuota {
     }
 }
 
+/// A key's daily and monthly allowances.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct KeyQuotas {
+    pub daily: Option<DailyQuota>,
+    pub monthly: Option<DailyQuota>,
+}
+
+impl KeyQuotas {
+    pub fn is_some(self) -> bool {
+        self.daily.is_some() || self.monthly.is_some()
+    }
+
+    /// Tokens reserved per request: the larger of the two `reservation_tokens`.
+    pub fn reservation_tokens(self) -> u64 {
+        [self.daily, self.monthly]
+            .into_iter()
+            .flatten()
+            .filter_map(|quota| quota.reservation_tokens)
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QuotaPeriod {
+    Day,
+    Month,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DailyUsage {
@@ -60,6 +91,19 @@ pub struct DailyUsage {
     pub retained_reservation_tokens: u64,
     pub overrun_tokens: u64,
     pub tokens: TokenUsage,
+}
+
+impl DailyUsage {
+    /// Adds `other`'s counters; the selector fields are kept.
+    pub(crate) fn merge(&mut self, other: &Self) {
+        self.requests = self.requests.saturating_add(other.requests);
+        self.charged_tokens = self.charged_tokens.saturating_add(other.charged_tokens);
+        self.retained_reservation_tokens = self
+            .retained_reservation_tokens
+            .saturating_add(other.retained_reservation_tokens);
+        self.overrun_tokens = self.overrun_tokens.saturating_add(other.overrun_tokens);
+        self.tokens.merge(other.tokens);
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -79,7 +123,11 @@ pub struct DailyLedger {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QuotaError {
-    Exhausted { retry_after: u64 },
+    /// `retry_after` is seconds to the start of the next UTC day or month.
+    Exhausted {
+        retry_after: u64,
+        period: QuotaPeriod,
+    },
     Unavailable,
     ClockRollback,
 }
@@ -209,7 +257,7 @@ impl DailyLedger {
         key: &str,
         model: &str,
         operation: &str,
-        quota: Option<DailyQuota>,
+        quotas: KeyQuotas,
         now: u64,
     ) -> Result<Reservation, QuotaError> {
         let _lock = self.lock()?;
@@ -218,29 +266,42 @@ impl DailyLedger {
         if day < data.latest_day {
             return Err(QuotaError::ClockRollback);
         }
-        let reserved = quota
-            .and_then(|quota| quota.reservation_tokens)
-            .unwrap_or(0);
-        let mut requests = 0u64;
-        let mut tokens = 0u64;
-        for row in data
-            .rows
-            .iter()
-            .filter(|row| row.day == day && row.key_id == key)
-        {
-            requests = requests.saturating_add(row.requests);
-            tokens = tokens.saturating_add(row.charged_tokens);
+        let reserved = quotas.reservation_tokens();
+        let (month_start, next_month) = super::time::month_bounds(day);
+        let (mut daily, mut monthly) = ((0u64, 0u64), (0u64, 0u64));
+        for row in data.rows.iter().filter(|row| row.key_id == key) {
+            let add = |(requests, tokens): &mut (u64, u64)| {
+                *requests = requests.saturating_add(row.requests);
+                *tokens = tokens.saturating_add(row.charged_tokens);
+            };
+            if row.day == day {
+                add(&mut daily);
+            }
+            if (month_start..=day).contains(&row.day) {
+                add(&mut monthly);
+            }
         }
-        if quota.is_some_and(|quota| {
-            quota.requests.is_some_and(|limit| requests >= limit)
-                || quota.tokens.is_some_and(|limit| {
-                    tokens
-                        .checked_add(reserved)
-                        .is_none_or(|total| total > limit)
-                })
-        }) {
+        let exhausted = |quota: Option<DailyQuota>, (requests, tokens): (u64, u64)| {
+            quota.is_some_and(|quota| {
+                quota.requests.is_some_and(|limit| requests >= limit)
+                    || quota.tokens.is_some_and(|limit| {
+                        tokens
+                            .checked_add(reserved)
+                            .is_none_or(|total| total > limit)
+                    })
+            })
+        };
+        // The monthly reset is never earlier than the daily one, so it is reported first.
+        if exhausted(quotas.monthly, monthly) {
+            return Err(QuotaError::Exhausted {
+                retry_after: next_month * DAY - now,
+                period: QuotaPeriod::Month,
+            });
+        }
+        if exhausted(quotas.daily, daily) {
             return Err(QuotaError::Exhausted {
                 retry_after: DAY - now % DAY,
+                period: QuotaPeriod::Day,
             });
         }
         data.latest_day = day;
@@ -363,12 +424,25 @@ mod tests {
         requests: Option<u64>,
         tokens: Option<u64>,
         reservation_tokens: Option<u64>,
-    ) -> Option<DailyQuota> {
-        Some(DailyQuota {
-            requests,
-            tokens,
-            reservation_tokens,
-        })
+    ) -> KeyQuotas {
+        KeyQuotas {
+            daily: Some(DailyQuota {
+                requests,
+                tokens,
+                reservation_tokens,
+            }),
+            monthly: None,
+        }
+    }
+    fn monthly(
+        requests: Option<u64>,
+        tokens: Option<u64>,
+        reservation_tokens: Option<u64>,
+    ) -> KeyQuotas {
+        KeyQuotas {
+            daily: None,
+            monthly: quota(requests, tokens, reservation_tokens).daily,
+        }
     }
     fn usage(input: u64, output: u64) -> Usage {
         Usage {
@@ -488,7 +562,10 @@ mod tests {
             .unwrap();
         assert!(matches!(
             ledger.reserve("alpha", "chat", "chat", limit, 2 * DAY - 1),
-            Err(QuotaError::Exhausted { retry_after: 1 })
+            Err(QuotaError::Exhausted {
+                retry_after: 1,
+                period: QuotaPeriod::Day
+            })
         ));
         let today = ledger
             .reserve("alpha", "chat", "chat", limit, 2 * DAY)
@@ -547,5 +624,110 @@ mod tests {
             ),
             Err(QuotaError::Exhausted { .. })
         ));
+    }
+    fn at(text: &str) -> u64 {
+        super::super::time::parse(text).unwrap()
+    }
+
+    #[test]
+    fn monthly_allowance_sums_the_current_utc_month_across_days_and_models() {
+        let fixture = Fixture::new();
+        let ledger = fixture.ledger(Plane::All);
+        let limit = monthly(Some(3), None, None);
+        ledger
+            .reserve("alpha", "chat", "chat", limit, at("2026-03-01T00:00:00Z"))
+            .unwrap();
+        ledger
+            .reserve("alpha", "other", "chat", limit, at("2026-03-02T08:00:00Z"))
+            .unwrap();
+        ledger
+            .reserve("beta", "chat", "chat", limit, at("2026-03-03T08:00:00Z"))
+            .unwrap();
+        ledger
+            .reserve("alpha", "chat", "chat", limit, at("2026-03-03T08:00:00Z"))
+            .unwrap();
+        let now = at("2026-03-31T23:00:00Z");
+        assert_eq!(
+            ledger.reserve("alpha", "chat", "chat", limit, now).err(),
+            Some(QuotaError::Exhausted {
+                retry_after: at("2026-04-01T00:00:00Z") - now,
+                period: QuotaPeriod::Month
+            })
+        );
+    }
+
+    #[test]
+    fn monthly_allowance_resets_at_the_next_utc_month() {
+        let fixture = Fixture::new();
+        let ledger = fixture.ledger(Plane::All);
+        let limit = monthly(None, Some(100), Some(60));
+        let last_day = at("2026-12-31T23:59:59Z");
+        let late = ledger
+            .reserve("alpha", "chat", "chat", limit, last_day)
+            .unwrap();
+        assert_eq!(
+            ledger
+                .reserve("alpha", "chat", "chat", limit, last_day)
+                .err(),
+            Some(QuotaError::Exhausted {
+                retry_after: 1,
+                period: QuotaPeriod::Month
+            })
+        );
+        ledger
+            .reserve("alpha", "chat", "chat", limit, at("2027-01-01T00:00:00Z"))
+            .unwrap();
+        late.complete(Some(&usage(30, 20))).unwrap();
+        let rows = ledger.read().unwrap();
+        assert_eq!((rows[0].charged_tokens, rows[1].charged_tokens), (50, 60));
+    }
+
+    #[test]
+    fn both_allowances_reserve_the_larger_amount_once() {
+        let fixture = Fixture::new();
+        let ledger = fixture.ledger(Plane::All);
+        let both = KeyQuotas {
+            daily: quota(None, Some(100), Some(10)).daily,
+            monthly: quota(None, Some(1_000), Some(50)).daily,
+        };
+        let reservation = ledger.reserve("alpha", "chat", "chat", both, DAY).unwrap();
+        let row = ledger.read().unwrap().remove(0);
+        assert_eq!(
+            (row.charged_tokens, row.retained_reservation_tokens),
+            (50, 50)
+        );
+        reservation.complete(Some(&usage(5, 5))).unwrap();
+        let row = ledger.read().unwrap().remove(0);
+        assert_eq!(
+            (row.charged_tokens, row.retained_reservation_tokens),
+            (10, 0)
+        );
+        ledger.reserve("alpha", "chat", "chat", both, DAY).unwrap();
+        assert_eq!(
+            ledger.reserve("alpha", "chat", "chat", both, DAY).err(),
+            Some(QuotaError::Exhausted {
+                retry_after: DAY,
+                period: QuotaPeriod::Day
+            })
+        );
+    }
+
+    #[test]
+    fn exhausting_both_allowances_reports_the_later_monthly_reset() {
+        let fixture = Fixture::new();
+        let ledger = fixture.ledger(Plane::All);
+        let now = at("2026-03-10T12:00:00Z");
+        let both = KeyQuotas {
+            daily: quota(Some(1), None, None).daily,
+            monthly: quota(Some(1), None, None).daily,
+        };
+        ledger.reserve("alpha", "chat", "chat", both, now).unwrap();
+        assert_eq!(
+            ledger.reserve("alpha", "chat", "chat", both, now).err(),
+            Some(QuotaError::Exhausted {
+                retry_after: at("2026-04-01T00:00:00Z") - now,
+                period: QuotaPeriod::Month
+            })
+        );
     }
 }

@@ -61,6 +61,20 @@ pub fn format(seconds: u64) -> String {
     )
 }
 
+/// First day, and first day of the next month, of the UTC month holding `day` (days since 1970).
+pub fn month_bounds(day: u64) -> (u64, u64) {
+    let (year, month, _) = civil_from_days(day as i64);
+    let (next_year, next_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    (
+        days_from_civil(year, month, 1) as u64,
+        days_from_civil(next_year, next_month, 1) as u64,
+    )
+}
+
 fn days_in_month(year: u64, month: u64) -> u64 {
     match month {
         2 if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => {
@@ -102,7 +116,20 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{format, parse};
+    use super::{SECONDS_PER_DAY, format, month_bounds, parse};
+
+    #[test]
+    fn month_bounds_cover_leap_february_and_year_end() {
+        let day = |text: &str| parse(text).unwrap() / SECONDS_PER_DAY;
+        assert_eq!(
+            month_bounds(day("2028-02-29T00:00:00Z")),
+            (day("2028-02-01T00:00:00Z"), day("2028-03-01T00:00:00Z"))
+        );
+        assert_eq!(
+            month_bounds(day("2026-12-01T00:00:00Z")),
+            (day("2026-12-01T00:00:00Z"), day("2027-01-01T00:00:00Z"))
+        );
+    }
 
     #[test]
     fn round_trips_known_instants() {

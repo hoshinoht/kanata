@@ -84,6 +84,12 @@ impl ValidatedConfig {
                 ConfigErrorClass::RequiredForDailyQuota,
             ));
         }
+        if usage_dir.is_none() && file.active().any(|key| key.monthly_quota().is_some()) {
+            return Err(ConfigError::new(
+                "keys.usage_dir",
+                ConfigErrorClass::RequiredForMonthlyQuota,
+            ));
+        }
         let keys = keys_from_file(file, &self.routes)?;
         Ok(Self {
             keys,
@@ -431,11 +437,13 @@ pub struct ValidatedApplicationKey {
     max_in_flight: Option<u64>,
     rate_limit: Option<KeyRateLimit>,
     daily_quota: Option<crate::keys::quota::DailyQuota>,
+    monthly_quota: Option<crate::keys::quota::DailyQuota>,
     expires_at: Option<u64>,
 }
 impl ValidatedApplicationKey {
     getters! {
         pub daily_quota: Option<crate::keys::quota::DailyQuota>,
+        pub monthly_quota: Option<crate::keys::quota::DailyQuota>,
         /// Unix seconds; `None` never expires.
         pub expires_at: Option<u64>,
         pub id: &str,

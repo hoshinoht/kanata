@@ -40,7 +40,7 @@ On Linux/macOS, `kanata serve` accepts SIGHUP to validate and adopt route, adapt
   - `kanata key new --config <cfg> --id <id> (--chat A|--transcription A)... --expires <1|3|7|13|30|60|unlimited> [--owner] [--max-in-flight N] [--rate-limit N/MS] [--key-out path]` prints the key once (or writes it to `--key-out`) and stores only its SHA-256 digest. With no scopes in a terminal it offers a route picker. `key list [--all] [--json]`, `key show <id>`, `key edit <id>` (`--add-chat`, `--remove-chat`, `--add-transcription`, `--remove-transcription`, `--expires`, `--max-in-flight`, `--rate-limit`, `--clear-limits`; same secret), `key rm <id>` (revoke; the owner needs `--force`), `key rotate (<id>|--owner) --expires ...`. `kanata routes --config <cfg>` shows whether each route is public (`yes`, `no`, `never`). Changes apply within about 2 s without a restart; an invalid file is rejected and the previous keys stay active.
   - Only one key may be the owner. Any key may hold private-only scopes (ChatGPT, CLIProxyAPI, Anthropic; private listener only); the public plane never loads such keys.
   - **Usage:** each server plane writes `usage-<plane>.json` into its usage directory (Compose mounts `state/private` and `state/public`; key ids, request counts, last use and reported token totals; flushed every 30 s and at shutdown), shown by `key list`/`key show`. **Audit:** the CLI appends to `audit.jsonl` next to the keys file (time, local user and uid, action, key id, owner flag, edit changes; never secrets).
-  - **Daily quotas:** file-backed keys may carry `daily_quota = { requests = 100, tokens = 200000, reservation_tokens = 8000 }`; `[keys] usage_dir` is required. `key new`/`key edit` accept `--daily-requests`, `--daily-tokens`, `--reservation-tokens`, and edits accept `--clear-quota`. Durable reservations precede dispatch; missing usage retains the token reservation. `kanata key usage` reads model/operation/day reports and keeps process planes separate. Token overruns are possible when a provider reports more than reserved; see [usage and quotas](../docs/guides/usage-quotas.md).
+  - **Daily and monthly quotas:** file-backed keys may carry `daily_quota = { requests = 100, tokens = 200000, reservation_tokens = 8000 }` and `monthly_quota` of the same shape (per UTC calendar month); `[keys] usage_dir` is required. `key new`/`key edit` accept `--daily-requests`, `--daily-tokens`, `--reservation-tokens`, `--monthly-requests`, `--monthly-tokens`, `--monthly-reservation-tokens`, and edits accept `--clear-quota` (daily only) and `--clear-monthly-quota`. Durable reservations precede dispatch; missing usage retains the token reservation. `kanata key usage` reads model/operation/day reports (`--period month` for UTC-month totals) and keeps process planes separate. Token overruns are possible when a provider reports more than reserved; see [usage and quotas](../docs/guides/usage-quotas.md).
 - **Context length:** a chat route may declare `context_tokens` (256 to 16,777,216). Kanata shows it on `/v1/models` as `kanata.context_tokens` so clients can size prompts; leaving it unset (`null`) means the provider's own window. Kanata doesn't set the window itself:
   - Cloud models (Ollama cloud, OpenRouter, ChatGPT) already run at their full context; leave it unset.
   - Local Ollama can't take a context size per request on its OpenAI-compatible API. Create a sized variant with `deploy/scripts/kanata.sh ollama-context <model> <tokens>` (e.g. `gpt-oss:20b` at 16384 becomes `gpt-oss:20b-16k`, sharing the same weights), point the route's `upstream_id` at it, and set `context_tokens` to match. Unsized local models use Ollama's server-wide `OLLAMA_CONTEXT_LENGTH`.
@@ -298,6 +298,7 @@ Every setting the config schema accepts; unknown fields fail with `unknown_field
 | `unknown_variant` | A `route_ids` key is not `base` or one of the model's efforts. |
 | **Keys** | |
 | `required_for_daily_quota` | A key has `daily_quota` but `[keys] usage_dir` is unset. |
+| `required_for_monthly_quota` | A key has `monthly_quota` but `[keys] usage_dir` is unset. |
 | `not_found` | The keys file is missing at reload. |
 | `insecure_permissions` | The keys file is group- or world-writable. |
 | `unsupported_version` | The keys file `version` is not supported. |
@@ -305,7 +306,7 @@ Every setting the config schema accepts; unknown fields fail with `unknown_field
 | `invalid_digest` | A key digest is not `sha256:` plus 64 lowercase hex digits. |
 | `duplicate_secret` | Two keys share a digest. |
 | `multiple_owners` | More than one key is marked owner. |
-| `invalid_token_reservation` | A daily quota's `reservation_tokens` is set without `tokens` or exceeds it. |
+| `invalid_token_reservation` | A daily or monthly quota's `reservation_tokens` is set without `tokens` or exceeds it. |
 | `build_error` | A valid keys file could not be applied to the running config. |
 | **Reload and config commands** | |
 | `restart_required` | A SIGHUP reload changes a restart-only setting (`reload.<field>`). |

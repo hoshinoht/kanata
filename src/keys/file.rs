@@ -127,6 +127,7 @@ pub struct StoredKey {
     max_in_flight: Option<u64>,
     rate_limit: Option<KeyRateLimit>,
     daily_quota: Option<super::quota::DailyQuota>,
+    monthly_quota: Option<super::quota::DailyQuota>,
     created_at: u64,
     expires_at: Option<u64>,
     rotated_at: Option<u64>,
@@ -153,6 +154,7 @@ impl StoredKey {
             max_in_flight,
             rate_limit,
             daily_quota: None,
+            monthly_quota: None,
             created_at,
             expires_at,
             rotated_at: None,
@@ -187,6 +189,10 @@ impl StoredKey {
         self.daily_quota = quota;
     }
 
+    pub fn set_monthly_quota(&mut self, quota: Option<super::quota::DailyQuota>) {
+        self.monthly_quota = quota;
+    }
+
     getters! {
         pub id: &str,
         pub digest: &[u8; 32],
@@ -195,6 +201,7 @@ impl StoredKey {
         pub max_in_flight: Option<u64>,
         pub rate_limit: Option<KeyRateLimit>,
         pub daily_quota: Option<super::quota::DailyQuota>,
+        pub monthly_quota: Option<super::quota::DailyQuota>,
         pub created_at: u64,
         pub expires_at: Option<u64>,
         pub rotated_at: Option<u64>,
@@ -232,6 +239,7 @@ impl StoredKey {
                 per_ms: limit.per_ms,
             }),
             daily_quota: self.daily_quota,
+            monthly_quota: self.monthly_quota,
             created_at: time::format(self.created_at),
             expires_at: self.expires_at.map(time::format),
             rotated_at: self.rotated_at.map(time::format),
@@ -263,6 +271,8 @@ struct RawStoredKey {
     rate_limit: Option<RawRateLimit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     daily_quota: Option<super::quota::DailyQuota>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    monthly_quota: Option<super::quota::DailyQuota>,
     created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     expires_at: Option<String>,
@@ -356,6 +366,11 @@ fn parse_inner(bytes: &[u8], routes: Option<&[ValidatedRoute]>) -> Result<KeysFi
                 .validate()
                 .map_err(|class| ConfigError::new(format!("{path}.daily_quota"), class))?;
         }
+        if let Some(quota) = key.monthly_quota {
+            quota
+                .validate()
+                .map_err(|class| ConfigError::new(format!("{path}.monthly_quota"), class))?;
+        }
         records.push(StoredKey {
             id: key.id,
             digest,
@@ -364,6 +379,7 @@ fn parse_inner(bytes: &[u8], routes: Option<&[ValidatedRoute]>) -> Result<KeysFi
             max_in_flight,
             rate_limit,
             daily_quota: key.daily_quota,
+            monthly_quota: key.monthly_quota,
             created_at,
             expires_at,
             rotated_at,

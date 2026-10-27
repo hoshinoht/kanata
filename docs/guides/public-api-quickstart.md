@@ -166,6 +166,7 @@ When `/v1/models` declares `kanata.input_images`, user messages can include inli
 | 429 | `gateway_queue_full` | The gateway queue for this model is full. Retry after the `Retry-After` seconds |
 | 429 | `gateway_key_busy` / `gateway_key_rate_limited` | Your key has too many requests running, or sent too many recently. Retry after the `Retry-After` seconds |
 | 429 | `daily_quota_exceeded` | Your key has exhausted its daily request allowance, or another full token reservation does not fit. `Retry-After` points to the next UTC midnight |
+| 429 | `monthly_quota_exceeded` | Your key has exhausted its monthly request allowance, or another full token reservation does not fit this UTC month. `Retry-After` points to the start of the next UTC month |
 | 503 | `quota_unavailable` | The gateway cannot durably reserve your daily allowance, or its clock moved to an earlier UTC day. Contact the operator |
 | 429 | `rate_limit_exceeded` | The model backend is rate-limiting. Wait and retry with backoff |
 | 502 / 503 | `upstream_failure` / `upstream_unavailable` | The model backend is down or restarting. Try again later (after `Retry-After` seconds if present) |

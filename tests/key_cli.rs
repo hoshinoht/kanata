@@ -141,6 +141,108 @@ fn daily_quota_flags_validate_preserve_rotation_and_clear_independently() {
 }
 
 #[test]
+fn monthly_quota_flags_sit_next_to_daily_and_clear_separately() {
+    let scratch = Scratch::new();
+    scratch.new_key(
+        "metered",
+        &[
+            "--chat",
+            "local-chat",
+            "--daily-requests",
+            "10",
+            "--monthly-requests",
+            "100",
+            "--monthly-tokens",
+            "1000",
+            "--monthly-reservation-tokens",
+            "100",
+        ],
+    );
+    let key = || kanata::config::load(scratch.config()).unwrap().keys()[0].clone();
+    assert_eq!(key().monthly_quota().unwrap().tokens, Some(1000));
+    let edited = scratch.key(&["edit", "metered", "--monthly-requests", "50"]);
+    assert!(edited.status.success(), "{}", stderr(&edited));
+    assert_eq!(key().monthly_quota().unwrap().requests, Some(50));
+    assert_eq!(key().monthly_quota().unwrap().reservation_tokens, Some(100));
+    let edit = scratch.audit().pop().unwrap();
+    assert_eq!(edit["changes"]["monthly_quota"]["requests"], 50);
+    assert!(edit["changes"].get("daily_quota").is_none());
+    let bad = scratch.key(&["edit", "metered", "--monthly-reservation-tokens", "1001"]);
+    assert!(!bad.status.success());
+    let conflict = scratch.key(&[
+        "edit",
+        "metered",
+        "--clear-monthly-quota",
+        "--monthly-requests",
+        "1",
+    ]);
+    assert!(!conflict.status.success());
+    let shown = scratch.key(&["show", "metered", "--json"]);
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(shown["monthly_quota"]["requests"], 50);
+    assert!(stdout(&scratch.key(&["show", "metered"])).contains("monthly_quota:"));
+    let cleared = scratch.key(&["edit", "metered", "--clear-quota"]);
+    assert!(cleared.status.success(), "{}", stderr(&cleared));
+    assert!(key().daily_quota().is_none());
+    assert!(key().monthly_quota().is_some());
+    let cleared = scratch.key(&["edit", "metered", "--clear-monthly-quota"]);
+    assert!(cleared.status.success(), "{}", stderr(&cleared));
+    assert!(key().monthly_quota().is_none());
+    assert_eq!(
+        scratch.audit().pop().unwrap()["changes"]["monthly_quota"],
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn usage_reports_sum_rows_per_utc_month_within_day_bounds() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let dir = scratch.0.join("state");
+    let day =
+        |date: &str| kanata::keys::time::parse(&format!("{date}T00:00:00Z")).unwrap() / 86_400;
+    let row = |date: &str, requests: u64| {
+        json!({
+            "day":day(date),"key_id":"client","model":"local-chat","operation":"chat","requests":requests,"charged_tokens":10 * requests,"retained_reservation_tokens":0,"overrun_tokens":0,"tokens":{"reported":requests,"missing":0,"input_tokens":requests,"output_tokens":requests,"reasoning_tokens":0,"reasoning_reported":0}
+        })
+    };
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("daily-all.json"),
+        json!({"version":1,"plane":"all","latest_day":day("2026-10-03"),"rows":[
+            row("2026-09-30", 1), row("2026-10-01", 2), row("2026-10-03", 4)
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let report = |extra: &[&str]| {
+        let mut args = vec!["usage", "--plane", "all", "--period", "month", "--json"];
+        args.extend_from_slice(extra);
+        let output = scratch.key(&args);
+        assert!(output.status.success(), "{}", stderr(&output));
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+    let months = report(&[]);
+    assert_eq!(months["period"], "month");
+    let rows = months["rows"].as_array().unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|row| (
+                row["date"].as_str().unwrap(),
+                row["requests"].as_u64().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [("2026-09", 1), ("2026-10", 6)]
+    );
+    assert_eq!(rows[1]["charged_tokens"], 60);
+    assert_eq!(rows[1]["tokens"]["reported"], 6);
+    let partial = report(&["--from", "2026-09-30", "--to", "2026-10-02"]);
+    assert_eq!(partial["rows"][1]["requests"], 2);
+    let text = scratch.key(&["usage", "--plane", "all", "--period", "month"]);
+    assert!(stdout(&text).starts_with("UTC MONTH"));
+}
+
+#[test]
 fn usage_reports_keep_plane_sources_and_missing_estimates_explicit() {
     use serde_json::json;
     let scratch = Scratch::new();

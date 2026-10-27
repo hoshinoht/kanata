@@ -48,7 +48,20 @@ pub(super) fn new(
         now,
         expires_at,
     );
-    record.set_daily_quota(quota_flags(&args.quota, false, None, &config)?);
+    record.set_daily_quota(quota_flags(
+        args.quota.daily(),
+        false,
+        None,
+        &config,
+        "daily",
+    )?);
+    record.set_monthly_quota(quota_flags(
+        args.quota.monthly(),
+        false,
+        None,
+        &config,
+        "monthly",
+    )?);
     keys.push(record);
     let event = AuditEvent {
         action: "new",

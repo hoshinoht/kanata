@@ -760,7 +760,7 @@
         }
       },
       "RetryAfter": {
-        "description": "Seconds to wait. Sent with gateway-side refusals (`gateway_queue_full`, `gateway_key_busy`, `gateway_key_rate_limited`, `daily_quota_exceeded`, `gateway_busy`, `gateway_upload_busy`, and `upstream_unavailable` from an open circuit breaker); absent for upstream `rate_limit_exceeded`, `quota_unavailable` and `server_draining`.",
+        "description": "Seconds to wait. Sent with gateway-side refusals (`gateway_queue_full`, `gateway_key_busy`, `gateway_key_rate_limited`, `daily_quota_exceeded`, `monthly_quota_exceeded`, `gateway_busy`, `gateway_upload_busy`, and `upstream_unavailable` from an open circuit breaker); absent for upstream `rate_limit_exceeded`, `quota_unavailable` and `server_draining`.",
         "schema": {
           "type": "integer",
           "minimum": 0
@@ -904,7 +904,7 @@
         }
       },
       "E429": {
-        "description": "Rate limited by the gateway, the key's allowance or the upstream. Codes: `gateway_queue_full`, `gateway_key_busy`, `gateway_key_rate_limited`, `daily_quota_exceeded`, `rate_limit_exceeded`.",
+        "description": "Rate limited by the gateway, the key's allowance or the upstream. Codes: `gateway_queue_full`, `gateway_key_busy`, `gateway_key_rate_limited`, `daily_quota_exceeded`, `monthly_quota_exceeded`, `rate_limit_exceeded`.",
         "headers": {
           "x-request-id": {
             "$ref": "#/components/headers/XRequestId"
@@ -1139,7 +1139,7 @@
         }
       },
       "MessagesE429": {
-        "description": "Rate limited by the gateway, the key's allowance or the upstream. Codes: `gateway_queue_full`, `gateway_key_busy`, `gateway_key_rate_limited`, `daily_quota_exceeded`, `rate_limit_exceeded`.",
+        "description": "Rate limited by the gateway, the key's allowance or the upstream. Codes: `gateway_queue_full`, `gateway_key_busy`, `gateway_key_rate_limited`, `daily_quota_exceeded`, `monthly_quota_exceeded`, `rate_limit_exceeded`.",
         "headers": {
           "x-request-id": {
             "$ref": "#/components/headers/XRequestId"
@@ -1268,7 +1268,7 @@
     "schemas": {
       "ErrorCode": {
         "type": "string",
-        "description": "Kanata `error.code` values. HTTP status and meaning per code:\n\n- `invalid_request`: 400 or 413. Malformed or unsupported request; `param` names the rejected JSON path when it can be named safely. 413 when a body, file or image limit is exceeded.\n- `unsupported_operation`: 400. The backend cannot perform the requested operation.\n- `invalid_api_key`: 401. Private listener only: missing or invalid key. Carries `WWW-Authenticate: Bearer realm=\"kanata\"`.\n- `key_expired`: 401. The key has expired (both listeners). Carries `WWW-Authenticate` with `error=\"invalid_token\"`.\n- `permission_denied`: 403. The key may not use this model, operation or effort on this listener; on the public listener also a missing or invalid key.\n- `not_found`: 404. Unknown path, unknown or unpermitted model id on `GET /v1/models/{id}`, or an upstream 404.\n- `conflict`: 409. Defined by the error contract; not emitted by these endpoints.\n- `request_upload_timeout`: 408. The request body did not arrive before the upload deadline.\n- `request_cancelled`: 408. The request was cancelled, for example because the client disconnected.\n- `rate_limit_exceeded`: 429. The upstream backend is rate-limiting. No gateway `Retry-After`.\n- `gateway_queue_full`: 429. The gateway queue for this route or backend is full. Carries `Retry-After`.\n- `gateway_key_busy`: 429. The key has too many requests in flight. Carries `Retry-After`.\n- `gateway_key_rate_limited`: 429. The key sent too many requests recently. Carries `Retry-After`.\n- `daily_quota_exceeded`: 429. The key's daily allowance is exhausted. `Retry-After` points to the next UTC midnight. Error type `quota_error`.\n- `internal_error`: 500. Internal gateway error.\n- `upstream_failure`: 502. The upstream answered with an invalid, oversized or failed response.\n- `upstream_unavailable`: 503. The backend is unavailable, or its circuit breaker is open (then with `Retry-After`).\n- `gateway_busy`: 503. No admission slot freed up within the queue time. Carries `Retry-After`.\n- `gateway_upload_busy`: 503. Request-buffer capacity is exhausted. Carries `Retry-After: 1`.\n- `quota_unavailable`: 503. The daily allowance cannot be reserved durably, or the clock moved to an earlier UTC day. Error type `quota_error`.\n- `server_draining`: 503. The server is shutting down and admits no new requests.\n- `upstream_timeout`: 504. A connect, header, first-byte, idle, queue or overall deadline expired.",
+        "description": "Kanata `error.code` values. HTTP status and meaning per code:\n\n- `invalid_request`: 400 or 413. Malformed or unsupported request; `param` names the rejected JSON path when it can be named safely. 413 when a body, file or image limit is exceeded.\n- `unsupported_operation`: 400. The backend cannot perform the requested operation.\n- `invalid_api_key`: 401. Private listener only: missing or invalid key. Carries `WWW-Authenticate: Bearer realm=\"kanata\"`.\n- `key_expired`: 401. The key has expired (both listeners). Carries `WWW-Authenticate` with `error=\"invalid_token\"`.\n- `permission_denied`: 403. The key may not use this model, operation or effort on this listener; on the public listener also a missing or invalid key.\n- `not_found`: 404. Unknown path, unknown or unpermitted model id on `GET /v1/models/{id}`, or an upstream 404.\n- `conflict`: 409. Defined by the error contract; not emitted by these endpoints.\n- `request_upload_timeout`: 408. The request body did not arrive before the upload deadline.\n- `request_cancelled`: 408. The request was cancelled, for example because the client disconnected.\n- `rate_limit_exceeded`: 429. The upstream backend is rate-limiting. No gateway `Retry-After`.\n- `gateway_queue_full`: 429. The gateway queue for this route or backend is full. Carries `Retry-After`.\n- `gateway_key_busy`: 429. The key has too many requests in flight. Carries `Retry-After`.\n- `gateway_key_rate_limited`: 429. The key sent too many requests recently. Carries `Retry-After`.\n- `daily_quota_exceeded`: 429. The key's daily allowance is exhausted. `Retry-After` points to the next UTC midnight. Error type `quota_error`.\n- `monthly_quota_exceeded`: 429. The key's monthly allowance is exhausted. `Retry-After` points to the start of the next UTC month. Error type `quota_error`.\n- `internal_error`: 500. Internal gateway error.\n- `upstream_failure`: 502. The upstream answered with an invalid, oversized or failed response.\n- `upstream_unavailable`: 503. The backend is unavailable, or its circuit breaker is open (then with `Retry-After`).\n- `gateway_busy`: 503. No admission slot freed up within the queue time. Carries `Retry-After`.\n- `gateway_upload_busy`: 503. Request-buffer capacity is exhausted. Carries `Retry-After: 1`.\n- `quota_unavailable`: 503. The daily allowance cannot be reserved durably, or the clock moved to an earlier UTC day. Error type `quota_error`.\n- `server_draining`: 503. The server is shutting down and admits no new requests.\n- `upstream_timeout`: 504. A connect, header, first-byte, idle, queue or overall deadline expired.",
         "enum": [
           "invalid_request",
           "unsupported_operation",
@@ -1284,6 +1284,7 @@
           "gateway_key_busy",
           "gateway_key_rate_limited",
           "daily_quota_exceeded",
+          "monthly_quota_exceeded",
           "internal_error",
           "upstream_failure",
           "upstream_unavailable",

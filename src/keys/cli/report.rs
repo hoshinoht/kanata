@@ -46,7 +46,11 @@ pub(super) fn run(args: UsageArgs) -> Result<String, String> {
         Err(_) => return Err("usage directory cannot be listed".into()),
     }
     directories.sort();
-    let mut rows = Vec::new();
+    let label_len = match args.period {
+        Period::Day => 10,
+        Period::Month => 7,
+    };
+    let mut totals = BTreeMap::<_, crate::keys::quota::DailyUsage>::new();
     for directory in directories {
         for &plane in &planes {
             let source = directory
@@ -69,46 +73,64 @@ pub(super) fn run(args: UsageArgs) -> Result<String, String> {
                 {
                     continue;
                 }
-                let cost = rates.map(|(input, output, _)| {
-                    (row.tokens.input_tokens as f64 * input
-                        + row.tokens.output_tokens as f64 * output)
-                        / 1_000_000.0
-                });
-                rows.push(json!({
-                    "plane": plane.as_str(),
-                    "source": source,
-                    "date": &time::format(row.day * SECONDS_PER_DAY)[..10],
-                    "key_id": row.key_id,
-                    "model": row.model,
-                    "operation": row.operation,
-                    "requests": row.requests,
-                    "charged_tokens": row.charged_tokens,
-                    "retained_reservation_tokens": row.retained_reservation_tokens,
-                    "overrun_tokens": row.overrun_tokens,
-                    "tokens": row.tokens,
-                    "estimated_reported_cost": cost,
-                    "cost_incomplete": rates.map(|_| row.tokens.missing > 0),
-                }));
+                let date = time::format(row.day * SECONDS_PER_DAY)[..label_len].to_owned();
+                let selector = (
+                    date,
+                    plane.as_str(),
+                    source.clone(),
+                    row.key_id.clone(),
+                    row.model.clone(),
+                    row.operation.clone(),
+                );
+                match totals.entry(selector) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(row);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        entry.get_mut().merge(&row)
+                    }
+                }
             }
         }
     }
-    rows.sort_by_key(|row| {
-        (
-            row["date"].as_str().unwrap_or_default().to_owned(),
-            row["plane"].as_str().unwrap_or_default().to_owned(),
-            row["source"].as_str().unwrap_or_default().to_owned(),
-            row["key_id"].as_str().unwrap_or_default().to_owned(),
-            row["model"].as_str().unwrap_or_default().to_owned(),
-            row["operation"].as_str().unwrap_or_default().to_owned(),
-        )
-    });
+    let rows: Vec<Value> = totals
+        .into_iter()
+        .map(|((date, plane, source, ..), row)| {
+            let cost = rates.map(|(input, output, _)| {
+                (row.tokens.input_tokens as f64 * input + row.tokens.output_tokens as f64 * output)
+                    / 1_000_000.0
+            });
+            json!({
+                "plane": plane,
+                "source": source,
+                "date": date,
+                "key_id": row.key_id,
+                "model": row.model,
+                "operation": row.operation,
+                "requests": row.requests,
+                "charged_tokens": row.charged_tokens,
+                "retained_reservation_tokens": row.retained_reservation_tokens,
+                "overrun_tokens": row.overrun_tokens,
+                "tokens": row.tokens,
+                "estimated_reported_cost": cost,
+                "cost_incomplete": rates.map(|_| row.tokens.missing > 0),
+            })
+        })
+        .collect();
+    let period = match args.period {
+        Period::Day => "day",
+        Period::Month => "month",
+    };
     if args.json {
-        return serde_json::to_string_pretty(&json!({"retention_days": 90, "cost_unit": rates.map(|(_, _, unit)| unit), "cost_basis": "operator_rates_and_reported_tokens_only", "rows": rows})).map_err(|_| "usage report could not be rendered".into());
+        return serde_json::to_string_pretty(&json!({"retention_days": 90, "period": period, "cost_unit": rates.map(|(_, _, unit)| unit), "cost_basis": "operator_rates_and_reported_tokens_only", "rows": rows})).map_err(|_| "usage report could not be rendered".into());
     }
-    let mut lines = vec![
-        "UTC DATE   PLANE (SOURCE)   KEY / MODEL / OPERATION   REQUESTS REPORTED MISSING CHARGED RETAINED"
-            .into(),
-    ];
+    let mut lines = vec![format!(
+        "UTC {}  PLANE (SOURCE)   KEY / MODEL / OPERATION   REQUESTS REPORTED MISSING CHARGED RETAINED",
+        match args.period {
+            Period::Day => "DATE ",
+            Period::Month => "MONTH",
+        }
+    )];
     for row in rows {
         lines.push(format!(
             "{} {} ({}) {} / {} / {}   {} {} {} {} {}{}",

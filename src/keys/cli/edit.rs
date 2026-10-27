@@ -197,13 +197,35 @@ fn apply_quota(
     config: &ValidatedConfig,
     report: &mut Report,
 ) -> Result<(), String> {
-    let quota = quota_flags(&args.quota, args.clear_quota, record.daily_quota(), config)?;
+    let quota = quota_flags(
+        args.quota.daily(),
+        args.clear_quota,
+        record.daily_quota(),
+        config,
+        "daily",
+    )?;
+    let monthly = quota_flags(
+        args.quota.monthly(),
+        args.clear_monthly_quota,
+        record.monthly_quota(),
+        config,
+        "monthly",
+    )?;
     record.set_daily_quota(quota);
-    if args.quota_given() {
+    record.set_monthly_quota(monthly);
+    if args.daily_quota_given() {
         report.changes.insert("daily_quota".into(), json!(quota));
         report
             .lines
-            .push(format!("daily quota: {}", format_daily_quota(quota)));
+            .push(format!("daily quota: {}", format_quota(quota)));
+    }
+    if args.monthly_quota_given() {
+        report
+            .changes
+            .insert("monthly_quota".into(), json!(monthly));
+        report
+            .lines
+            .push(format!("monthly quota: {}", format_quota(monthly)));
     }
     Ok(())
 }

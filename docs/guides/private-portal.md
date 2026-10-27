@@ -41,7 +41,7 @@ Provider sections start collapsed and show how many models are selected. Expand 
 
 - **Create:** choose a unique ID, exact model/operation scopes and expiry. Copy the generated secret from the one-time dialog. Only its SHA-256 digest is stored.
 - **Inspect:** select a key to see its scopes, expiry, owner status, request and reported token usage, existing daily allowances, and missing route references.
-- **Edit:** change scopes, expiry, maximum concurrent requests, request rate or daily request/token quotas. The quota selector preserves existing limits by default; choose **Set a daily quota** to replace them or **No daily quota** to remove them. Daily quotas require `[keys] usage_dir`.
+- **Edit:** change scopes, expiry, maximum concurrent requests, request rate or daily and monthly request/token quotas. Each quota selector preserves existing limits by default; choose **Set a daily quota** (or **Set a monthly quota**) to replace them or **No daily quota** (**No monthly quota**) to remove them. The two allowances are set and cleared independently and require `[keys] usage_dir`.
 - **Rotate:** type the key ID to confirm, choose a new expiry and copy the replacement secret. Update clients that used the old secret.
 - **Revoke:** type the key ID to confirm. Revocation is permanent and IDs are never reused, including owner IDs. Already-running requests may finish.
 
@@ -49,7 +49,7 @@ An owner key is private-only. Adding a never-public route requires a separate ac
 
 The gateway normally reloads the keys file within about two seconds. The portal writes the same locked, atomic, permission-checked file and audit log as the host CLI. It does not verify that a gateway is running or that its reload succeeded. Check gateway status and warnings when validating access. A stale page cannot overwrite another writer's changes: refresh and repeat the edit.
 
-Usage is read from configured persisted state and can lag by about 30 seconds. Token totals include only reported upstream usage. An unavailable count or missing-usage count is not evidence of zero consumption. The portal makes no inference requests. Daily quotas reserve tokens before dispatch, retain reservations when usage is missing, and reset at UTC midnight. Actual reported usage can exceed a reservation, so token quotas are not a hard billing cap. See [usage and quotas](usage-quotas.md) for reservation policy and separate plane allowances.
+Usage is read from configured persisted state and can lag by about 30 seconds. Token totals include only reported upstream usage. An unavailable count or missing-usage count is not evidence of zero consumption. The portal makes no inference requests. Quotas reserve tokens before dispatch and retain reservations when usage is missing; daily quotas reset at UTC midnight and monthly quotas at the start of the UTC month. Actual reported usage can exceed a reservation, so token quotas are not a hard billing cap. See [usage and quotas](usage-quotas.md) for reservation policy and separate plane allowances.
 
 ## Session and network boundary
 

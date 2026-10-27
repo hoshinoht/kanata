@@ -395,8 +395,8 @@ pub(crate) struct Authenticated {
 }
 
 impl Authenticated {
-    pub(crate) fn daily_quota(&self) -> Option<crate::keys::quota::DailyQuota> {
-        self.context.daily_quota()
+    pub(crate) fn quotas(&self) -> crate::keys::quota::KeyQuotas {
+        self.context.quotas()
     }
 
     pub(crate) fn key_limits(&self) -> Option<&crate::routing::admission::KeyLimits> {

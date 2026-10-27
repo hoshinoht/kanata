@@ -397,26 +397,24 @@ fn commit_secret(
     }
 }
 
-/// The quota after `args`; `--clear-quota` is exclusive with the quota flags at parse time.
+/// The quota after `flags`; the clear flags are exclusive with their quota flags at parse time.
+/// `period` is `daily` or `monthly`.
 fn quota_flags(
-    args: &QuotaArgs,
+    flags: QuotaFlags,
     clear: bool,
     existing: Option<crate::keys::quota::DailyQuota>,
     config: &ValidatedConfig,
+    period: &str,
 ) -> Result<Option<crate::keys::quota::DailyQuota>, String> {
-    let QuotaArgs {
-        daily_requests: requests,
-        daily_tokens: tokens,
-        reservation_tokens,
-    } = *args;
+    let QuotaFlags([requests, tokens, reservation_tokens]) = flags;
     if clear {
         return Ok(None);
     }
-    if !args.given() {
+    if !flags.given() {
         return Ok(existing);
     }
     if usage_dir(config).is_none() {
-        return Err("daily quotas require [keys] usage_dir".into());
+        return Err(format!("{period} quotas require [keys] usage_dir"));
     }
     let quota = crate::keys::quota::DailyQuota {
         requests: requests.or(existing.and_then(|quota| quota.requests)),
@@ -426,7 +424,7 @@ fn quota_flags(
     };
     quota
         .validate()
-        .map_err(|class| format!("invalid daily quota: {class}"))?;
+        .map_err(|class| format!("invalid {period} quota: {class}"))?;
     Ok(Some(quota))
 }
 
