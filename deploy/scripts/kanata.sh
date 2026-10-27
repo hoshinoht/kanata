@@ -43,7 +43,10 @@ Local models
                              Run Apple's `fm serve` (macOS 27+) on 127.0.0.1 as a login agent
   host-serve install CONFIG [BIN] | uninstall | restart | status
                              Run a host-native `kanata serve --plane private` as a login agent
-                             (macOS launchd; BIN defaults to `kanata` on PATH)
+                             (macOS launchd, log ~/Library/Logs/kanata-host-serve.log; Linux
+                             systemd user unit kanata-host-serve.service, log in the journal;
+                             BIN defaults to `kanata` on PATH). Linux user units stop at
+                             logout unless lingering is on: loginctl enable-linger "$USER"
 EOF
 }
 
@@ -315,21 +318,39 @@ EOF
 HOST_LABEL=dev.kanata.host-serve
 HOST_PLIST=$HOME/Library/LaunchAgents/$HOST_LABEL.plist
 HOST_LOG=$HOME/Library/Logs/kanata-host-serve.log
+HOST_UNIT=kanata-host-serve.service
+HOST_UNIT_FILE=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$HOST_UNIT
 
 # Host-native gateway for local clients (e.g. loopback upstreams such as CLIProxyAPI).
 host_serve() {
-  [[ $(uname -s) == Darwin ]] || die "host-serve uses launchd (macOS)"
+  # KANATA_HOST_OS overrides `uname -s` for tests.
+  case ${KANATA_HOST_OS:-$(uname -s)} in
+    Darwin) host_serve_launchd "$@" ;;
+    Linux) host_serve_systemd "$@" ;;
+    *) die "host-serve supports macOS (launchd) and Linux (systemd user units)" ;;
+  esac
+}
+
+# Validates `install CONFIG [BIN]` and checks the config; sets config and bin.
+host_serve_target() {
+  [[ $# -ge 1 && $# -le 2 ]] || die "usage: host-serve install CONFIG [BIN]"
+  [[ $1 == /* && -f $1 ]] || die "CONFIG must be an absolute path to an existing file"
+  config=$1
+  bin=${2:-$(command -v kanata || true)}
+  [[ -n $bin && $bin == /* && -x $bin ]] || die "BIN must be an absolute path to the kanata binary"
+  [[ $config != *[\<\>\&\"\\%\$]* && $bin != *[\<\>\&\"\\%\$]* &&
+    $config != *$'\n'* && $bin != *$'\n'* ]] ||
+    die 'paths must not contain <, >, &, ", \, %, $ or newlines'
+  "$bin" check --config "$config" --plane private >/dev/null || die "config failed kanata check"
+}
+
+host_serve_launchd() {
   local domain config bin
   domain=gui/$(id -u)
   case ${1:-} in
     install)
-      [[ $# -ge 2 && $# -le 3 ]] || die "usage: host-serve install CONFIG [BIN]"
-      [[ $2 == /* && -f $2 ]] || die "CONFIG must be an absolute path to an existing file"
-      config=$2
-      bin=${3:-$(command -v kanata || true)}
-      [[ -n $bin && $bin == /* && -x $bin ]] || die "BIN must be an absolute path to the kanata binary"
-      [[ $config != *[\<\>\&]* && $bin != *[\<\>\&]* ]] || die "paths must not contain <, > or &"
-      "$bin" check --config "$config" --plane private >/dev/null || die "config failed kanata check"
+      shift
+      host_serve_target "$@"
       mkdir -p "$(dirname -- "$HOST_PLIST")" "$(dirname -- "$HOST_LOG")"
       cat >"$HOST_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -369,6 +390,56 @@ EOF
       [[ -f $HOST_PLIST ]] || return 0
       bin=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$HOST_PLIST")
       config=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:3' "$HOST_PLIST")
+      if "$bin" health --config "$config" >/dev/null 2>&1; then echo "health: ok ($config)"; else echo "health: failing ($config)"; fi
+      ;;
+    *) die "usage: host-serve install CONFIG [BIN] | uninstall | restart | status" ;;
+  esac
+}
+
+host_serve_systemd() {
+  local config bin
+  case ${1:-} in
+    install)
+      shift
+      host_serve_target "$@"
+      mkdir -p "$(dirname -- "$HOST_UNIT_FILE")"
+      cat >"$HOST_UNIT_FILE" <<EOF
+[Unit]
+Description=Kanata host-native gateway (private plane)
+
+[Service]
+ExecStart="$bin" serve --config "$config" --plane private
+WorkingDirectory=$(dirname -- "$config")
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+      systemctl --user daemon-reload
+      systemctl --user enable "$HOST_UNIT"
+      # Restart, not --now, so a reinstall applies the new unit.
+      systemctl --user restart "$HOST_UNIT"
+      echo "kanata host-serve unit installed ($config); log: journalctl --user -u $HOST_UNIT"
+      echo "User units stop at logout; to keep it running: loginctl enable-linger \"\$USER\""
+      ;;
+    uninstall)
+      systemctl --user disable --now "$HOST_UNIT" 2>/dev/null || true
+      rm -f "$HOST_UNIT_FILE"
+      systemctl --user daemon-reload
+      echo "kanata host-serve unit removed."
+      ;;
+    restart)
+      [[ -f $HOST_UNIT_FILE ]] || die "unit not installed; run host-serve install first"
+      systemctl --user restart "$HOST_UNIT"
+      ;;
+    status)
+      if systemctl --user is-active --quiet "$HOST_UNIT"; then echo "service: active"; else echo "service: inactive"; fi
+      [[ -f $HOST_UNIT_FILE ]] || return 0
+      bin=$(sed -n 's/^ExecStart="\([^"]*\)" serve .*/\1/p' "$HOST_UNIT_FILE")
+      config=$(sed -n 's/^ExecStart=.* --config "\([^"]*\)" --plane private$/\1/p' "$HOST_UNIT_FILE")
       if "$bin" health --config "$config" >/dev/null 2>&1; then echo "health: ok ($config)"; else echo "health: failing ($config)"; fi
       ;;
     *) die "usage: host-serve install CONFIG [BIN] | uninstall | restart | status" ;;

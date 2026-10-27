@@ -16,4 +16,4 @@
 - Without real sockets, prefer `#[tokio::test(start_paused = true)]` with `tokio::time::advance`. With real sockets, paused time races; use short real timeouts.
 
 ## Live and manual tests
-- `#[ignore]` tests (`ollama_live.rs`, one `serve_smoke.rs` case, the transport `connection_reuse_benchmark`) need real services or are manual; run them only when asked, with `-- --ignored`.
+- `#[ignore]` tests (`ollama_live.rs`, `runtime_contention.rs`, one `serve_smoke.rs` case, the transport `connection_reuse_benchmark`) need real services or are manual; run them only when asked, with `-- --ignored`.

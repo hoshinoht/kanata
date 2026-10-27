@@ -239,7 +239,6 @@ fn open_existing(directory: &File, name: &CStr, access: OFlags) -> Result<Option
         Err(_) => return Err(FileError::Unsafe),
     };
     // st_mode and st_nlink are u16 on macOS.
-    #[allow(clippy::unnecessary_cast)]
     validate_owner_file(
         FileType::from_raw_mode(stat.st_mode).is_file(),
         stat.st_uid,

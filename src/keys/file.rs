@@ -134,7 +134,7 @@ pub struct StoredKey {
 }
 
 impl StoredKey {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         id: String,
         digest: [u8; 32],

@@ -156,7 +156,7 @@ impl TransportRequest {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn from_body(
         method: Method,
         endpoint: Endpoint,

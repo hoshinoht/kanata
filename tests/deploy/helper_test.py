@@ -35,13 +35,21 @@ class DeploymentHelperTests(unittest.TestCase):
             'with open(os.environ["KANATA_HELPER_OUTPUT"], "w") as f:\n'
             "    json.dump(sys.argv[1:], f)\n"
         )
+        (bins / "systemctl").write_text(
+            "#!/usr/bin/env python3\nimport json, os, sys\n"
+            'with open(os.environ["KANATA_HELPER_SYSTEMCTL"], "a") as f:\n'
+            "    f.write(json.dumps(sys.argv[1:]) + \"\\n\")\n"
+        )
         for executable in bins.iterdir():
             executable.chmod(0o700)
         self.env = os.environ | {
             "PATH": str(bins) + os.pathsep + os.environ["PATH"],
             "KANATA_HELPER_OUTPUT": str(self.output),
+            "KANATA_HELPER_SYSTEMCTL": str(self.root / "systemctl.log"),
         }
         self.env.pop("KANATA_IMAGE", None)
+        self.env.pop("XDG_CONFIG_HOME", None)
+        self.bins = bins
         self.model = {"services": {"kanata": {"volumes": [
             self.mount(self.config, "/etc/kanata/config.toml"),
             self.mount(self.config_dir / "keys", "/etc/kanata/keys"),
@@ -127,6 +135,61 @@ class DeploymentHelperTests(unittest.TestCase):
         self.auth_dir = self.checkout / "private-auth-fixture"
         self.write_config(auth=True)
         self.assertIn("outside the checkout", self.run_helper("chatgpt", "status", success=False))
+
+    def run_host(self, os_name, *args, success=True):
+        self.output.unlink(missing_ok=True)
+        log = self.root / "systemctl.log"
+        log.unlink(missing_ok=True)
+        result = subprocess.run(
+            ["bash", str(self.helper), "host-serve", *args],
+            env=self.env | {"HOME": str(self.root / "home"), "KANATA_HOST_OS": os_name},
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode == 0, success, result.stderr)
+        calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        binary = json.loads(self.output.read_text()) if self.output.exists() else None
+        return result, calls, binary
+
+    def test_host_serve_systemd_user_unit(self):
+        unit = "kanata-host-serve.service"
+        unit_file = self.root / "home/.config/systemd/user" / unit
+        kanata = str(self.bins / "kanata")
+        _, calls, binary = self.run_host("Linux", "install", str(self.config), kanata)
+        self.assertEqual(binary, ["check", "--config", str(self.config), "--plane", "private"])
+        self.assertEqual(calls, [["--user", "daemon-reload"], ["--user", "enable", unit],
+                                 ["--user", "restart", unit]])
+        text = unit_file.read_text()
+        self.assertIn(f'ExecStart="{kanata}" serve --config "{self.config}" --plane private\n', text)
+        self.assertIn(f"WorkingDirectory={self.config_dir}\n", text)
+        self.assertIn("Restart=always\n", text)
+        result, calls, binary = self.run_host("Linux", "status")
+        self.assertEqual(calls, [["--user", "is-active", "--quiet", unit]])
+        self.assertEqual(binary, ["health", "--config", str(self.config)])
+        self.assertIn(f"health: ok ({self.config})", result.stdout)
+        _, calls, _ = self.run_host("Linux", "restart")
+        self.assertEqual(calls, [["--user", "restart", unit]])
+        _, calls, _ = self.run_host("Linux", "uninstall")
+        self.assertEqual(calls, [["--user", "disable", "--now", unit], ["--user", "daemon-reload"]])
+        self.assertFalse(unit_file.exists())
+        result, calls, _ = self.run_host("Linux", "restart", success=False)
+        self.assertEqual(calls, [])
+        self.assertIn("not installed", result.stderr)
+
+    def test_host_serve_rejects_unsafe_targets(self):
+        kanata = str(self.bins / "kanata")
+        unsafe = self.config_dir / "50%.toml"
+        unsafe.write_text("")
+        for os_name, args, message in (
+            ("Linux", ("config.toml", kanata), "absolute path"),
+            ("Linux", (str(unsafe), kanata), "must not contain"),
+            ("Darwin", (str(unsafe), kanata), "must not contain"),
+            ("Linux", (str(self.config), "kanata"), "BIN"),
+            ("FreeBSD", (str(self.config), kanata), "supports macOS"),
+        ):
+            result, calls, binary = self.run_host(os_name, "install", *args, success=False)
+            self.assertIn(message, result.stderr)
+            self.assertEqual((calls, binary), ([], None), "rejected install reached the host")
+        self.assertFalse((self.root / "home").exists())
 
 
 if __name__ == "__main__":

@@ -43,6 +43,17 @@ fn summary(label: &str, mut samples: Vec<Duration>) {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "manual runtime contention measurement"]
 async fn small_request_latency_under_large_bodies() {
+    measure("current_thread").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "manual runtime contention measurement"]
+async fn small_request_latency_under_large_bodies_multi_thread() {
+    measure("multi_thread(4)").await;
+}
+
+async fn measure(flavor: &str) {
+    eprintln!("runtime: {flavor}");
     let config = config();
     let capabilities = capabilities(&config, "vllm-private");
     let (server, _) = server_with(
