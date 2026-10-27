@@ -1,0 +1,4065 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "kanata",
+    "version": "1.0.0-beta.9",
+    "description": "OpenAI-compatible inference gateway with a private listener and an optional public listener. Both listeners serve the same paths; the public listener serves only allowlisted routes and never private-only providers. Every model and operation is an exact `(model_alias, operation)` route with no fallback, wildcard or retries. Requests accept only the documented members: unknown members and unsupported options return `400 invalid_request` with the member's JSON path in `param` where it can be named safely. Capabilities per model are published under `kanata` on `GET /v1/models`.",
+    "license": {
+      "name": "GPL-3.0-only",
+      "identifier": "GPL-3.0-only"
+    }
+  },
+  "servers": [
+    {
+      "url": "{base}",
+      "description": "A Kanata client listener (private or public), without the `/v1` suffix.",
+      "variables": {
+        "base": {
+          "default": "https://api.example.com",
+          "description": "Scheme, host and port of the listener."
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    },
+    {
+      "apiKeyAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Models",
+      "description": "Model discovery and capabilities."
+    },
+    {
+      "name": "Chat",
+      "description": "OpenAI Chat Completions subset."
+    },
+    {
+      "name": "Responses",
+      "description": "Stateless OpenAI Responses subset over chat routes."
+    },
+    {
+      "name": "Messages",
+      "description": "Stateless Anthropic Messages subset over chat routes."
+    },
+    {
+      "name": "Embeddings",
+      "description": "Text embeddings."
+    },
+    {
+      "name": "Audio",
+      "description": "Speech input and output."
+    }
+  ],
+  "paths": {
+    "/v1/models": {
+      "get": {
+        "operationId": "listModels",
+        "tags": [
+          "Models"
+        ],
+        "summary": "List permitted models",
+        "description": "Aliases this key may use on this listener with at least one bound route (the public listener also applies its route allowlist). Listing does not confirm backend health. Responses carry `Cache-Control: no-store`.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestIdHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Permitted models.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControlNoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelList"
+                },
+                "example": {
+                  "object": "list",
+                  "data": [
+                    {
+                      "id": "your-chat-alias",
+                      "object": "model",
+                      "created": 0,
+                      "owned_by": "kanata",
+                      "kanata": {
+                        "operations": [
+                          "chat"
+                        ],
+                        "structured_output": true,
+                        "sampling_controls": true,
+                        "reasoning_control": false,
+                        "reasoning_efforts": null,
+                        "function_tools": true,
+                        "streaming": true,
+                        "input_audio": false,
+                        "input_images": false,
+                        "images": null,
+                        "trust_zone": "local",
+                        "context_tokens": 32768,
+                        "max_output_tokens": null,
+                        "responses": {
+                          "endpoint": "/v1/responses",
+                          "operation": "chat",
+                          "stateless": true,
+                          "input": [
+                            "text"
+                          ],
+                          "function_tools": true,
+                          "streaming": true,
+                          "max_output_bytes": 8388608
+                        },
+                        "messages": {
+                          "endpoint": "/v1/messages",
+                          "operation": "chat",
+                          "stateless": true,
+                          "function_tools": true,
+                          "streaming": true
+                        },
+                        "admission": {
+                          "max_in_flight": 8,
+                          "max_queue": 32,
+                          "queue_ms": 1000,
+                          "adapter_max_in_flight": null,
+                          "in_flight": 0,
+                          "queued": 0,
+                          "adapter_in_flight": null,
+                          "breaker": "closed"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          }
+        }
+      }
+    },
+    "/v1/models/{id}": {
+      "get": {
+        "operationId": "getModel",
+        "tags": [
+          "Models"
+        ],
+        "summary": "Get one permitted model",
+        "description": "Same object as a `GET /v1/models` entry. Unknown ids and ids the key may not use on this listener both return `404 not_found`.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ModelId"
+          },
+          {
+            "$ref": "#/components/parameters/XRequestIdHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The model.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControlNoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Model"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          }
+        }
+      }
+    },
+    "/v1/chat/completions": {
+      "post": {
+        "operationId": "createChatCompletion",
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Create a chat completion",
+        "description": "Exact `(model, chat)` route with no fallback or retries. Requires `Content-Type: application/json`. The body is limited by `limits.max_body_bytes` (requests with audio by the audio envelope).",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestIdHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCompletionRequest"
+              },
+              "example": {
+                "model": "your-chat-alias",
+                "messages": [
+                  {
+                    "role": "user",
+                    "content": "Say hello in one sentence."
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A completion, or with `stream: true` a server-sent event stream.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCompletion"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "`data:` frames each carrying a `ChatCompletionChunk` (see components), ending with `data: [DONE]`. The first chunk carries `delta.role`; tool-call deltas carry `index`, and `id`/`type`/`function.name` on the first fragment. With `stream_options.include_usage` a final chunk with empty `choices` carries `usage`. `: keepalive` comments are sent during silence. A failure after the stream starts is sent as `data: {\"error\":{...}}` (the error envelope) and the stream ends without `[DONE]`. `Cache-Control: no-cache`."
+                },
+                "example": "data: {\"id\":\"chatcmpl_kanata_0000000000000001\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"your-chat-alias\",\"system_fingerprint\":null,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}],\"usage\":null}\n\ndata: {\"id\":\"chatcmpl_kanata_0000000000000001\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"your-chat-alias\",\"system_fingerprint\":null,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}],\"usage\":null}\n\n: keepalive\n\ndata: {\"id\":\"chatcmpl_kanata_0000000000000001\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"your-chat-alias\",\"system_fingerprint\":null,\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\ndata: {\"id\":\"chatcmpl_kanata_0000000000000001\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"your-chat-alias\",\"system_fingerprint\":null,\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":2,\"total_tokens\":14}}\n\ndata: [DONE]\n\n"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "408": {
+            "$ref": "#/components/responses/E408"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "429": {
+            "$ref": "#/components/responses/E429"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          },
+          "502": {
+            "$ref": "#/components/responses/E502"
+          },
+          "503": {
+            "$ref": "#/components/responses/E503"
+          },
+          "504": {
+            "$ref": "#/components/responses/E504"
+          }
+        }
+      }
+    },
+    "/v1/responses": {
+      "post": {
+        "operationId": "createResponse",
+        "tags": [
+          "Responses"
+        ],
+        "summary": "Create a stateless response",
+        "description": "Stateless Responses subset over chat routes and scopes; send full history each turn. No stored responses, retrieval, cancellation or hosted tools.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestIdHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResponsesRequest"
+              },
+              "example": {
+                "model": "your-chat-alias",
+                "input": "Hello",
+                "store": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A response object, or with `stream: true` typed server-sent events.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "Typed events: `event: <type>` then `data:` JSON with the same `type` and an increasing `sequence_number`. Order: `response.created`, `response.in_progress`, then per item `response.output_item.added`, `response.content_part.added`, `response.output_text.delta` or `response.function_call_arguments.delta`, the matching `.done` events and `response.output_item.done`; private reasoning adds `response.reasoning_summary_part.added`, `response.reasoning_summary_text.delta`, `response.reasoning_summary_text.done` and `response.reasoning_summary_part.done`. Terminal event: `response.completed`, `response.incomplete` (with `incomplete_details.reason`) or `response.failed` (with a sanitized `error`). No `[DONE]` marker; `: keepalive` comments during silence. Output is limited to 8 MiB, 64 function calls and 16 KiB per argument delta."
+                },
+                "example": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_kanata_0000000000000001\",\"object\":\"response\",\"status\":\"in_progress\",\"output\":[]},\"sequence_number\":0}\n\nevent: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_kanata_0000000000000001\",\"status\":\"in_progress\"},\"sequence_number\":1}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"resp_kanata_0000000000000001_msg\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"in_progress\",\"content\":[]},\"sequence_number\":2}\n\nevent: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"resp_kanata_0000000000000001_msg\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[],\"logprobs\":[]},\"sequence_number\":3}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"resp_kanata_0000000000000001_msg\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hello\",\"logprobs\":[],\"sequence_number\":4}\n\nevent: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"item_id\":\"resp_kanata_0000000000000001_msg\",\"output_index\":0,\"content_index\":0,\"text\":\"Hello\",\"logprobs\":[],\"sequence_number\":5}\n\nevent: response.content_part.done\ndata: {\"type\":\"response.content_part.done\",\"item_id\":\"resp_kanata_0000000000000001_msg\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Hello\",\"annotations\":[],\"logprobs\":[]},\"sequence_number\":6}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"resp_kanata_0000000000000001_msg\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello\",\"annotations\":[],\"logprobs\":[]}]},\"sequence_number\":7}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_kanata_0000000000000001\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"id\":\"resp_kanata_0000000000000001_msg\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello\",\"annotations\":[],\"logprobs\":[]}]}],\"usage\":{\"input_tokens\":12,\"output_tokens\":2,\"total_tokens\":14}},\"sequence_number\":8}\n\n"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "408": {
+            "$ref": "#/components/responses/E408"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "429": {
+            "$ref": "#/components/responses/E429"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          },
+          "502": {
+            "$ref": "#/components/responses/E502"
+          },
+          "503": {
+            "$ref": "#/components/responses/E503"
+          },
+          "504": {
+            "$ref": "#/components/responses/E504"
+          }
+        }
+      }
+    },
+    "/v1/messages": {
+      "post": {
+        "operationId": "createMessage",
+        "tags": [
+          "Messages"
+        ],
+        "summary": "Create a message (Anthropic Messages subset)",
+        "description": "Stateless Anthropic Messages subset over chat routes and scopes. Route-level errors use the Anthropic-style envelope with the Kanata `code`. `GET` returns `405` with `Allow: POST`; `/v1/messages/count_tokens` is not implemented.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestIdHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessagesRequest"
+              },
+              "example": {
+                "model": "your-chat-alias",
+                "max_tokens": 256,
+                "messages": [
+                  {
+                    "role": "user",
+                    "content": "Hello"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A message, or with `stream: true` typed server-sent events.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagesResponse"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "Typed events: `message_start`, then per block `content_block_start`, `content_block_delta` (`text_delta` or `input_json_delta`) and `content_block_stop`, then `message_delta` (stop reason and usage) and `message_stop`. `event: ping` keepalives are sent only after the first upstream event. A failure after the stream starts is sent as `event: error` with the Messages error envelope. A reply with no content sends no content blocks. At most 64 tool calls and 16 KiB per argument delta."
+                },
+                "example": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_0123456789abcdef\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"your-chat-alias\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":12,\"output_tokens\":2}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/MessagesE400"
+          },
+          "401": {
+            "$ref": "#/components/responses/MessagesE401"
+          },
+          "403": {
+            "$ref": "#/components/responses/MessagesE403"
+          },
+          "404": {
+            "$ref": "#/components/responses/MessagesE404"
+          },
+          "408": {
+            "$ref": "#/components/responses/MessagesE408"
+          },
+          "413": {
+            "$ref": "#/components/responses/MessagesE413"
+          },
+          "429": {
+            "$ref": "#/components/responses/MessagesE429"
+          },
+          "500": {
+            "$ref": "#/components/responses/MessagesE500"
+          },
+          "502": {
+            "$ref": "#/components/responses/MessagesE502"
+          },
+          "503": {
+            "$ref": "#/components/responses/MessagesE503"
+          },
+          "504": {
+            "$ref": "#/components/responses/MessagesE504"
+          }
+        }
+      }
+    },
+    "/v1/audio/transcriptions": {
+      "post": {
+        "operationId": "createTranscription",
+        "tags": [
+          "Audio"
+        ],
+        "summary": "Transcribe audio",
+        "description": "Exact `(model, transcription)` route. Multipart form; malformed forms return `400 invalid_request` with `param: null`.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestIdHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptionRequest"
+              },
+              "encoding": {
+                "file": {
+                  "contentType": "audio/wav, audio/x-wav, audio/mpeg, audio/flac, audio/mp4, audio/ogg, audio/webm"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transcript as JSON (default) or plain text with `response_format=text`.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionResponse"
+                },
+                "example": {
+                  "text": "Hello."
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Hello."
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "408": {
+            "$ref": "#/components/responses/E408"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "429": {
+            "$ref": "#/components/responses/E429"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          },
+          "502": {
+            "$ref": "#/components/responses/E502"
+          },
+          "503": {
+            "$ref": "#/components/responses/E503"
+          },
+          "504": {
+            "$ref": "#/components/responses/E504"
+          }
+        }
+      }
+    },
+    "/v1/embeddings": {
+      "post": {
+        "operationId": "createEmbeddings",
+        "tags": [
+          "Embeddings"
+        ],
+        "summary": "Create text embeddings",
+        "description": "Exact `(model, embeddings)` route, with separate key scopes from chat. Streaming is unsupported.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestIdHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbeddingsRequest"
+              },
+              "example": {
+                "model": "your-embedding-model",
+                "input": [
+                  "A document",
+                  "A search query"
+                ],
+                "encoding_format": "float"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Embeddings in input order.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmbeddingsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "408": {
+            "$ref": "#/components/responses/E408"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "429": {
+            "$ref": "#/components/responses/E429"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          },
+          "502": {
+            "$ref": "#/components/responses/E502"
+          },
+          "503": {
+            "$ref": "#/components/responses/E503"
+          },
+          "504": {
+            "$ref": "#/components/responses/E504"
+          }
+        }
+      }
+    },
+    "/v1/audio/speech": {
+      "post": {
+        "operationId": "createSpeech",
+        "tags": [
+          "Audio"
+        ],
+        "summary": "Synthesize speech",
+        "description": "Exact `(model, speech)` route with voice and format allowlists. Returns at most 8 MiB of audio; oversized, truncated or mismatched upstream audio returns `502 upstream_failure`. No token usage is reported.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestIdHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechRequest"
+              },
+              "example": {
+                "model": "your-speech-alias",
+                "input": "Hello from Kanata.",
+                "voice": "your-voice",
+                "response_format": "wav",
+                "speed": 1
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Audio bytes with `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControlNoStore"
+              }
+            },
+            "content": {
+              "audio/mpeg": {
+                "schema": {
+                  "type": "string",
+                  "contentMediaType": "audio/mpeg",
+                  "maxLength": 8388608
+                }
+              },
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "contentMediaType": "audio/wav",
+                  "maxLength": 8388608
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/E400"
+          },
+          "401": {
+            "$ref": "#/components/responses/E401"
+          },
+          "403": {
+            "$ref": "#/components/responses/E403"
+          },
+          "404": {
+            "$ref": "#/components/responses/E404"
+          },
+          "408": {
+            "$ref": "#/components/responses/E408"
+          },
+          "413": {
+            "$ref": "#/components/responses/E413"
+          },
+          "429": {
+            "$ref": "#/components/responses/E429"
+          },
+          "500": {
+            "$ref": "#/components/responses/E500"
+          },
+          "502": {
+            "$ref": "#/components/responses/E502"
+          },
+          "503": {
+            "$ref": "#/components/responses/E503"
+          },
+          "504": {
+            "$ref": "#/components/responses/E504"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "`Authorization: Bearer <key>` (keys start with `kanata_sk_`). If both `Authorization` and `x-api-key` are sent, each must occur once with the same value. Keys are never accepted in query strings."
+      },
+      "apiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key",
+        "description": "`x-api-key: <key>`. If both headers are sent, each must occur once with the same value."
+      }
+    },
+    "headers": {
+      "XRequestId": {
+        "description": "Request id. On the private listener a valid client `x-request-id` is echoed, otherwise one is generated; the public listener always generates its own.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        }
+      },
+      "RetryAfter": {
+        "description": "Seconds to wait. Sent with gateway-side refusals (`gateway_queue_full`, `gateway_key_busy`, `gateway_key_rate_limited`, `daily_quota_exceeded`, `gateway_busy`, `gateway_upload_busy`, and `upstream_unavailable` from an open circuit breaker); absent for upstream `rate_limit_exceeded`, `quota_unavailable` and `server_draining`.",
+        "schema": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "WWWAuthenticate": {
+        "description": "`Bearer realm=\"kanata\"`, with `error=\"invalid_token\"` for `key_expired`.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "CacheControlNoStore": {
+        "description": "`no-store`.",
+        "schema": {
+          "const": "no-store"
+        }
+      }
+    },
+    "parameters": {
+      "XRequestIdHeader": {
+        "name": "x-request-id",
+        "in": "header",
+        "required": false,
+        "description": "Optional client request id: 1–128 ASCII letters, digits, `-` or `_`, sent at most once. Inference endpoints reject an invalid or repeated value with `400 invalid_request`.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        }
+      },
+      "ModelId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Model alias as listed by `GET /v1/models`.",
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "responses": {
+      "E400": {
+        "description": "Invalid or unsupported request. Codes: `invalid_request`, `unsupported_operation`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "error": {
+                "message": "Invalid request",
+                "type": "invalid_request_error",
+                "param": "messages[0].content",
+                "code": "invalid_request"
+              }
+            }
+          }
+        }
+      },
+      "E401": {
+        "description": "Authentication failed. `invalid_api_key` is the private listener's answer to a missing or invalid key; `key_expired` is sent on both listeners. Codes: `invalid_api_key`, `key_expired`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "WWW-Authenticate": {
+            "$ref": "#/components/headers/WWWAuthenticate"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "E403": {
+        "description": "Permission denied. On the public listener this is also the answer to a missing or invalid key. Codes: `permission_denied`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "E404": {
+        "description": "Not found. Codes: `not_found`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "E408": {
+        "description": "Upload deadline expired or request cancelled. Codes: `request_upload_timeout`, `request_cancelled`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "E413": {
+        "description": "Request body, audio, file or image limits exceeded. Codes: `invalid_request`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "E429": {
+        "description": "Rate limited by the gateway, the key's allowance or the upstream. Codes: `gateway_queue_full`, `gateway_key_busy`, `gateway_key_rate_limited`, `daily_quota_exceeded`, `rate_limit_exceeded`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "E500": {
+        "description": "Internal error. Codes: `internal_error`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "E502": {
+        "description": "Invalid upstream response. Codes: `upstream_failure`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "E503": {
+        "description": "Temporarily unavailable. Codes: `upstream_unavailable`, `gateway_busy`, `gateway_upload_busy`, `quota_unavailable`, `server_draining`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "E504": {
+        "description": "Upstream deadline expired. Codes: `upstream_timeout`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "MessagesE400": {
+        "description": "Invalid or unsupported request. Codes: `invalid_request`, `unsupported_operation`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MessagesErrorEnvelope"
+            },
+            "example": {
+              "type": "error",
+              "error": {
+                "type": "invalid_request_error",
+                "message": "Invalid request",
+                "code": "invalid_request",
+                "param": null
+              }
+            }
+          }
+        }
+      },
+      "MessagesE401": {
+        "description": "Authentication failed. `invalid_api_key` is the private listener's answer to a missing or invalid key; `key_expired` is sent on both listeners. Codes: `invalid_api_key`, `key_expired`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "WWW-Authenticate": {
+            "$ref": "#/components/headers/WWWAuthenticate"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MessagesErrorEnvelope"
+            },
+            "example": {
+              "type": "error",
+              "error": {
+                "type": "authentication_error",
+                "message": "Invalid authentication credentials",
+                "code": "invalid_api_key",
+                "param": null
+              }
+            }
+          }
+        }
+      },
+      "MessagesE403": {
+        "description": "Permission denied. On the public listener this is also the answer to a missing or invalid key. Public-listener authentication failures use the OpenAI envelope. Codes: `permission_denied`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/MessagesErrorEnvelope"
+                },
+                {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              ]
+            },
+            "example": {
+              "type": "error",
+              "error": {
+                "type": "permission_error",
+                "message": "Permission denied",
+                "code": "permission_denied",
+                "param": null
+              }
+            }
+          }
+        }
+      },
+      "MessagesE404": {
+        "description": "Not found. Codes: `not_found`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MessagesErrorEnvelope"
+            },
+            "example": {
+              "type": "error",
+              "error": {
+                "type": "not_found_error",
+                "message": "Not found",
+                "code": "not_found",
+                "param": null
+              }
+            }
+          }
+        }
+      },
+      "MessagesE408": {
+        "description": "Upload deadline expired or request cancelled. Codes: `request_upload_timeout`, `request_cancelled`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MessagesErrorEnvelope"
+            },
+            "example": {
+              "type": "error",
+              "error": {
+                "type": "timeout_error",
+                "message": "Request upload timed out",
+                "code": "request_upload_timeout",
+                "param": null
+              }
+            }
+          }
+        }
+      },
+      "MessagesE413": {
+        "description": "Request body, audio, file or image limits exceeded. Codes: `invalid_request`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MessagesErrorEnvelope"
+            },
+            "example": {
+              "type": "error",
+              "error": {
+                "type": "request_too_large",
+                "message": "Invalid request",
+                "code": "invalid_request",
+                "param": null
+              }
+            }
+          }
+        }
+      },
+      "MessagesE429": {
+        "description": "Rate limited by the gateway, the key's allowance or the upstream. Codes: `gateway_queue_full`, `gateway_key_busy`, `gateway_key_rate_limited`, `daily_quota_exceeded`, `rate_limit_exceeded`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MessagesErrorEnvelope"
+            },
+            "example": {
+              "type": "error",
+              "error": {
+                "type": "rate_limit_error",
+                "message": "Gateway queue is full",
+                "code": "gateway_queue_full",
+                "param": null
+              }
+            }
+          }
+        }
+      },
+      "MessagesE500": {
+        "description": "Internal error. Codes: `internal_error`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MessagesErrorEnvelope"
+            },
+            "example": {
+              "type": "error",
+              "error": {
+                "type": "api_error",
+                "message": "Internal server error",
+                "code": "internal_error",
+                "param": null
+              }
+            }
+          }
+        }
+      },
+      "MessagesE502": {
+        "description": "Invalid upstream response. Codes: `upstream_failure`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MessagesErrorEnvelope"
+            },
+            "example": {
+              "type": "error",
+              "error": {
+                "type": "api_error",
+                "message": "Upstream failure",
+                "code": "upstream_failure",
+                "param": null
+              }
+            }
+          }
+        }
+      },
+      "MessagesE503": {
+        "description": "Temporarily unavailable. Codes: `upstream_unavailable`, `gateway_busy`, `gateway_upload_busy`, `quota_unavailable`, `server_draining`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MessagesErrorEnvelope"
+            },
+            "example": {
+              "type": "error",
+              "error": {
+                "type": "overloaded_error",
+                "message": "Upstream unavailable",
+                "code": "upstream_unavailable",
+                "param": null
+              }
+            }
+          }
+        }
+      },
+      "MessagesE504": {
+        "description": "Upstream deadline expired. Codes: `upstream_timeout`.",
+        "headers": {
+          "x-request-id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MessagesErrorEnvelope"
+            },
+            "example": {
+              "type": "error",
+              "error": {
+                "type": "timeout_error",
+                "message": "Upstream timeout",
+                "code": "upstream_timeout",
+                "param": null
+              }
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ErrorCode": {
+        "type": "string",
+        "description": "Kanata `error.code` values. HTTP status and meaning per code:\n\n- `invalid_request`: 400 or 413. Malformed or unsupported request; `param` names the rejected JSON path when it can be named safely. 413 when a body, file or image limit is exceeded.\n- `unsupported_operation`: 400. The backend cannot perform the requested operation.\n- `invalid_api_key`: 401. Private listener only: missing or invalid key. Carries `WWW-Authenticate: Bearer realm=\"kanata\"`.\n- `key_expired`: 401. The key has expired (both listeners). Carries `WWW-Authenticate` with `error=\"invalid_token\"`.\n- `permission_denied`: 403. The key may not use this model, operation or effort on this listener; on the public listener also a missing or invalid key.\n- `not_found`: 404. Unknown path, unknown or unpermitted model id on `GET /v1/models/{id}`, or an upstream 404.\n- `conflict`: 409. Defined by the error contract; not emitted by these endpoints.\n- `request_upload_timeout`: 408. The request body did not arrive before the upload deadline.\n- `request_cancelled`: 408. The request was cancelled, for example because the client disconnected.\n- `rate_limit_exceeded`: 429. The upstream backend is rate-limiting. No gateway `Retry-After`.\n- `gateway_queue_full`: 429. The gateway queue for this route or backend is full. Carries `Retry-After`.\n- `gateway_key_busy`: 429. The key has too many requests in flight. Carries `Retry-After`.\n- `gateway_key_rate_limited`: 429. The key sent too many requests recently. Carries `Retry-After`.\n- `daily_quota_exceeded`: 429. The key's daily allowance is exhausted. `Retry-After` points to the next UTC midnight. Error type `quota_error`.\n- `internal_error`: 500. Internal gateway error.\n- `upstream_failure`: 502. The upstream answered with an invalid, oversized or failed response.\n- `upstream_unavailable`: 503. The backend is unavailable, or its circuit breaker is open (then with `Retry-After`).\n- `gateway_busy`: 503. No admission slot freed up within the queue time. Carries `Retry-After`.\n- `gateway_upload_busy`: 503. Request-buffer capacity is exhausted. Carries `Retry-After: 1`.\n- `quota_unavailable`: 503. The daily allowance cannot be reserved durably, or the clock moved to an earlier UTC day. Error type `quota_error`.\n- `server_draining`: 503. The server is shutting down and admits no new requests.\n- `upstream_timeout`: 504. A connect, header, first-byte, idle, queue or overall deadline expired.",
+        "enum": [
+          "invalid_request",
+          "unsupported_operation",
+          "invalid_api_key",
+          "key_expired",
+          "permission_denied",
+          "not_found",
+          "conflict",
+          "request_upload_timeout",
+          "request_cancelled",
+          "rate_limit_exceeded",
+          "gateway_queue_full",
+          "gateway_key_busy",
+          "gateway_key_rate_limited",
+          "daily_quota_exceeded",
+          "internal_error",
+          "upstream_failure",
+          "upstream_unavailable",
+          "gateway_busy",
+          "gateway_upload_busy",
+          "quota_unavailable",
+          "server_draining",
+          "upstream_timeout"
+        ]
+      },
+      "ErrorType": {
+        "type": "string",
+        "description": "OpenAI-style `error.type`.",
+        "enum": [
+          "invalid_request_error",
+          "authentication_error",
+          "permission_error",
+          "rate_limit_error",
+          "quota_error",
+          "api_error"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Fixed, sanitized message; never echoes request or upstream content."
+          },
+          "type": {
+            "$ref": "#/components/schemas/ErrorType"
+          },
+          "param": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 128,
+            "description": "JSON path of the rejected request member (for example `messages[2].content[0]`), cut at a segment boundary after 128 bytes; `null` when no safe path exists."
+          },
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          }
+        },
+        "required": [
+          "message",
+          "type",
+          "param",
+          "code"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/Error"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "description": "OpenAI-compatible error envelope used by every endpoint except route-level `/v1/messages` errors."
+      },
+      "MessagesError": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "invalid_request_error",
+              "authentication_error",
+              "permission_error",
+              "not_found_error",
+              "timeout_error",
+              "request_too_large",
+              "rate_limit_error",
+              "overloaded_error",
+              "api_error"
+            ],
+            "description": "Mapped from the HTTP status: 400/other 4xx `invalid_request_error`, 401 `authentication_error`, 403 `permission_error`, 404 `not_found_error`, 408/504 `timeout_error`, 413 `request_too_large`, 429 `rate_limit_error`, 503 `overloaded_error`, other 5xx `api_error`."
+          },
+          "message": {
+            "type": "string"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorCode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Kanata code, unchanged."
+          },
+          "param": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "type",
+          "message",
+          "code",
+          "param"
+        ],
+        "additionalProperties": false
+      },
+      "MessagesErrorEnvelope": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "error"
+          },
+          "error": {
+            "$ref": "#/components/schemas/MessagesError"
+          }
+        },
+        "required": [
+          "type",
+          "error"
+        ],
+        "additionalProperties": false,
+        "description": "Anthropic-style envelope for route-level `/v1/messages` errors. Public-listener authentication failures happen before routing and keep the OpenAI envelope."
+      },
+      "Operation": {
+        "type": "string",
+        "enum": [
+          "chat",
+          "transcription",
+          "embeddings",
+          "speech"
+        ]
+      },
+      "ReasoningEffort": {
+        "type": "string",
+        "enum": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "ImageLimits": {
+        "type": "object",
+        "properties": {
+          "transport": {
+            "const": "data_url"
+          },
+          "media_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "image/png",
+                "image/jpeg"
+              ]
+            }
+          },
+          "max_count": {
+            "type": "integer",
+            "const": 4
+          },
+          "max_bytes_per_image": {
+            "type": "integer",
+            "const": 4194304
+          },
+          "max_total_bytes": {
+            "type": "integer",
+            "const": 8388608
+          },
+          "max_base64_bytes_per_image": {
+            "type": "integer",
+            "const": 5592408
+          },
+          "max_dimension": {
+            "type": "integer",
+            "const": 4096
+          },
+          "max_total_pixels": {
+            "type": "integer",
+            "const": 16777216
+          },
+          "max_json_body_bytes_without_audio": {
+            "type": "integer",
+            "description": "The listener's `limits.max_body_bytes`."
+          }
+        }
+      },
+      "Admission": {
+        "type": "object",
+        "properties": {
+          "max_in_flight": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_queue": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "queue_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "adapter_max_in_flight": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Shared backend cap; `null` if uncapped."
+          },
+          "in_flight": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Live requests running on this route."
+          },
+          "queued": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Live requests waiting for this route."
+          },
+          "adapter_in_flight": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Live requests on the backend; `null` if uncapped."
+          },
+          "breaker": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "closed",
+              "open",
+              "half_open",
+              null
+            ],
+            "description": "Circuit breaker state of the backend."
+          }
+        },
+        "required": [
+          "max_in_flight",
+          "max_queue",
+          "queue_ms",
+          "adapter_max_in_flight",
+          "in_flight",
+          "queued",
+          "adapter_in_flight",
+          "breaker"
+        ],
+        "additionalProperties": false,
+        "description": "Private listener only. Per-route limits from `[limits]`/`[timeouts]` plus a live load snapshot. A snapshot, not a health guarantee."
+      },
+      "KanataModel": {
+        "type": "object",
+        "properties": {
+          "operations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Operation"
+            },
+            "description": "Operations this key may use on this alias and listener."
+          },
+          "structured_output": {
+            "type": "boolean",
+            "description": "Chat accepts `response_format` JSON modes."
+          },
+          "sampling_controls": {
+            "type": "boolean",
+            "description": "Chat accepts `temperature`, `top_p`, `seed` and enforces max-token fields."
+          },
+          "reasoning_control": {
+            "type": "boolean",
+            "description": "Chat accepts a reasoning effort."
+          },
+          "reasoning_efforts": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ReasoningEffort"
+            },
+            "description": "Efforts the key may request, when enumerated; otherwise `null`."
+          },
+          "function_tools": {
+            "type": "boolean"
+          },
+          "streaming": {
+            "type": "boolean"
+          },
+          "input_audio": {
+            "type": "boolean",
+            "description": "Chat accepts `input_audio` content parts."
+          },
+          "input_images": {
+            "type": "boolean",
+            "description": "Chat accepts inline `image_url` data URLs."
+          },
+          "images": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageLimits"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trust_zone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "local",
+              "private_network",
+              "external",
+              null
+            ]
+          },
+          "context_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Declared context window, or `null` for the provider's full window."
+          },
+          "max_output_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Declared output cap; larger requested limits are rejected (Messages clamps)."
+          },
+          "responses": {
+            "type": "object",
+            "properties": {
+              "endpoint": {
+                "const": "/v1/responses"
+              },
+              "operation": {
+                "const": "chat"
+              },
+              "stateless": {
+                "const": true
+              },
+              "input": {
+                "type": "array",
+                "items": {
+                  "const": "text"
+                }
+              },
+              "function_tools": {
+                "type": "boolean"
+              },
+              "streaming": {
+                "type": "boolean"
+              },
+              "max_output_bytes": {
+                "type": "integer",
+                "const": 8388608
+              }
+            },
+            "description": "Present for aliases with a chat route."
+          },
+          "messages": {
+            "type": "object",
+            "properties": {
+              "endpoint": {
+                "const": "/v1/messages"
+              },
+              "operation": {
+                "const": "chat"
+              },
+              "stateless": {
+                "const": true
+              },
+              "function_tools": {
+                "type": "boolean"
+              },
+              "streaming": {
+                "type": "boolean"
+              }
+            },
+            "description": "Present for aliases with a chat route."
+          },
+          "embeddings": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "string",
+                    "string_array"
+                  ]
+                }
+              },
+              "encoding_formats": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "float",
+                    "base64"
+                  ]
+                }
+              },
+              "max_inputs": {
+                "type": "integer",
+                "const": 128
+              },
+              "max_dimensions": {
+                "type": "integer",
+                "const": 16384
+              },
+              "max_total_values": {
+                "type": "integer",
+                "const": 262144
+              }
+            },
+            "description": "Present for aliases with an embeddings route."
+          },
+          "speech": {
+            "type": "object",
+            "properties": {
+              "voices": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "formats": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "mp3",
+                    "wav"
+                  ]
+                }
+              },
+              "max_input_characters": {
+                "type": "integer",
+                "const": 4096
+              },
+              "max_input_bytes": {
+                "type": "integer",
+                "const": 16384
+              },
+              "max_response_bytes": {
+                "type": "integer",
+                "const": 8388608
+              },
+              "speed": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "const": 0.25
+                  },
+                  "max": {
+                    "const": 4.0
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "description": "Present for aliases with a speech route."
+          },
+          "admission": {
+            "$ref": "#/components/schemas/Admission"
+          }
+        },
+        "required": [
+          "operations",
+          "structured_output",
+          "sampling_controls",
+          "reasoning_control",
+          "reasoning_efforts",
+          "function_tools",
+          "streaming",
+          "input_audio",
+          "input_images",
+          "images",
+          "trust_zone",
+          "context_tokens",
+          "max_output_tokens"
+        ],
+        "description": "Kanata capability extension. Describes gateway configuration for this key and listener, not live backend health. Capability flags come from the alias's chat route and are `false` for aliases without one."
+      },
+      "Model": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Model alias. Grouped reasoning models list one base id."
+          },
+          "object": {
+            "const": "model"
+          },
+          "created": {
+            "type": "integer",
+            "const": 0
+          },
+          "owned_by": {
+            "const": "kanata"
+          },
+          "kanata": {
+            "$ref": "#/components/schemas/KanataModel"
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "created",
+          "owned_by",
+          "kanata"
+        ]
+      },
+      "ModelList": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "const": "list"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Model"
+            }
+          }
+        },
+        "required": [
+          "object",
+          "data"
+        ]
+      },
+      "Extensions": {
+        "type": "object",
+        "description": "Namespaced extension values (`vendor.key`, lowercase segments of letters, digits and `-`; key at most 128 bytes). At most 16 entries, nesting depth 4 and 8 KiB serialized (or the configured lower limit). Each key must be allowlisted on the route and adapter, otherwise `400 invalid_request`.",
+        "maxProperties": 16,
+        "propertyNames": {
+          "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$",
+          "maxLength": 128
+        }
+      },
+      "ChatTextPart": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "text"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "ChatInputAudioPart": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "input_audio"
+          },
+          "input_audio": {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "string",
+                "contentEncoding": "base64",
+                "description": "Canonical standard base64."
+              },
+              "format": {
+                "type": "string",
+                "enum": [
+                  "wav",
+                  "mp3"
+                ]
+              }
+            },
+            "required": [
+              "data",
+              "format"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "type",
+          "input_audio"
+        ],
+        "additionalProperties": false,
+        "description": "User messages only, on models with `kanata.input_audio`. Decoded audio across the request is limited by `limits.max_audio_bytes` (at most 25 MiB); over the limit returns 413."
+      },
+      "ChatImagePart": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "image_url"
+          },
+          "image_url": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "pattern": "^data:image/(png|jpeg);base64,",
+                "description": "Inline PNG or JPEG data URL; remote URLs are rejected."
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "additionalProperties": false,
+            "description": "Only `url`; `detail` is rejected."
+          }
+        },
+        "required": [
+          "type",
+          "image_url"
+        ],
+        "additionalProperties": false,
+        "description": "User messages only, on models with `kanata.input_images`. At most 4 images, 4 MiB each, 8 MiB total, 4096 px per side, 16,777,216 pixels total; limits return 413."
+      },
+      "ChatContentPart": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ChatTextPart"
+          },
+          {
+            "$ref": "#/components/schemas/ChatInputAudioPart"
+          },
+          {
+            "$ref": "#/components/schemas/ChatImagePart"
+          }
+        ]
+      },
+      "ChatToolCall": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "const": "function"
+          },
+          "function": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,64}$"
+              },
+              "arguments": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "arguments"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "function"
+        ],
+        "additionalProperties": false
+      },
+      "ChatMessage": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "system",
+              "developer",
+              "user",
+              "assistant",
+              "tool"
+            ]
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ChatContentPart"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_calls": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ChatToolCall"
+            },
+            "description": "Assistant only."
+          },
+          "tool_call_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Required on `tool` messages; rejected elsewhere."
+          },
+          "reasoning_content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 262144,
+            "description": "Assistant only: replayed plaintext reasoning, at most 256 KiB."
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "additionalProperties": false,
+        "description": "System and developer messages need nonempty text. User messages need text, audio or image content. Assistant messages need text or `tool_calls`; an assistant turn with empty content and no calls is a replayed empty answer and is dropped. Tool messages need `tool_call_id` and `content` (empty allowed). Audio and image parts are user-only."
+      },
+      "ChatTool": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "function"
+          },
+          "function": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,64}$"
+              },
+              "description": {
+                "type": "string"
+              },
+              "parameters": {
+                "type": "object",
+                "description": "JSON Schema object; forwarded, not enforced."
+              },
+              "strict": {
+                "type": "boolean",
+                "description": "Accepted and dropped."
+              }
+            },
+            "required": [
+              "name",
+              "parameters"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "type",
+          "function"
+        ],
+        "additionalProperties": false,
+        "description": "Function tool; names must be unique."
+      },
+      "ChatToolChoice": {
+        "oneOf": [
+          {
+            "type": "string",
+            "enum": [
+              "none",
+              "auto",
+              "required"
+            ],
+            "description": "`required` needs at least one tool."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "function"
+              },
+              "function": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "type",
+              "function"
+            ],
+            "additionalProperties": false,
+            "description": "Names a declared tool."
+          }
+        ],
+        "default": "auto"
+      },
+      "ResponseFormat": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "text"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "json_object"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "json_schema"
+              },
+              "json_schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                  },
+                  "description": {
+                    "type": "string",
+                    "maxLength": 1024
+                  },
+                  "schema": {
+                    "type": "object",
+                    "description": "At most 64 KiB serialized and 32 levels deep."
+                  },
+                  "strict": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "name",
+                  "schema"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "type",
+              "json_schema"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "description": "Requires `kanata.structured_output`."
+      },
+      "StopSequences": {
+        "oneOf": [
+          {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        ],
+        "description": "At most 4 sequences of 1–256 bytes. Rejected on routes whose backend does not take stop sequences."
+      },
+      "Penalty": {
+        "type": "number",
+        "minimum": -2,
+        "maximum": 2,
+        "description": "Rejected on routes whose backend does not take penalties."
+      },
+      "MaxTokens": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1048576,
+        "description": "At most `kanata.max_output_tokens` when set. Validated then dropped on routes without `sampling_controls`."
+      },
+      "ChatCompletionRequest": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "description": "An alias from `GET /v1/models`."
+          },
+          "messages": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            }
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatTool"
+            },
+            "description": "Requires `kanata.function_tools`."
+          },
+          "tool_choice": {
+            "$ref": "#/components/schemas/ChatToolChoice"
+          },
+          "stream": {
+            "type": "boolean",
+            "default": false,
+            "description": "Requires `kanata.streaming`."
+          },
+          "stream_options": {
+            "type": "object",
+            "properties": {
+              "include_usage": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Only with `stream: true`; not `null`."
+          },
+          "response_format": {
+            "$ref": "#/components/schemas/ResponseFormat"
+          },
+          "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "top_p": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          },
+          "seed": {
+            "type": "integer"
+          },
+          "stop": {
+            "$ref": "#/components/schemas/StopSequences"
+          },
+          "presence_penalty": {
+            "$ref": "#/components/schemas/Penalty"
+          },
+          "frequency_penalty": {
+            "$ref": "#/components/schemas/Penalty"
+          },
+          "max_tokens": {
+            "$ref": "#/components/schemas/MaxTokens"
+          },
+          "max_completion_tokens": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MaxTokens"
+              }
+            ],
+            "description": "Alternative to `max_tokens`; sending both is rejected."
+          },
+          "reasoning_effort": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ],
+            "description": "Requires `kanata.reasoning_control`; must be in `kanata.reasoning_efforts` when enumerated."
+          },
+          "chat_template_kwargs": {
+            "type": "object",
+            "properties": {
+              "enable_thinking": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Only `enable_thinking`, on backends that accept it and without `reasoning_effort`; not `null`."
+          },
+          "store": {
+            "type": "boolean",
+            "description": "Only `false` is accepted."
+          },
+          "parallel_tool_calls": {
+            "type": "boolean",
+            "description": "Only `true` is accepted."
+          },
+          "prompt_cache_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[ -~]+$",
+            "description": "1–64 printable ASCII bytes; forwarded where supported, dropped elsewhere."
+          },
+          "extensions": {
+            "$ref": "#/components/schemas/Extensions"
+          }
+        },
+        "required": [
+          "model",
+          "messages"
+        ],
+        "additionalProperties": false,
+        "description": "Unknown members and `null` option values return `400 invalid_request` with the member's JSON path in `param`."
+      },
+      "ChatUsage": {
+        "type": "object",
+        "properties": {
+          "prompt_tokens": {
+            "type": "integer"
+          },
+          "completion_tokens": {
+            "type": "integer"
+          },
+          "total_tokens": {
+            "type": "integer"
+          },
+          "completion_tokens_details": {
+            "type": "object",
+            "properties": {
+              "reasoning_tokens": {
+                "type": "integer"
+              }
+            },
+            "description": "Present when reported."
+          },
+          "prompt_tokens_details": {
+            "type": "object",
+            "properties": {
+              "cached_tokens": {
+                "type": "integer"
+              }
+            },
+            "description": "Private listener only, when reported upstream."
+          }
+        },
+        "required": [
+          "prompt_tokens",
+          "completion_tokens",
+          "total_tokens"
+        ],
+        "description": "Reported upstream counts; never estimated."
+      },
+      "FinishReason": {
+        "type": "string",
+        "enum": [
+          "stop",
+          "length",
+          "tool_calls",
+          "content_filter"
+        ]
+      },
+      "ChatCompletion": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "examples": [
+              "chatcmpl_kanata_0000000000000001"
+            ]
+          },
+          "object": {
+            "const": "chat.completion"
+          },
+          "created": {
+            "type": "integer",
+            "const": 0
+          },
+          "model": {
+            "type": "string"
+          },
+          "choices": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "const": 0
+                },
+                "message": {
+                  "type": "object",
+                  "properties": {
+                    "role": {
+                      "const": "assistant"
+                    },
+                    "content": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "`\"\"` for a reply with no output."
+                    },
+                    "tool_calls": {
+                      "type": [
+                        "array",
+                        "null"
+                      ],
+                      "items": {
+                        "$ref": "#/components/schemas/ChatToolCall"
+                      }
+                    },
+                    "reasoning_content": {
+                      "type": "string",
+                      "description": "Private listener only, when the backend returns reasoning (at most 256 KiB)."
+                    }
+                  },
+                  "required": [
+                    "role",
+                    "content",
+                    "tool_calls"
+                  ]
+                },
+                "finish_reason": {
+                  "$ref": "#/components/schemas/FinishReason"
+                }
+              },
+              "required": [
+                "index",
+                "message",
+                "finish_reason"
+              ]
+            }
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "created",
+          "model",
+          "choices",
+          "usage"
+        ]
+      },
+      "ChatCompletionChunk": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "const": "chat.completion.chunk"
+          },
+          "created": {
+            "type": "integer",
+            "const": 0
+          },
+          "model": {
+            "type": "string"
+          },
+          "system_fingerprint": {
+            "type": "null"
+          },
+          "choices": {
+            "type": "array",
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "const": 0
+                },
+                "delta": {
+                  "type": "object",
+                  "properties": {
+                    "role": {
+                      "const": "assistant"
+                    },
+                    "content": {
+                      "type": "string"
+                    },
+                    "reasoning_content": {
+                      "type": "string",
+                      "description": "Private listener only."
+                    },
+                    "tool_calls": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "index": {
+                            "type": "integer"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "const": "function"
+                          },
+                          "function": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string"
+                              },
+                              "arguments": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "required": [
+                          "index",
+                          "function"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "finish_reason": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FinishReason"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "index",
+                "delta",
+                "finish_reason"
+              ]
+            },
+            "description": "Empty on the final usage chunk."
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "created",
+          "model",
+          "system_fingerprint",
+          "choices",
+          "usage"
+        ],
+        "description": "One `data:` payload of a chat completion stream."
+      },
+      "ResponsesInputText": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "input_text"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "ResponsesOutputText": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "output_text"
+          },
+          "text": {
+            "type": "string"
+          },
+          "annotations": {
+            "type": "array",
+            "maxItems": 0
+          },
+          "logprobs": {
+            "type": "array",
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ],
+        "additionalProperties": false,
+        "description": "Replayed assistant output."
+      },
+      "ResponsesInputMessage": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "message",
+            "description": "Optional; defaults to `message`."
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "system",
+              "developer",
+              "user",
+              "assistant"
+            ]
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ResponsesInputText"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ResponsesOutputText"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "incomplete"
+            ]
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "ResponsesFunctionCall": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "function_call"
+          },
+          "call_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "arguments": {
+            "type": "string",
+            "minLength": 1
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "incomplete"
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "call_id",
+          "name",
+          "arguments"
+        ],
+        "additionalProperties": false,
+        "description": "Call ids must be unique and each must be answered by a later `function_call_output`."
+      },
+      "ResponsesFunctionCallOutput": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "function_call_output"
+          },
+          "call_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "output": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ResponsesInputText"
+                }
+              }
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "incomplete"
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "call_id",
+          "output"
+        ],
+        "additionalProperties": false
+      },
+      "ResponsesReasoningItem": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "reasoning"
+          },
+          "summary": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "const": "summary_text"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "text"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "encrypted_content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1048576,
+            "description": "Replayed in order on routes that support it, dropped elsewhere."
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "incomplete"
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "summary"
+        ],
+        "additionalProperties": false,
+        "description": "Summary-only items are discarded."
+      },
+      "ResponsesInputItem": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ResponsesInputMessage"
+          },
+          {
+            "$ref": "#/components/schemas/ResponsesFunctionCall"
+          },
+          {
+            "$ref": "#/components/schemas/ResponsesFunctionCallOutput"
+          },
+          {
+            "$ref": "#/components/schemas/ResponsesReasoningItem"
+          }
+        ]
+      },
+      "ResponsesTool": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "function"
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          },
+          "description": {
+            "type": "string"
+          },
+          "parameters": {
+            "type": "object"
+          },
+          "strict": {
+            "type": "boolean",
+            "description": "Accepted and dropped."
+          }
+        },
+        "required": [
+          "type",
+          "name",
+          "parameters"
+        ],
+        "additionalProperties": false,
+        "description": "Flat function declaration; other tool types return `param=tools[i]`."
+      },
+      "ResponsesRequest": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1
+          },
+          "input": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/components/schemas/ResponsesInputItem"
+                }
+              }
+            ]
+          },
+          "instructions": {
+            "type": "string",
+            "description": "System text."
+          },
+          "store": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`false` or `null`; `true` is rejected."
+          },
+          "background": {
+            "const": false
+          },
+          "parallel_tool_calls": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` or `null`; `false` is rejected."
+          },
+          "prompt_cache_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[ -~]+$"
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "const": "reasoning.encrypted_content"
+            },
+            "description": "Encrypted reasoning is returned only on the private listener."
+          },
+          "client_metadata": {
+            "type": "object",
+            "maxProperties": 32,
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "At most 16 KiB of keys and values; accepted and dropped."
+          },
+          "metadata": {
+            "type": "object",
+            "maxProperties": 16,
+            "propertyNames": {
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "description": "Accepted and dropped."
+          },
+          "user": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Accepted and dropped."
+          },
+          "stream": {
+            "type": "boolean",
+            "default": false
+          },
+          "truncation": {
+            "const": "disabled"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResponsesTool"
+            }
+          },
+          "tool_choice": {
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "auto",
+                  "required"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "const": "function"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "top_p": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          },
+          "max_output_tokens": {
+            "$ref": "#/components/schemas/MaxTokens"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "effort": {
+                    "$ref": "#/components/schemas/ReasoningEffort"
+                  },
+                  "summary": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "enum": [
+                      "auto",
+                      "concise",
+                      "detailed",
+                      null
+                    ],
+                    "description": "Validated and ignored."
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "type": "object",
+            "properties": {
+              "verbosity": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "description": "Ignored."
+              },
+              "format": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "const": "text"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "model",
+          "input"
+        ],
+        "additionalProperties": false,
+        "description": "Stateless subset over chat routes. `previous_response_id`, `conversation`, `service_tier`, `prompt`, `stream_options` and any other member return `400 invalid_request` with `param`."
+      },
+      "ResponsesUsage": {
+        "type": "object",
+        "properties": {
+          "input_tokens": {
+            "type": "integer"
+          },
+          "output_tokens": {
+            "type": "integer"
+          },
+          "total_tokens": {
+            "type": "integer"
+          },
+          "output_tokens_details": {
+            "type": "object",
+            "properties": {
+              "reasoning_tokens": {
+                "type": "integer"
+              }
+            }
+          },
+          "input_tokens_details": {
+            "type": "object",
+            "properties": {
+              "cached_tokens": {
+                "type": "integer"
+              }
+            },
+            "description": "Private listener only."
+          }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "total_tokens"
+        ]
+      },
+      "Response": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "examples": [
+              "resp_kanata_0000000000000001"
+            ]
+          },
+          "object": {
+            "const": "response"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "completed_at": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "in_progress",
+              "completed",
+              "incomplete",
+              "failed"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "output": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "`message` (with `output_text` content), `function_call` or, on the private listener, `reasoning` items."
+            }
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Error"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "incomplete_details": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "max_output_tokens",
+                      "content_filter"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "store": {
+            "const": false
+          },
+          "background": {
+            "const": false
+          },
+          "previous_response_id": {
+            "type": "null"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResponsesUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "status",
+          "model",
+          "output"
+        ],
+        "description": "Echoes request options (`tools`, `tool_choice`, `temperature`, `top_p`, `max_output_tokens`, `reasoning`, `text`, `truncation`). Ids are not retrieval handles."
+      },
+      "MessagesTextBlock": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "text"
+          },
+          "text": {
+            "type": "string"
+          },
+          "cache_control": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "ephemeral"
+              },
+              "ttl": {
+                "type": "string",
+                "enum": [
+                  "5m",
+                  "1h"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false,
+            "description": "Accepted and dropped."
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "MessagesImageBlock": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "image"
+          },
+          "source": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "base64"
+              },
+              "media_type": {
+                "type": "string",
+                "enum": [
+                  "image/png",
+                  "image/jpeg"
+                ]
+              },
+              "data": {
+                "type": "string",
+                "contentEncoding": "base64"
+              }
+            },
+            "required": [
+              "type",
+              "media_type",
+              "data"
+            ],
+            "additionalProperties": false,
+            "description": "`url` sources are rejected."
+          },
+          "cache_control": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "ephemeral"
+              },
+              "ttl": {
+                "type": "string",
+                "enum": [
+                  "5m",
+                  "1h"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false,
+            "description": "Accepted and dropped."
+          }
+        },
+        "required": [
+          "type",
+          "source"
+        ],
+        "additionalProperties": false,
+        "description": "User turns only; image limits as for chat."
+      },
+      "MessagesToolUseBlock": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "tool_use"
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          },
+          "input": {
+            "type": "object"
+          },
+          "cache_control": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "ephemeral"
+              },
+              "ttl": {
+                "type": "string",
+                "enum": [
+                  "5m",
+                  "1h"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false,
+            "description": "Accepted and dropped."
+          }
+        },
+        "required": [
+          "type",
+          "id",
+          "name",
+          "input"
+        ],
+        "additionalProperties": false,
+        "description": "Assistant turns only."
+      },
+      "MessagesToolResultBlock": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "tool_result"
+          },
+          "tool_use_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/MessagesTextBlock"
+                }
+              }
+            ]
+          },
+          "is_error": {
+            "type": "boolean",
+            "description": "Dropped."
+          },
+          "cache_control": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "ephemeral"
+              },
+              "ttl": {
+                "type": "string",
+                "enum": [
+                  "5m",
+                  "1h"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false,
+            "description": "Accepted and dropped."
+          }
+        },
+        "required": [
+          "type",
+          "tool_use_id"
+        ],
+        "additionalProperties": false,
+        "description": "User turns only."
+      },
+      "MessagesThinkingBlock": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "thinking"
+          },
+          "thinking": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "thinking"
+        ],
+        "additionalProperties": false,
+        "description": "Assistant turns only; discarded."
+      },
+      "MessagesRedactedThinkingBlock": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "redacted_thinking"
+          },
+          "data": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "data"
+        ],
+        "additionalProperties": false,
+        "description": "Assistant turns only; discarded."
+      },
+      "MessagesMessage": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant",
+              "system"
+            ]
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/MessagesTextBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessagesImageBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessagesToolUseBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessagesToolResultBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessagesThinkingBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessagesRedactedThinkingBlock"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "additionalProperties": false,
+        "description": "Text blocks must be nonempty; an assistant turn with only empty text is dropped."
+      },
+      "MessagesTool": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "custom"
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          },
+          "description": {
+            "type": "string"
+          },
+          "input_schema": {
+            "type": "object"
+          },
+          "strict": {
+            "type": "boolean",
+            "description": "Dropped."
+          },
+          "cache_control": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "ephemeral"
+              },
+              "ttl": {
+                "type": "string",
+                "enum": [
+                  "5m",
+                  "1h"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false,
+            "description": "Accepted and dropped."
+          }
+        },
+        "required": [
+          "name",
+          "input_schema"
+        ],
+        "additionalProperties": false,
+        "description": "Client tool; `type` optional. Hosted/server tool types return `param=tools[i]`."
+      },
+      "MessagesRequest": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1
+          },
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1048576,
+            "description": "Required; clamped to the route cap."
+          },
+          "messages": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/MessagesMessage"
+            }
+          },
+          "system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/MessagesTextBlock"
+                }
+              }
+            ]
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessagesTool"
+            }
+          },
+          "tool_choice": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "none",
+                  "any",
+                  "tool"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "description": "Required with `tool`."
+              },
+              "disable_parallel_tool_use": {
+                "type": "boolean",
+                "description": "Only `false`."
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          "stream": {
+            "type": "boolean",
+            "default": false
+          },
+          "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "top_p": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          },
+          "stop_sequences": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "user_id": {
+                "type": "string",
+                "maxLength": 512
+              }
+            },
+            "additionalProperties": false,
+            "description": "Never forwarded."
+          },
+          "thinking": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "const": "adaptive"
+                  },
+                  "display": {
+                    "type": "string",
+                    "enum": [
+                      "summarized",
+                      "omitted"
+                    ]
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "const": "disabled"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ],
+            "description": "`enabled` (a thinking budget) is rejected with `param=thinking`. No thinking blocks are emitted."
+          },
+          "output_config": {
+            "type": "object",
+            "properties": {
+              "effort": {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            },
+            "additionalProperties": false,
+            "description": "`effort` applies only where the alias has reasoning control; `format` is rejected."
+          },
+          "context_management": {
+            "type": "object",
+            "properties": {
+              "edits": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^clear_thinking_.+"
+                    },
+                    "keep": {
+                      "oneOf": [
+                        {
+                          "const": "all"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "const": "thinking_turns"
+                            },
+                            "value": {
+                              "type": "integer",
+                              "minimum": 0
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "value"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "model",
+          "max_tokens",
+          "messages"
+        ],
+        "additionalProperties": false,
+        "description": "Stateless Anthropic Messages subset over chat routes. Unknown members return 400 with `param`."
+      },
+      "MessagesResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`msg_` followed by the request id."
+          },
+          "type": {
+            "const": "message"
+          },
+          "role": {
+            "const": "assistant"
+          },
+          "model": {
+            "type": "string"
+          },
+          "content": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "const": "text"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "text"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "const": "tool_use"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "input": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "name",
+                    "input"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "description": "`[]` for a reply with no text or tool calls."
+          },
+          "stop_reason": {
+            "type": "string",
+            "enum": [
+              "end_turn",
+              "max_tokens",
+              "tool_use",
+              "refusal"
+            ]
+          },
+          "stop_sequence": {
+            "type": "null"
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "input_tokens": {
+                "type": "integer",
+                "description": "Excludes cached input; unreported counts are 0."
+              },
+              "output_tokens": {
+                "type": "integer"
+              },
+              "cache_read_input_tokens": {
+                "type": "integer",
+                "description": "Private listener only, when reported."
+              }
+            },
+            "required": [
+              "input_tokens",
+              "output_tokens"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "role",
+          "model",
+          "content",
+          "stop_reason",
+          "stop_sequence",
+          "usage"
+        ],
+        "additionalProperties": false
+      },
+      "EmbeddingsRequest": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1
+          },
+          "input": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 128,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            ],
+            "description": "Token arrays are rejected."
+          },
+          "encoding_format": {
+            "type": "string",
+            "enum": [
+              "float",
+              "base64"
+            ],
+            "default": "float",
+            "description": "`base64` is little-endian float32."
+          },
+          "dimensions": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16384,
+            "description": "Must be supported by the model; `dimensions` × inputs at most 262,144."
+          }
+        },
+        "required": [
+          "model",
+          "input"
+        ],
+        "additionalProperties": false,
+        "description": "Unknown members (including `user`) return 400; deserialization failures here carry `param: null`."
+      },
+      "EmbeddingsResponse": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "const": "list"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "object": {
+                  "const": "embedding"
+                },
+                "index": {
+                  "type": "integer"
+                },
+                "embedding": {
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      }
+                    },
+                    {
+                      "type": "string",
+                      "contentEncoding": "base64"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "object",
+                "index",
+                "embedding"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "model": {
+            "type": "string"
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "prompt_tokens": {
+                "type": "integer"
+              },
+              "total_tokens": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt_tokens",
+              "total_tokens"
+            ],
+            "additionalProperties": false,
+            "description": "Present when reported upstream."
+          }
+        },
+        "required": [
+          "object",
+          "data",
+          "model"
+        ],
+        "additionalProperties": false
+      },
+      "TranscriptionRequest": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "description": "Audio part with a safe filename (≤255 bytes, no path separators) and an explicit content type: `audio/wav`, `audio/x-wav`, `audio/mpeg`, `audio/flac`, `audio/mp4`, `audio/ogg` or `audio/webm`. At most `limits.max_audio_bytes` (25 MiB by default)."
+          },
+          "language": {
+            "type": "string",
+            "maxLength": 8192
+          },
+          "prompt": {
+            "type": "string",
+            "maxLength": 8192
+          },
+          "response_format": {
+            "type": "string",
+            "enum": [
+              "json",
+              "text"
+            ],
+            "default": "json"
+          },
+          "extensions": {
+            "type": "string",
+            "description": "JSON-encoded `Extensions` object."
+          }
+        },
+        "required": [
+          "model",
+          "file"
+        ],
+        "additionalProperties": false,
+        "description": "Each field at most once; text fields have no control characters. Other fields are rejected with `400 invalid_request` (`param: null`)."
+      },
+      "TranscriptionResponse": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "SpeechRequest": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1
+          },
+          "input": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "Nonblank; at most 4,096 characters and 16,384 UTF-8 bytes. `[pause:`, `[voice:` and `[rate:` controls are rejected."
+          },
+          "voice": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "description": "From `kanata.speech.voices`."
+          },
+          "response_format": {
+            "type": "string",
+            "enum": [
+              "mp3",
+              "wav"
+            ],
+            "default": "mp3",
+            "description": "From `kanata.speech.formats`."
+          },
+          "speed": {
+            "type": "number",
+            "minimum": 0.25,
+            "maximum": 4,
+            "default": 1
+          }
+        },
+        "required": [
+          "model",
+          "input",
+          "voice"
+        ],
+        "additionalProperties": false,
+        "description": "Unknown members and `null` values return 400."
+      }
+    }
+  }
+}
