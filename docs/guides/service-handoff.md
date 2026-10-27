@@ -80,16 +80,6 @@ Services continue to use gateway bearer keys. Account OAuth credentials stay on 
 
 The portal displays the configured upstream name and its API alias. For example, a route may display **GPT-6-Luna** with `API alias: chatgpt-luna`. Send the alias returned by authenticated discovery. Model and effort availability depend on the configured routes, key grants and upstream account.
 
-## Codex removal
-
-The Codex provider and inline `[[application_keys]]` were removed in this release. Old configs fail `kanata check` with `codex_removed` (a `codex` adapter or `[codex_auth]`), `use_reasoning_summary` (`codex_reasoning_summary`), `inline_keys_removed` (`application_keys`) or `keys: required`. Before upgrading:
-
-1. With 1.0.0-beta.8, run `kanata key migrate --config <path>` if the config still has inline keys, add the `[keys]` table and delete the inline blocks.
-2. Move Codex routes to the `chatgpt` provider ([setup](sign-in-with-chatgpt.md)), keeping each alias, operation and key grant. Use `reasoning_effort` and `reasoning_summary` instead of their `codex_` forms and pin formerly unpinned routes to `medium`. Routes in a family must share adapter, upstream, policies and capabilities (`inconsistent_reasoning_family`). Clients keep their URL, key and model ID; refresh discovery because supported levels may change.
-3. Drop `deploy/compose/compose.kanata.chatgpt-only.yml` from `COMPOSE_FILE`. The old `kanata_codex_state` Docker volume stays on disk; delete it with `docker volume rm kanata_codex_state` once you no longer need it.
-
-There is no automatic provider fallback.
-
 ## Operate client access
 
 - Use the [private portal](private-portal.md) to create, rotate or revoke gateway keys and grant exact models and efforts. Provider and global selection controls stage changes until **Save changes**.

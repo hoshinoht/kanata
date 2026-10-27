@@ -90,7 +90,8 @@ fn pending_server(config: &ValidatedConfig) -> (Arc<TwoPlaneServer>, pending::Pe
 
 async fn parts(response: Response) -> (StatusCode, HeaderMap, Bytes) {
     let status = response.status();
-    let headers = response.headers().clone();
+    let mut headers = response.headers().clone();
+    headers.remove("x-request-id");
     (status, headers, support::response_body(response).await)
 }
 
@@ -191,7 +192,7 @@ fn invalid_keys_files_are_rejected_once_and_keep_the_current_keys() {
             0o600,
             "keys_file.keys[1].permissions[0]: unknown_route_selector",
         ),
-        (valid.clone(), 0o620, "keys.file: insecure_permissions"),
+        (valid, 0o620, "keys.file: insecure_permissions"),
     ];
     tracing::subscriber::with_default(subscriber, || {
         tracing::callsite::rebuild_interest_cache();

@@ -204,6 +204,10 @@ impl MockUpstream {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        // Clears the nonblocking mode the accepted socket inherits on macOS.
+                        stream
+                            .set_nonblocking(false)
+                            .expect("blocking mock connection");
                         let request_tx = request_tx.clone();
                         let held = thread_held.clone();
                         let released = thread_released.clone();

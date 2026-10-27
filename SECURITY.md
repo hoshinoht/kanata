@@ -1,6 +1,6 @@
 # Security policy
 
-Kanata is **beta** software for single-host, self-hosted deployments. Only the latest release on the default branch receives fixes.
+Kanata is software for single-host, self-hosted deployments. Only the latest minor release on the default branch receives fixes.
 
 ## Reporting a vulnerability
 

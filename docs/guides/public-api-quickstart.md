@@ -6,7 +6,7 @@ Kanata exposes an OpenAI-compatible API and a stateless subset of the Anthropic 
 | --- | --- |
 | Base URL | `https://api.example.com/v1` |
 | Auth | `Authorization: Bearer <your key>` or `x-api-key: <your key>` (keys start with `kanata_sk_`; if both headers are sent, each must occur once with the same value) |
-| Endpoints | `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `POST /v1/messages`, `POST /v1/audio/transcriptions` (models with speech input) |
+| Endpoints | `GET /v1/models`, `GET /v1/models/{id}`, `POST /v1/chat/completions`, `POST /v1/responses`, `POST /v1/messages`, `POST /v1/audio/transcriptions` (models with speech input) |
 | Models | The aliases returned by authenticated `GET /v1/models` |
 
 ## Your key
@@ -26,7 +26,7 @@ Choose **View my access** after entering a bearer key to load its permitted mode
 
 The page stores the key only in memory, clears the input after submission, and clears the key and model details on **Disconnect**, reload or navigation away. **Refresh access** rechecks permissions; failed refreshes clear the session. Examples always use `$KANATA_API_KEY`, never the entered secret. Keys are not accepted from query strings or fragments. Use HTTPS; browser key entry is disabled over plain HTTP except on localhost/loopback for development. Browser extensions and scripts that compromise the page can still read an in-memory key.
 
-Only `GET`/`HEAD` at the exact `/v1` and `/v1/` paths are unauthenticated. All discovery and inference endpoints accept `Authorization: Bearer` or `x-api-key`. Guide and model-list responses carry `Cache-Control: no-store`; reverse proxies must honor this and must not inject third-party scripts or weaken the page's Content Security Policy. Cloudflare Access, when configured, still applies before the guide is reached.
+Only `GET`/`HEAD` at the exact `/v1` and `/v1/` paths are unauthenticated. All discovery and inference endpoints accept `Authorization: Bearer` or `x-api-key`. Guide and model discovery responses carry `Cache-Control: no-store`; reverse proxies must honor this and must not inject third-party scripts or weaken the page's Content Security Policy. Cloudflare Access, when configured, still applies before the guide is reached.
 
 ## 1. Check access
 
@@ -36,6 +36,8 @@ curl -s https://api.example.com/v1/models \
 ```
 
 Expected: `{"object":"list","data":[{"id":"qwen3-0.6b",...}]}`. A `403` means the key is missing, mistyped or revoked.
+
+`GET /v1/models/{id}` returns one entry from that list, unchanged (`{"id":"qwen3-0.6b","object":"model","created":0,"owned_by":"kanata","kanata":{...}}`). An id your key cannot use and an id that does not exist both return `404 not_found`. Reasoning families are listed and fetched by their base id; a suffixed id such as `qwen3-0.6b:high` returns `404` unless the list shows it.
 
 ## 2. Chat completion
 
@@ -158,12 +160,13 @@ When `/v1/models` declares `kanata.input_images`, user messages can include inli
 | 400 | `invalid_request` | Malformed JSON, unsupported/unconfigured effort, conflicting effort suffix, or omitted inaccessible default. Check `param` |
 | 401 | `key_expired` | Your key has expired. Ask the owner for a new one |
 | 403 | `permission_denied` | Missing, invalid or revoked key, or a model/configured effort your key may not use on this listener |
-| 404 | `not_found` | Wrong path. Use `/v1/models`, `/v1/chat/completions` or `/v1/audio/transcriptions` |
+| 404 | `not_found` | Wrong path (use `/v1/models`, `/v1/chat/completions` or `/v1/audio/transcriptions`), or `GET /v1/models/{id}` for a model your key cannot use or that does not exist |
 | 408 | `request_cancelled` | The request was cancelled, for example because the client disconnected |
 | 413 | `invalid_request` | Request body or image count, file bytes, dimensions or total pixels exceed gateway limits |
 | 429 | `gateway_queue_full` | The gateway queue for this model is full. Retry after the `Retry-After` seconds |
 | 429 | `gateway_key_busy` / `gateway_key_rate_limited` | Your key has too many requests running, or sent too many recently. Retry after the `Retry-After` seconds |
 | 429 | `daily_quota_exceeded` | Your key has exhausted its daily request allowance, or another full token reservation does not fit. `Retry-After` points to the next UTC midnight |
+| 429 | `monthly_quota_exceeded` | Your key has exhausted its monthly request allowance, or another full token reservation does not fit this UTC month. `Retry-After` points to the start of the next UTC month |
 | 503 | `quota_unavailable` | The gateway cannot durably reserve your daily allowance, or its clock moved to an earlier UTC day. Contact the operator |
 | 429 | `rate_limit_exceeded` | The model backend is rate-limiting. Wait and retry with backoff |
 | 502 / 503 | `upstream_failure` / `upstream_unavailable` | The model backend is down or restarting. Try again later (after `Retry-After` seconds if present) |
@@ -179,4 +182,5 @@ When `/v1/models` declares `kanata.input_images`, user messages can include inli
 
 - Availability and capacity depend on the deployment and its model backends. Coordinate load tests with your operator.
 - Kanata records aggregate usage and timing rather than message content. Proxies and model providers can have their own logging policies; check with your operator before sending sensitive data.
-- When reporting a problem, include the time (with timezone), the model, the HTTP status and the `error.code`. **Never include your key.**
+- Every response carries an `x-request-id` header set by the gateway; on this public API a client-sent `x-request-id` is ignored. Log it with failed requests.
+- When reporting a problem, include the time (with timezone), the model, the HTTP status, the `error.code` and the `x-request-id` response header. **Never include your key.**

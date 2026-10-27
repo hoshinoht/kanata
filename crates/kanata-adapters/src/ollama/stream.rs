@@ -1,0 +1,60 @@
+use crate::{
+    EventStream,
+    chat_completions::{stream::ChatStream, stream_state::StreamDialect, stream_wire::StreamChunk},
+    core::{GatewayError, ModelAlias},
+    diagnostics::ProviderError,
+    transport::ResponseBody,
+};
+
+use super::{apple_fm, response::UsagePayload};
+
+#[derive(Default)]
+struct Ollama;
+
+impl StreamDialect for Ollama {
+    type Chunk = StreamChunk<UsagePayload>;
+    type Usage = UsagePayload;
+    const TRAILING_EMPTY_CHOICE: bool = false;
+    const REPEATED_USAGE: bool = false;
+
+    fn chunk(&mut self, chunk: Self::Chunk) -> Result<Self::Chunk, GatewayError> {
+        Ok(chunk)
+    }
+}
+
+pub(super) fn event_stream(
+    body: ResponseBody,
+    public_model: ModelAlias,
+    apple_fm: bool,
+) -> EventStream {
+    if apple_fm {
+        // fm serve sends `event: error`; other named events still fail.
+        Box::pin(ChatStream::<Ollama>::with_error_events(
+            body,
+            public_model,
+            guardrail_error,
+        ))
+    } else {
+        Box::pin(ChatStream::<Ollama>::new(body, public_model))
+    }
+}
+
+/// fm serve reports a guardrail refusal as a mid-stream error event.
+fn guardrail_error(data: &str) -> bool {
+    let error = serde_json::from_str::<serde_json::Value>(data)
+        .map(|value| ProviderError::from_json(&value))
+        .unwrap_or_default();
+    apple_fm::classify(500, &error) == Some(apple_fm::Failure::Guardrail)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::chat_completions::stream::test_support::assert_read_independent;
+
+    #[tokio::test]
+    async fn delivery_does_not_depend_on_read_boundaries() {
+        for apple_fm in [false, true] {
+            assert_read_independent(|body, model| super::event_stream(body, model, apple_fm)).await;
+        }
+    }
+}

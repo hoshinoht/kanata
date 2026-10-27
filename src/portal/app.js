@@ -6,6 +6,10 @@
   const text = (tag, value, className) => { const node = document.createElement(tag); node.textContent = value; if (className) node.className = className; return node; };
   const format = (value) => value == null ? 'Unavailable' : Number(value).toLocaleString();
   const date = (value) => value ? new Date(value).toLocaleString() : 'Never';
+  const quotas = [
+    { name: 'daily', label: 'Daily', field: 'daily_quota', clear: 'clear_quota', action: 'quota-action', availability: 'quota-availability', fields: 'quota-fields', inputs: ['daily-requests', 'daily-tokens', 'reservation-tokens'] },
+    { name: 'monthly', label: 'Monthly', field: 'monthly_quota', clear: 'clear_monthly_quota', action: 'monthly-quota-action', availability: 'monthly-quota-availability', fields: 'monthly-quota-fields', inputs: ['monthly-requests', 'monthly-tokens', 'monthly-reservation-tokens'] },
+  ];
   function notice(message, error = false) { $('notice').textContent = message; $('notice').className = error ? 'error' : ''; $('notice').hidden = !message; }
   function showLocked() { session = null; data = null; selected = null; $('dashboard').hidden = true; $('login').hidden = false; $('lock').hidden = true; $('renew-code').hidden = true; $('login-code-value').value = ''; if ($('login-code-dialog').open) $('login-code-dialog').close(); $('keys').replaceChildren(); $('key-form').reset(); $('secret-value').value = ''; if ($('secret-dialog').open) $('secret-dialog').close(); }
   async function api(path, body = {}) {
@@ -112,18 +116,26 @@
     $('expiry').querySelector('[value=keep]').hidden = !key; $('expiry').value = key ? 'keep' : '7';
     $('expiry-note').textContent = key ? `Current expiry: ${date(key.expires_at)}` : 'Shorter expiries reduce the lifetime of a misplaced secret.';
     $('max-flight').value = key?.max_in_flight || ''; $('rate-count').value = key?.rate_limit?.requests || ''; $('rate-window').value = key?.rate_limit?.per_ms || '';
-    $('quota-action').querySelector('[value=keep]').hidden = !key; $('quota-action').value = key ? 'keep' : 'clear';
-    $('quota-action').querySelector('[value=set]').disabled = !data.usage_configured;
-    $('quota-action').disabled = !!key?.revoked_at;
-    $('quota-availability').textContent = data.usage_configured ? 'Saving other settings keeps the current daily quota unless you change this selection.' : 'Daily quotas need [keys] usage_dir in the gateway configuration.';
-    $('daily-requests').value = key?.daily_quota?.requests ?? ''; $('daily-tokens').value = key?.daily_quota?.tokens ?? ''; $('reservation-tokens').value = key?.daily_quota?.reservation_tokens ?? '';
+    for (const quota of quotas) {
+      const action = $(quota.action), current = key?.[quota.field];
+      action.querySelector('[value=keep]').hidden = !key; action.value = key ? 'keep' : 'clear';
+      action.querySelector('[value=set]').disabled = !data.usage_configured;
+      action.disabled = !!key?.revoked_at;
+      $(quota.availability).textContent = data.usage_configured ? `Saving other settings keeps the current ${quota.name} quota unless you change this selection.` : `${quota.label} quotas need [keys] usage_dir in the gateway configuration.`;
+      const [requests, tokens, reservation] = quota.inputs;
+      $(requests).value = current?.requests ?? ''; $(tokens).value = current?.tokens ?? ''; $(reservation).value = current?.reservation_tokens ?? '';
+    }
     quotaFields();
     $('owner').checked = !!key?.owner; $('owner-wrap').hidden = !!key; $('save').textContent = key ? 'Save changes' : 'Create key';
     $('save').hidden = !!key?.revoked_at; $('rotate').hidden = !key || !!key.revoked_at; $('revoke').hidden = !key || !!key.revoked_at;
     $('usage').replaceChildren();
     if (key) {
       const items = [['Requests', format(key.requests)], ['Last used', date(key.last_used_at)], ['Input tokens', format(key.tokens?.input_tokens)], ['Output tokens', format(key.tokens?.output_tokens)], ['Reported attempts', format(key.tokens?.reported)], ['Missing token usage', format(key.tokens?.missing)]];
-      if (key.daily_quota) items.push(['Daily request allowance', key.daily_quota.requests == null ? 'Not set' : format(key.daily_quota.requests)], ['Daily token allowance', key.daily_quota.tokens == null ? 'Not set' : format(key.daily_quota.tokens)], ['Tokens reserved per request', key.daily_quota.reservation_tokens == null ? 'Not set' : format(key.daily_quota.reservation_tokens)]);
+      const allowance = (value) => value == null ? 'Not set' : format(value);
+      for (const { label, field } of quotas) {
+        const quota = key[field];
+        if (quota) items.push([`${label} request allowance`, allowance(quota.requests)], [`${label} token allowance`, allowance(quota.tokens)], [`${label} tokens reserved per request`, allowance(quota.reservation_tokens)]);
+      }
       for (const [label, value] of items) { const el = text('div', `${label}: `); el.append(text('b', value)); $('usage').append(el); }
     }
     scopes(key); renderKeys();
@@ -134,25 +146,27 @@
     return { max_in_flight: max ? Number(max) : null, rate_limit: requests ? { requests: Number(requests), per_ms: Number(window) } : null };
   }
   function quotaFields() {
-    const editing = $('quota-action').value === 'set';
-    $('quota-fields').hidden = !editing;
-    for (const id of ['daily-requests', 'daily-tokens', 'reservation-tokens']) $(id).disabled = !editing;
+    for (const quota of quotas) {
+      const editing = $(quota.action).value === 'set';
+      $(quota.fields).hidden = !editing;
+      for (const id of quota.inputs) $(id).disabled = !editing;
+    }
   }
-  function quotaChange() {
-    const action = $('quota-action').value;
+  function quotaChange(quota) {
+    const action = $(quota.action).value;
     if (action === 'keep') return {};
-    if (action === 'clear') return selected ? { clear_quota: true } : {};
+    if (action === 'clear') return selected ? { [quota.clear]: true } : {};
     const number = (id) => {
       if (!$(id).value) return null;
       const value = Number($(id).value);
-      if (!Number.isSafeInteger(value) || value <= 0) throw new Error('Daily quota values must be positive whole numbers no greater than 9,007,199,254,740,991.');
+      if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${quota.label} quota values must be positive whole numbers no greater than 9,007,199,254,740,991.`);
       return value;
     };
-    const requests = number('daily-requests'), tokens = number('daily-tokens'), reservation_tokens = number('reservation-tokens');
-    if (requests == null && tokens == null) throw new Error('Set a daily request or token allowance, or choose No daily quota.');
-    if ((tokens == null) !== (reservation_tokens == null)) throw new Error('Set both the daily token allowance and tokens reserved per request.');
-    if (tokens != null && reservation_tokens > tokens) throw new Error('The per-request reservation cannot exceed the daily token allowance.');
-    return { daily_quota: { requests, tokens, reservation_tokens } };
+    const [requests, tokens, reservation_tokens] = quota.inputs.map(number);
+    if (requests == null && tokens == null) throw new Error(`Set a ${quota.name} request or token allowance, or choose No ${quota.name} quota.`);
+    if ((tokens == null) !== (reservation_tokens == null)) throw new Error(`Set both the ${quota.name} token allowance and tokens reserved per request.`);
+    if (tokens != null && reservation_tokens > tokens) throw new Error(`The per-request reservation cannot exceed the ${quota.name} token allowance.`);
+    return { [quota.field]: { requests, tokens, reservation_tokens } };
   }
   async function change(request) {
     if (busy) return; busy = true;
@@ -180,11 +194,11 @@
       const request = { action: selected ? 'edit' : 'new', id: $('key-id').value, scopes: [...document.querySelectorAll('input[name=scope]:checked')].map((input) => { const route = data.routes[Number(input.value)]; return { model_alias: route.model_alias, operation: route.operation }; }), limits: limits(), confirm_private: $('confirm-private').checked };
       if ($('expiry').value !== 'keep') request.expires = $('expiry').value;
       if (!selected) request.owner = $('owner').checked;
-      Object.assign(request, quotaChange());
+      for (const quota of quotas) Object.assign(request, quotaChange(quota));
       change(request);
     } catch (error) { notice(error.message, true); }
   });
-  $('quota-action').addEventListener('change', quotaFields);
+  for (const quota of quotas) $(quota.action).addEventListener('change', quotaFields);
   $('filter').addEventListener('input', () => { if (data) renderKeys(); });
   $('refresh').addEventListener('click', () => refresh().catch((error) => notice(error.message, true)));
   $('new').addEventListener('click', () => { notice(''); select(); $('key-id').focus(); });

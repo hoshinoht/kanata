@@ -277,7 +277,7 @@ pub fn server_with_modes(config: &ValidatedConfig, modes: Vec<Mode>) -> (TwoPlan
         .clone();
     let drops = Arc::new(AtomicUsize::new(0));
     let probe = Probe {
-        drops: drops.clone(),
+        drops,
         dispatches: Arc::new(AtomicUsize::new(0)),
         started: Arc::new(Notify::new()),
         gate: Arc::new(Semaphore::new(0)),

@@ -31,6 +31,7 @@ pub(super) enum Change {
         owner: bool,
         limits: Option<Limits>,
         daily_quota: Option<DailyQuota>,
+        monthly_quota: Option<DailyQuota>,
         #[serde(default)]
         confirm_private: bool,
     },
@@ -43,6 +44,9 @@ pub(super) enum Change {
         daily_quota: Option<DailyQuota>,
         #[serde(default)]
         clear_quota: bool,
+        monthly_quota: Option<DailyQuota>,
+        #[serde(default)]
+        clear_monthly_quota: bool,
         #[serde(default)]
         confirm_private: bool,
     },
@@ -178,6 +182,7 @@ impl KeyService {
                 owner,
                 limits,
                 daily_quota,
+                monthly_quota,
                 confirm_private,
                 ..
             } => {
@@ -191,10 +196,12 @@ impl KeyService {
                 let expires = expires_at(&expires, now)?;
                 let (max, rate) = parse_limits(limits.as_ref());
                 let (value, digest) = generate_key()?;
-                let daily_quota = parse_quota(daily_quota, false, None, &config)?;
+                let daily_quota = parse_quota(daily_quota, false, None, &config, "daily")?;
+                let monthly_quota = parse_quota(monthly_quota, false, None, &config, "monthly")?;
                 let mut key =
                     StoredKey::new(id.clone(), digest, owner, scopes, max, rate, now, expires);
                 key.set_daily_quota(daily_quota);
+                key.set_monthly_quota(monthly_quota);
                 keys.push(key);
                 secret = Some(value);
                 ("new", owner)
@@ -205,14 +212,29 @@ impl KeyService {
                 limits,
                 daily_quota,
                 clear_quota,
+                monthly_quota,
+                clear_monthly_quota,
                 confirm_private,
                 ..
             } => {
                 let scopes = parse_scopes(scopes, &catalog, confirm_private)?;
                 let key = active_key(&mut keys, &id)?;
-                let daily_quota =
-                    parse_quota(daily_quota, clear_quota, key.daily_quota(), &config)?;
+                let daily_quota = parse_quota(
+                    daily_quota,
+                    clear_quota,
+                    key.daily_quota(),
+                    &config,
+                    "daily",
+                )?;
+                let monthly_quota = parse_quota(
+                    monthly_quota,
+                    clear_monthly_quota,
+                    key.monthly_quota(),
+                    &config,
+                    "monthly",
+                )?;
                 key.set_daily_quota(daily_quota);
+                key.set_monthly_quota(monthly_quota);
                 let before = scope_json(key.permissions());
                 key.set_permissions(scopes);
                 if let Some(expires) = expires {
@@ -223,7 +245,7 @@ impl KeyService {
                     key.set_limits(max, rate);
                 }
                 changes = Some(
-                    json!({"before_scopes":before,"after_scopes":scope_json(key.permissions()),"expires_at":key.expires_at().map(time::format),"max_in_flight":key.max_in_flight(),"daily_quota":key.daily_quota(),"rate_limit":rate_limit_json(key.rate_limit())}),
+                    json!({"before_scopes":before,"after_scopes":scope_json(key.permissions()),"expires_at":key.expires_at().map(time::format),"max_in_flight":key.max_in_flight(),"daily_quota":key.daily_quota(),"monthly_quota":key.monthly_quota(),"rate_limit":rate_limit_json(key.rate_limit())}),
                 );
                 ("edit", key.is_owner())
             }
@@ -322,10 +344,11 @@ fn parse_quota(
     clear: bool,
     current: Option<DailyQuota>,
     config: &ValidatedConfig,
+    period: &str,
 ) -> Result<Option<DailyQuota>, String> {
     if clear {
         if requested.is_some() {
-            return Err("Set a daily quota or clear it, not both".into());
+            return Err(format!("Set a {period} quota or clear it, not both"));
         }
         return Ok(None);
     }
@@ -333,11 +356,13 @@ fn parse_quota(
     if let Some(quota) = quota {
         quota
             .validate()
-            .map_err(|class| format!("Invalid daily quota: {class}"))?;
+            .map_err(|class| format!("Invalid {period} quota: {class}"))?;
         if usage_dir(config).is_none() {
-            return Err(
-                "Daily quotas require [keys] usage_dir in the gateway configuration".into(),
-            );
+            let mut period = period.to_owned();
+            period[..1].make_ascii_uppercase();
+            return Err(format!(
+                "{period} quotas require [keys] usage_dir in the gateway configuration"
+            ));
         }
     }
     Ok(quota)

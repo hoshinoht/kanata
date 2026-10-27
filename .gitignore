@@ -32,7 +32,7 @@ target
 .env
 
 # Live operator config (paths and addresses; keys live outside the repo)
-/config/config.toml
+/config/config.toml*
 # Key store and usage state (digests, per-plane usage)
 /config/keys/
 /config/state/

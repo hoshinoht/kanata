@@ -1,11 +1,47 @@
 # Changelog
 
-## [Unreleased]
+## [1.0.0] - 2026-10-27
+
+First stable release: a Cargo workspace with a shared client contract, a multi-threaded server runtime, monthly key allowances, model lookup and request ids, an OpenAPI description, a release workflow, and the remaining beta clean-up.
 
 ### Added
 
 - vLLM and OpenRouter adapters accept `operations = ["embeddings"]` (previously Ollama only) through the same `POST /v1/embeddings` bounds, validation and key scopes. OpenRouter embeddings use `https://openrouter.ai/api/v1/embeddings` with `provider.allow_fallbacks = false`. Other kinds still fail with `embeddings_unsupported_by_adapter_kind`. Verified against mock upstreams only.
 - The private `/v1/models` `kanata.admission` object adds a live snapshot of the listed route: `in_flight`, `queued`, `adapter_in_flight` (`null` without an adapter cap) and the backend circuit breaker as `breaker` (`closed`, `open` or `half_open`). The public listener's listing is unchanged and shows no load data.
+- Monthly per-key allowances: an optional key-record field `monthly_quota = { requests, tokens, reservation_tokens }` charged per UTC calendar month next to `daily_quota`. Month-to-date usage is summed from the existing day-row ledger (no new state file; the 90-day retention is unchanged and bounds the month view). A request must fit both allowances; when both set `reservation_tokens`, the larger is reserved once. Monthly exhaustion returns `429 monthly_quota_exceeded` with `Retry-After` at the start of the next UTC month, and is the reported refusal when both allowances are exhausted. `kanata key new`/`edit` gain `--monthly-requests`, `--monthly-tokens`, `--monthly-reservation-tokens` and `edit --clear-monthly-quota` (`--clear-quota` still clears only the daily quota); `key show`/`list --json` expose `monthly_quota`; the private portal edits it with the same keep, set and clear choices; `kanata key usage --period month` reports UTC-month totals with the same columns while `--from`/`--to` still bound days. A key with `monthly_quota` but no `usage_dir` fails validation with `required_for_monthly_quota`.
+- `GET /v1/models/{id}` returns the caller's model-list entry for one alias. Unknown aliases and aliases the key cannot use (including unpublished routes on the public listener and suffixed reasoning-effort ids the list folds into their base) return the same `404 not_found`. Without a valid key the public listener still answers `403`.
+- Every response on both listeners, including authentication failures, 404s, the guide page and streams, carries an `x-request-id` header. The private listener echoes a valid caller `x-request-id`; otherwise, and always on the public listener, the gateway generates a 32-hex-character id, which is also the access line's `request_id` (previously 12 hex characters).
+- `kanata-contract`: a serde-only crate holding the client-facing contract (error envelope and code/type strings, the `/v1/models` `kanata` metadata object, wire enums, request limits and typed-stream event names). The gateway serves from the same definitions, so wire output is unchanged, and clients such as kanade can depend on it by git tag instead of mirroring the contract.
+- OpenAPI 3.1 description of the client API in `docs/openapi.json`: models (list and lookup), chat, Responses and Messages subsets with their SSE event formats, embeddings, transcription and speech, the typed request bounds, the `kanata` model extension, and every error code with its status and `Retry-After` behaviour. A contract test keeps its version, paths and error codes in step with the crate.
+- `config/README.md` gains a field reference covering every configuration field, including `extension_allowlist`, `allows_audio_streaming_chat`, the `connect_ms`/`headers_ms`/`first_byte_ms` upstream phase timeouts, `limits.max_extension_bytes` and `publication.tailnet_addresses`, and a table of every validation error class. Tests fail when a field in the raw schema or an error class is missing from that file. The compact and personal templates show `include`, `route_ids`, `audio_function_tools`, `allows_audio_function_tools` and `enable_thinking` as commented examples.
+- `deploy/scripts/kanata.sh host-serve` works on Linux as a systemd user unit (`kanata-host-serve.service`, `Restart=always`, journal logging) next to the macOS launchd agent; run `loginctl enable-linger "$USER"` to keep it running after logout. Tested against a faked `systemctl` only; not run on a real Linux host.
+- Release workflow for `v*` tags: checks the tag against `Cargo.toml` and the `CHANGELOG` section, builds x86_64 and aarch64 Linux and aarch64 macOS archives with SHA-256 files, pushes a `linux/amd64` image to GHCR (`latest` only for non-prerelease versions) and creates the GitHub release. Dependabot opens weekly Cargo updates on `dev` (minor and patch grouped, majors separate) and weekly GitHub Actions pin updates. Neither has run on GitHub yet.
+
+### Changed
+
+- Security-relevant: the public listener ignores a client-sent `x-request-id` entirely: it is no longer forwarded to the backend and a malformed one no longer returns `400`. On the private listener `client_request_id` is logged for every endpoint, including model discovery, not only inference.
+- Kanata is a Cargo workspace: `kanata-core`, `kanata-contract`, `kanata-config`, `kanata-keys`, `kanata-adapters` and `kanata-server` under `crates/`, with the `kanata` binary at the root. `cargo install --locked --path .`, `target/release/kanata` and the container image are unchanged. Key management (`kanata-keys`) lists no network crate in its manifest and the server crate never depends on the concrete adapters; `tests/architecture_boundaries.rs` checks both manifests. CI runs clippy and tests with `--workspace`.
+- Command-line parsing uses `clap`. Every command and subcommand accepts `--help` (`kanata help <command>` works too), `kanata --version` prints the version, and flags may appear in any order. Flag names, value syntax and behaviour are unchanged. Error messages use clap's format (`error: ...`, a usage line and a `--help` hint) instead of the old `usage: kanata ...` text, including for missing, conflicting or repeated flags.
+- `kanata serve` runs on a multi-threaded Tokio runtime (2 to 8 workers from the host's available parallelism; other commands stay single-threaded), so parsing a maximum-size request body no longer stalls every other request. In the manual `runtime_contention` test (debug build) a small request completed every 11 to 14 ms while maximum-size chat bodies were parsed, against every 250 to 430 ms on one thread.
+- Release builds strip symbols and use thin LTO; the macOS arm64 binary drops from 12.3 MB to about 10 MB.
+- Exact dependency pins on `base64`, `futures-util`, `getrandom`, `ring`, `rustix` and `tracing-subscriber` are relaxed to caret ranges; `Cargo.lock` is unchanged and still enforced with `--locked`.
+- Configuration validation errors come from one typed catalog (`ConfigErrorClass`); messages are unchanged. The long adapter and route validators are split into helpers with the same check order and error precedence.
+- The OpenRouter stream parser runs on the shared chat-completions state machine through the dialect hooks it needed. Chat streams from vLLM, Ollama (including Apple FM) and OpenRouter are parsed one record at a time and no longer depend on how the upstream's bytes are split across reads: content already streamed is delivered before an upstream error that arrives in the same read, and data after `[DONE]` is ignored even when it arrives together with `[DONE]`.
+- The layering test also bans `anthropic`, `chatgpt`, `vllm`, `apple_fm` and `codex` outside the adapter and config layers, and the key-module network and write-path checks cover every file under `src/keys` instead of fixed lists.
+
+### Fixed
+
+- `kanata config compact` and `config plan` report a configuration error instead of panicking on unexpected internal state.
+
+### Removed
+
+- Diagnostics for the removed Codex provider: a `kind = "codex"` adapter now fails `kanata check` with `schema_error`, and `[codex_auth]`, `codex_reasoning_summary` and `codex_reasoning_effort` with `unknown_field`, instead of `codex_removed` and `use_reasoning_summary`. The Codex upgrade notes and the Codex CLI harness setup are removed from the guides.
+
+### Security
+
+- The crate forbids `unsafe` code (`#![forbid(unsafe_code)]`); the two remaining Clippy allowances are `#[expect]` so a stale one fails the build. `host-serve install` also rejects paths containing `"`, `\`, `%`, `$` or newlines.
+- eMudhra intermediate CA key compromise (RUSTSEC-2026-0382): `rustls-webpki` 0.103.16 blocklists the compromised intermediates and `webpki-root-certs` 1.0.10 updates the bundled roots. The image's runtime base `gcr.io/distroless/cc-debian13:nonroot` and the build stage (now `rust:1.99.1-bookworm`; no fixed 1.98.1 image exists, and `rust-version` stays 1.98) move to digests whose CA bundles reject both chains, and the public overlay's `cloudflared` moves to 2026.10.3.
+- `tokio` 1.54.1 fixes the unsound `AsyncFd` constructors (RUSTSEC-2026-0386); Kanata does not use `AsyncFd`. CI now runs `cargo-deny` (`deny.toml`) instead of `cargo audit`, which also fails on unsound and yanked crates, licenses not compatible with GPL-3.0-only and crates from outside crates.io.
 
 ## [1.0.0-beta.9] - 2026-10-20
 

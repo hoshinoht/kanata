@@ -383,16 +383,18 @@ async fn write_response(
     response.push_str("\r\n");
     socket.write_all(response.as_bytes()).await?;
     let _ = response_headers.send(());
-    if spec.wait_for_close && !spec.write_body_before_close {
-        Ok(())
-    } else if spec.chunks.is_empty() {
-        socket.write_all(&spec.body).await
-    } else {
-        for chunk in &spec.chunks {
-            socket.write_all(chunk).await?;
+    // Body write errors mean the client closed early.
+    if !spec.wait_for_close || spec.write_body_before_close {
+        if spec.chunks.is_empty() {
+            let _ = socket.write_all(&spec.body).await;
         }
-        Ok(())
+        for chunk in &spec.chunks {
+            if socket.write_all(chunk).await.is_err() {
+                break;
+            }
+        }
     }
+    Ok(())
 }
 
 pub fn route_identity() -> RouteIdentity {

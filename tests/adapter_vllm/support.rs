@@ -485,5 +485,7 @@ pub async fn write_response<S: AsyncWrite + Unpin>(
         body.len(),
     );
     socket.write_all(response.as_bytes()).await?;
-    socket.write_all(body).await
+    // A body write error means the client closed early.
+    let _ = socket.write_all(body).await;
+    Ok(())
 }

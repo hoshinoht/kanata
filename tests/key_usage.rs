@@ -499,6 +499,48 @@ async fn daily_request_quotas_block_before_dispatch_and_survive_restart() {
 }
 
 #[tokio::test]
+async fn monthly_quota_returns_its_own_code_with_retry_after_at_the_next_utc_month() {
+    use kanata::keys::{quota::DailyQuota, time};
+    let scratch = Scratch::new(false);
+    let path = scratch.0.join("keys.toml");
+    let mut keys = kanata::keys::file::parse_without_routes(&fs::read(&path).unwrap()).unwrap();
+    keys.records_mut()[0].set_monthly_quota(Some(DailyQuota {
+        requests: Some(1),
+        tokens: None,
+        reservation_tokens: None,
+    }));
+    fs::write(&path, keys.render()).unwrap();
+    let config = scratch.load();
+    let (server, requests) = support::server_with(
+        &config,
+        vec![support::adapter_spec(
+            "ollama-local",
+            support::capabilities(&config, "ollama-local"),
+            support::chat_outcome("reply"),
+        )],
+    );
+    server.open_usage(Plane::All).unwrap();
+    let next_month = |now: u64| time::month_bounds(now / 86_400).1 * 86_400 - now;
+    let response = server.client_oneshot(inference("alpha")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    support::response_body(response).await;
+    let before = next_month(time::now());
+    let response = server.client_oneshot(inference("alpha")).await.unwrap();
+    let after = next_month(time::now());
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry: u64 = response.headers()["retry-after"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((after..=before).contains(&retry), "{retry}");
+    let body = support::response_json(response).await;
+    assert_eq!(body["error"]["code"], "monthly_quota_exceeded");
+    assert_eq!(body["error"]["type"], "quota_error");
+    assert_eq!(support::recorded_len(&requests), 1);
+}
+
+#[tokio::test]
 async fn cancellation_keeps_token_reservation_and_storage_failure_rejects_dispatch() {
     use kanata::{
         adapter::{Adapter, AdapterFuture},
@@ -716,5 +758,19 @@ fn quota_requires_durable_usage_directory_at_startup_and_reload() {
             .unwrap_err()
             .to_string()
             .contains("required_for_daily_quota")
+    );
+    let mut keys = keys;
+    keys.records_mut()[0].set_daily_quota(None);
+    keys.records_mut()[0].set_monthly_quota(Some(DailyQuota {
+        requests: Some(1),
+        tokens: None,
+        reservation_tokens: None,
+    }));
+    assert!(
+        config
+            .with_keys(&keys)
+            .unwrap_err()
+            .to_string()
+            .contains("required_for_monthly_quota")
     );
 }

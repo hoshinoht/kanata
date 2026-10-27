@@ -1,19 +1,29 @@
-[package]
-name = "kanata"
-version = "1.0.0-beta.9"
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.98"
 license = "GPL-3.0-only"
-description = "A lightweight inference gateway for local and remote AI runtimes"
 publish = false
 
-[dependencies]
+[workspace.dependencies]
+kanata-adapters = { path = "crates/kanata-adapters" }
+kanata-config = { path = "crates/kanata-config" }
+kanata-contract = { path = "crates/kanata-contract" }
+kanata-core = { path = "crates/kanata-core" }
+kanata-keys = { path = "crates/kanata-keys" }
+kanata-server = { path = "crates/kanata-server" }
+
 axum = { version = "0.8", features = ["multipart"] }
-base64 = "=0.22.1"
+base64 = "0.22.1"
 bytes = "1.12.1"
+clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
 futures-core = "0.3"
-futures-util = "=0.3.32"
-getrandom = "=0.4.3"
+futures-util = "0.3.32"
+getrandom = "0.4.3"
 http = "1.5"
 http-body = "1.1"
 http-body-util = "0.1.5"
@@ -21,22 +31,65 @@ hyper = { version = "1.11.1", features = ["client", "http1", "server"] }
 hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "tls12", "ring", "rustls-platform-verifier"] }
 hyper-util = { version = "0.1.20", features = ["client-legacy", "http1", "service", "tokio"] }
 multer = "3.1"
-ring = "=0.17.14"
-rustix = { version = "=1.1.5", default-features = false, features = ["fs", "process", "std"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["ring"] }
+ring = "0.17.14"
+rustix = { version = "1.1.5", default-features = false, features = ["fs", "process", "std"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_path_to_error = "0.1"
 sha2 = "0.10"
 subtle = "2.6"
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12"] }
 toml = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["fmt", "json", "std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "json", "std"] }
 tower = { version = "0.5", features = ["util"] }
 url = "2"
 
+[package]
+name = "kanata"
+description = "A lightweight inference gateway for local and remote AI runtimes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+kanata-adapters.workspace = true
+kanata-config.workspace = true
+kanata-core.workspace = true
+kanata-keys.workspace = true
+kanata-server.workspace = true
+
+axum.workspace = true
+base64.workspace = true
+clap.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tower.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
 [dev-dependencies]
-rcgen = { version = "0.14.10", default-features = false, features = ["ring"] }
-tokio = { version = "1", features = ["test-util"] }
-tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12"] }
+rcgen.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tokio-rustls.workspace = true
+
+[profile.release]
+strip = true
+lto = "thin"

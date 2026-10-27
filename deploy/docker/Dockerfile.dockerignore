@@ -4,4 +4,6 @@
 !Cargo.lock
 !src
 !src/**
+!crates
+!crates/**
 **/.DS_Store

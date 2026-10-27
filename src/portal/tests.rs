@@ -472,6 +472,86 @@ async fn daily_quotas_are_validated_preserved_changed_and_explicitly_cleared() {
 }
 
 #[tokio::test]
+async fn monthly_quotas_are_validated_preserved_changed_and_cleared_apart_from_daily() {
+    let fixture = Fixture::new();
+    let session = fixture.unlock().await;
+    let initial = fixture.snapshot(&session).await;
+    let daily = json!({"requests":10});
+    let monthly = json!({"requests":100,"tokens":10000,"reservation_tokens":100});
+    let mut create = new_key(&initial["revision"], "metered");
+    create["daily_quota"] = daily.clone();
+    create["monthly_quota"] = monthly.clone();
+    async fn status(fixture: &Fixture, session: &str, change: serde_json::Value) -> StatusCode {
+        fixture
+            .send("/api/change", change, Some(session))
+            .await
+            .status()
+    }
+    assert_eq!(status(&fixture, &session, create).await, StatusCode::OK);
+    let edit = |state: &serde_json::Value| json!({"action":"edit","revision":state["revision"],"id":"metered","scopes":[{"model_alias":"local-embed","operation":"embeddings"}],"limits":{"max_in_flight":2}});
+    let state = fixture.snapshot(&session).await;
+    assert_eq!(
+        status(&fixture, &session, edit(&state)).await,
+        StatusCode::OK
+    );
+    let state = fixture.snapshot(&session).await;
+    assert_eq!(state["keys"][0]["daily_quota"], daily);
+    assert_eq!(state["keys"][0]["monthly_quota"], monthly);
+    for quota in [
+        json!({}),
+        json!({"requests":0}),
+        json!({"tokens":100}),
+        json!({"tokens":100,"reservation_tokens":101}),
+    ] {
+        let mut change = edit(&state);
+        change["monthly_quota"] = quota;
+        assert_eq!(
+            status(&fixture, &session, change).await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let mut conflict = edit(&state);
+    conflict["monthly_quota"] = monthly.clone();
+    conflict["clear_monthly_quota"] = json!(true);
+    assert_eq!(
+        status(&fixture, &session, conflict).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture.snapshot(&session).await["revision"],
+        state["revision"]
+    );
+    let mut clear = edit(&state);
+    clear["clear_quota"] = json!(true);
+    assert_eq!(status(&fixture, &session, clear).await, StatusCode::OK);
+    let state = fixture.snapshot(&session).await;
+    assert_eq!(state["keys"][0]["daily_quota"], serde_json::Value::Null);
+    assert_eq!(state["keys"][0]["monthly_quota"], monthly);
+    let mut clear = edit(&state);
+    clear["clear_monthly_quota"] = json!(true);
+    assert_eq!(status(&fixture, &session, clear).await, StatusCode::OK);
+    let state = fixture.snapshot(&session).await;
+    assert_eq!(state["keys"][0]["monthly_quota"], serde_json::Value::Null);
+    let audit = std::fs::read_to_string(fixture.directory.join("keys/audit.jsonl")).unwrap();
+    assert!(audit.contains("monthly_quota"));
+
+    let path = fixture.directory.join("config.toml");
+    let config = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, config.replace("usage_dir = \"state\"\n", "")).unwrap();
+    let state = fixture.snapshot(&session).await;
+    let mut create = new_key(&state["revision"], "unsupported");
+    create["monthly_quota"] = json!({"requests":10});
+    let response = fixture.send("/api/change", create, Some(&session)).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        body(response).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("Monthly quotas require [keys] usage_dir")
+    );
+}
+
+#[tokio::test]
 async fn duplicate_security_headers_and_expired_or_locked_bootstrap_are_denied() {
     let fixture = Fixture::new();
     let session = fixture.unlock().await;

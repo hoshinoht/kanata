@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { test } from "node:test";
 
-const highlight = readFileSync(new URL("../../src/server/guide/highlight.js", import.meta.url), "utf8");
-const examples = readFileSync(new URL("../../src/server/guide/examples.js", import.meta.url), "utf8");
+const highlight = readFileSync(new URL("../../crates/kanata-server/src/server/guide/highlight.js", import.meta.url), "utf8");
+const examples = readFileSync(new URL("../../crates/kanata-server/src/server/guide/examples.js", import.meta.url), "utf8");
 class TextNode {
   children = [];
   text = "";

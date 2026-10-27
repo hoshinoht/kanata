@@ -8,49 +8,70 @@ use crate::{
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-const USAGE: &str = "usage: kanata doctor --config <path> [--plane all|private|public] [--probe-backends] [--probe-models] [--probe-inference <alias> --operation chat|transcription|embeddings|speech] | kanata health --config <path>";
 const TIMEOUT: Duration = Duration::from_secs(3);
 
-pub(crate) async fn run(
-    args: &[String],
+#[derive(Debug, clap::Args)]
+pub(crate) struct DoctorArgs {
+    /// Configuration file.
+    #[arg(long, value_name = "path")]
+    config: PathBuf,
+    /// Plane to check.
+    #[arg(long, value_name = "all|private|public", value_parser = crate::cli::parse_plane, default_value = "all")]
+    plane: Plane,
+    /// Open a TCP connection to each routed backend.
+    #[arg(long)]
+    probe_backends: bool,
+    /// Check each route's upstream model in the backend catalog.
+    #[arg(long)]
+    probe_models: bool,
+    /// Send one synthetic request to this route alias; needs --operation.
+    #[arg(long, value_name = "alias", requires = "operation")]
+    probe_inference: Option<String>,
+    /// Route operation: chat, transcription, embeddings or speech.
+    #[arg(long, value_name = "operation", value_parser = crate::cli::parse_operation, requires = "probe_inference")]
+    operation: Option<Operation>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct HealthArgs {
+    /// Configuration file.
+    #[arg(long, value_name = "path")]
+    config: PathBuf,
+}
+
+/// `kanata health`: succeeds when the admin listener reports ready.
+pub(crate) async fn health(args: HealthArgs) -> Result<String, String> {
+    let config = config::load_deferring_keys(&args.config)
+        .and_then(|config| config.for_plane(Plane::default()))
+        .map_err(|error| error.to_string())?;
+    let body = get(admin_address(&config), "/ready").await?;
+    if body == "ready\n" {
+        Ok("ready".into())
+    } else {
+        Err("gateway not ready".into())
+    }
+}
+
+fn admin_address(config: &config::ValidatedConfig) -> SocketAddr {
+    let admin = config.listeners().admin();
+    SocketAddr::new(admin.bind(), admin.port())
+}
+
+pub(crate) async fn doctor(
+    args: DoctorArgs,
     build_adapter: impl Fn(&config::ValidatedConfig, &str) -> Result<std::sync::Arc<dyn Adapter>, ()>,
 ) -> Result<String, String> {
-    let health = args[0] == "health";
-    let mut path = None;
-    let mut plane = None;
-    let mut probes = false;
-    let mut models = false;
-    let mut inference = None;
-    let mut operation = None;
-    let mut flags = args[1..].iter();
-    while let Some(flag) = flags.next() {
-        match flag.as_str() {
-            "--config" if path.is_none() => path = Some(PathBuf::from(flags.next().ok_or(USAGE)?)),
-            "--plane" if !health && plane.is_none() => {
-                plane = Some(Plane::parse(flags.next().ok_or(USAGE)?).ok_or(USAGE)?)
-            }
-            "--probe-backends" if !health && !probes => probes = true,
-            "--probe-models" if !health && !models => models = true,
-            "--probe-inference" if !health && inference.is_none() => {
-                inference = Some(flags.next().ok_or(USAGE)?.clone())
-            }
-            "--operation" if !health && operation.is_none() => {
-                operation = Some(Operation::parse(flags.next().ok_or(USAGE)?).ok_or(USAGE)?)
-            }
-            _ => return Err(USAGE.into()),
-        }
-    }
-    let path = path.ok_or(USAGE)?;
-    if inference.is_some() != operation.is_some() {
-        return Err(USAGE.into());
-    }
-    let plane = plane.unwrap_or_default();
-    let config = if health {
-        config::load_deferring_keys(&path).and_then(|config| config.for_plane(plane))
-    } else {
-        config::load_plane(&path, plane).map(|(_, config)| config)
-    }
-    .map_err(|error| error.to_string())?;
+    let DoctorArgs {
+        config: path,
+        plane,
+        probe_backends: probes,
+        probe_models: models,
+        probe_inference: inference,
+        operation,
+    } = args;
+    let config = config::load_plane(&path, plane)
+        .map(|(_, config)| config)
+        .map_err(|error| error.to_string())?;
     if models || inference.is_some() {
         crate::telemetry::logging::install(config.logging());
     }
@@ -66,16 +87,7 @@ pub(crate) async fn run(
                 .ok_or("inference probe: exact route is not loaded in this plane")
         })
         .transpose()?;
-    let admin = config.listeners().admin();
-    let address = SocketAddr::new(admin.bind(), admin.port());
-    if health {
-        let body = get(address, "/ready").await?;
-        return if body == "ready\n" {
-            Ok("ready".into())
-        } else {
-            Err("gateway not ready".into())
-        };
-    }
+    let address = admin_address(&config);
     let mut report = vec![format!("config: valid ({} routes)", config.routes().len())];
     report.push(if config.key_source().missing {
         "keys: missing; no keys loaded".into()

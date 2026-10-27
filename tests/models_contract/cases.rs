@@ -1,9 +1,13 @@
-use axum::http::StatusCode;
+use axum::{
+    body::Body,
+    http::{Method, Request, StatusCode, header},
+};
 use serde_json::Value;
 
 use crate::support::{
     adapter_spec, capabilities, chat_outcome, config, config_with_public_routes, load_text,
-    models_request, response_json, server_with, server_without_adapters, try_server_with,
+    models_request, response_body, response_json, server_with, server_without_adapters,
+    try_server_with,
 };
 
 fn ids(value: &Value) -> Vec<&str> {
@@ -345,4 +349,222 @@ async fn public_models_carry_same_kanata_object_without_admission() {
             .is_some()
     );
     assert_eq!(entry(&public, "private-chat")["kanata"], private_kanata);
+}
+
+fn model_request(method: Method, path: &str, key: Option<&str>) -> Request<Body> {
+    let mut request = Request::builder().method(method).uri(path);
+    if let Some(key) = key {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {key}"));
+    }
+    request.body(Body::empty()).expect("request")
+}
+
+fn get_model(id: &str) -> Request<Body> {
+    model_request(Method::GET, &format!("/v1/models/{id}"), Some("test-key"))
+}
+
+/// Status and body; the per-request `x-request-id` header is left out.
+async fn status_and_body(response: axum::response::Response) -> (StatusCode, Vec<u8>) {
+    (response.status(), response_body(response).await.to_vec())
+}
+
+#[tokio::test]
+async fn retrieve_returns_the_list_entry_and_hides_unknown_and_unauthorized_ids() {
+    let old = "permissions = [\n  { model_alias = \"local-chat\", operation = \"chat\" },\n  { model_alias = \"private-chat\", operation = \"chat\" },\n  { model_alias = \"private-transcribe\", operation = \"transcription\" },\n  { model_alias = \"remote-chat\", operation = \"chat\" },\n  { model_alias = \"chatgpt-chat\", operation = \"chat\" },\n]";
+    let config = load_variant(&[(
+        old,
+        "permissions = [{ model_alias = \"private-chat\", operation = \"chat\" }]",
+    )]);
+    let (server, _) = server_with(
+        &config,
+        vec![adapter_spec(
+            "vllm-private",
+            capabilities(&config, "vllm-private"),
+            chat_outcome("unused"),
+        )],
+    );
+    let list = response_json(server.client_oneshot(models_request()).await.unwrap()).await;
+    let response = server
+        .client_oneshot(get_model("private-chat"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(&response_json(response).await, entry(&list, "private-chat"));
+
+    let unknown = status_and_body(
+        server
+            .client_oneshot(get_model("no-such-model"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(unknown.0, StatusCode::NOT_FOUND);
+    let value: Value = serde_json::from_slice(&unknown.1).expect("error body");
+    assert_eq!(value["error"]["code"], "not_found");
+    assert_eq!(value["error"]["type"], "invalid_request_error");
+    // Bound but not permitted; configured but neither permitted nor bound.
+    for id in ["private-transcribe", "local-chat"] {
+        let hidden = status_and_body(server.client_oneshot(get_model(id)).await.unwrap()).await;
+        assert_eq!(hidden, unknown, "{id}");
+    }
+}
+
+#[tokio::test]
+async fn public_retrieve_intersects_public_routes_and_needs_a_key() {
+    let config = config_with_public_routes(&[("private-chat", "chat")]);
+    let (server, _) = server_with(
+        &config,
+        vec![adapter_spec(
+            "vllm-private",
+            capabilities(&config, "vllm-private"),
+            chat_outcome("unused"),
+        )],
+    );
+    let list = response_json(server.public_oneshot(models_request()).await.unwrap()).await;
+    let response = server
+        .public_oneshot(get_model("private-chat"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let value = response_json(response).await;
+    assert_eq!(&value, entry(&list, "private-chat"));
+    assert!(value["kanata"].get("admission").is_none());
+
+    let unknown = status_and_body(
+        server
+            .public_oneshot(get_model("no-such-model"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(unknown.0, StatusCode::NOT_FOUND);
+    let private_only = status_and_body(
+        server
+            .public_oneshot(get_model("private-transcribe"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(private_only, unknown);
+
+    let list_without_key = status_and_body(
+        server
+            .public_oneshot(model_request(Method::GET, "/v1/models", None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(list_without_key.0, StatusCode::FORBIDDEN);
+    for id in ["private-chat", "no-such-model"] {
+        let path = format!("/v1/models/{id}");
+        for key in [None, Some("wrong-key")] {
+            let rejected = status_and_body(
+                server
+                    .public_oneshot(model_request(Method::GET, &path, key))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(rejected, list_without_key, "{path} {key:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn retrieve_matches_list_reasoning_families() {
+    let low_route = "[[routes]]\nid = \"chatgpt-low\"\nmodel_alias = \"chatgpt-chat:low\"\noperation = \"chat\"\nadapter_id = \"chatgpt-private\"\nupstream_id = \"gpt-5\"\nreasoning_effort = \"low\"\nrequires_streaming_chat = true\nrequires_function_tools = true\n\n";
+    let high_route = low_route.replace("low", "high");
+    let config = load_variant(&[
+        (
+            "api.openai.com/v1\"\ntrust_zone = \"external\"\n[adapters.capabilities]\n",
+            "api.openai.com/v1\"\ntrust_zone = \"external\"\n[adapters.capabilities]\nreasoning_control = true\n",
+        ),
+        (
+            "upstream_id = \"gpt-5\"\n",
+            "upstream_id = \"gpt-5\"\nreasoning_effort = \"medium\"\n",
+        ),
+        ("\n[keys]\n", &format!("\n{low_route}{high_route}[keys]\n")),
+        (
+            "{ model_alias = \"chatgpt-chat\", operation = \"chat\" },\n",
+            "{ model_alias = \"chatgpt-chat\", operation = \"chat\" },\n  { model_alias = \"chatgpt-chat:low\", operation = \"chat\" },\n",
+        ),
+    ]);
+    let (server, _) = server_with(
+        &config,
+        vec![adapter_spec(
+            "chatgpt-private",
+            capabilities(&config, "chatgpt-private"),
+            chat_outcome("unused"),
+        )],
+    );
+    let list = response_json(server.client_oneshot(models_request()).await.unwrap()).await;
+    assert_eq!(ids(&list), ["chatgpt-chat"]);
+    let base = response_json(
+        server
+            .client_oneshot(get_model("chatgpt-chat"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(&base, entry(&list, "chatgpt-chat"));
+    assert_eq!(
+        base["kanata"]["reasoning_efforts"],
+        serde_json::json!(["low", "medium"])
+    );
+    let unknown = status_and_body(
+        server
+            .client_oneshot(get_model("no-such-model"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    for id in [
+        "chatgpt-chat:low",
+        "chatgpt-chat:high",
+        "chatgpt-chat:medium",
+    ] {
+        let suffixed = status_and_body(server.client_oneshot(get_model(id)).await.unwrap()).await;
+        assert_eq!(suffixed, unknown, "{id}");
+    }
+}
+
+#[tokio::test]
+async fn retrieve_answers_head_and_other_methods_like_the_list() {
+    let config = config_with_public_routes(&[("private-chat", "chat")]);
+    let (server, _) = server_with(
+        &config,
+        vec![adapter_spec(
+            "vllm-private",
+            capabilities(&config, "vllm-private"),
+            chat_outcome("unused"),
+        )],
+    );
+    for public in [false, true] {
+        for method in [Method::HEAD, Method::POST, Method::DELETE] {
+            let send = |path: &str| {
+                let request = model_request(method.clone(), path, Some("test-key"));
+                let server = &server;
+                async move {
+                    let response = if public {
+                        server.public_oneshot(request).await.expect("public")
+                    } else {
+                        server.client_oneshot(request).await.expect("private")
+                    };
+                    let status = response.status();
+                    let allow = response.headers().get(header::ALLOW).cloned();
+                    let body = response_body(response).await;
+                    (status, allow, body.is_empty())
+                }
+            };
+            let list = send("/v1/models").await;
+            let one = send("/v1/models/private-chat").await;
+            assert_eq!(one, list, "{method} public={public}");
+            if method == Method::HEAD {
+                assert_eq!(one, (StatusCode::OK, None, true));
+            } else {
+                assert_eq!(one.0, StatusCode::METHOD_NOT_ALLOWED);
+            }
+        }
+    }
 }

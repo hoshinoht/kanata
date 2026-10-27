@@ -1,11 +1,37 @@
 use std::fs;
 use std::path::Path;
 
-const FORBIDDEN_TERMS: &[&str] = &["ollama", "openrouter", "codex", "openai", "cliproxy"];
+const FORBIDDEN_TERMS: &[&str] = &[
+    "ollama",
+    "openrouter",
+    "openai",
+    "cliproxy",
+    "anthropic",
+    "chatgpt",
+    "vllm",
+    "apple_fm",
+    "codex",
+];
+
+/// Crate sources that must stay provider-neutral; `main.rs` and `cli.rs` are exempt.
+const PROVIDER_NEUTRAL_SOURCES: &[&str] = &[
+    "src",
+    "crates/kanata-contract/src",
+    "crates/kanata-core/src",
+    "crates/kanata-keys/src",
+    "crates/kanata-server/src",
+];
 
 #[test]
 fn concrete_adapter_names_stay_outside_core_and_non_provider_layers() {
-    assert_no_provider_terms(Path::new("src"));
+    for root in PROVIDER_NEUTRAL_SOURCES {
+        assert_no_provider_terms(Path::new(root));
+    }
+    let server = dependencies("crates/kanata-server/Cargo.toml");
+    assert!(
+        !server.iter().any(|name| name == "kanata-adapters"),
+        "kanata-server depends on kanata-adapters"
+    );
 }
 
 fn assert_no_provider_terms(path: &Path) {
@@ -13,9 +39,7 @@ fn assert_no_provider_terms(path: &Path) {
         let entry = entry.expect("source entry is readable");
         let entry_path = entry.path();
         if entry_path.is_dir() {
-            if entry_path != Path::new("src/adapter") && entry_path != Path::new("src/config") {
-                assert_no_provider_terms(&entry_path);
-            }
+            assert_no_provider_terms(&entry_path);
             continue;
         }
         if entry_path
@@ -26,7 +50,7 @@ fn assert_no_provider_terms(path: &Path) {
         }
         if matches!(
             entry_path.file_name().and_then(|name| name.to_str()),
-            Some("main.rs" | "config.rs" | "cli.rs")
+            Some("main.rs" | "cli.rs")
         ) {
             continue;
         }
@@ -43,6 +67,17 @@ fn assert_no_provider_terms(path: &Path) {
     }
 }
 
+/// Names under a manifest's `[dependencies]` table.
+fn dependencies(manifest: &str) -> Vec<String> {
+    let text = fs::read_to_string(manifest).expect("manifest is readable");
+    let manifest: toml::Table = toml::from_str(&text).expect("manifest is TOML");
+    manifest
+        .get("dependencies")
+        .and_then(toml::Value::as_table)
+        .map(|table| table.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
 const NETWORK_TERMS: &[&str] = &[
     "tokio",
     "hyper",
@@ -52,18 +87,26 @@ const NETWORK_TERMS: &[&str] = &[
     "UdpSocket",
 ];
 
+const NETWORK_CRATES: &[&str] = &["tokio", "hyper", "axum", "http", "tower", "rustls"];
+
+/// Key-file and key-store sources: the keys crate and the `keys.toml` schema in config.
+fn key_sources() -> Vec<String> {
+    let mut files = Vec::new();
+    collect_rs(Path::new("crates/kanata-keys/src"), &mut files);
+    collect_rs(Path::new("crates/kanata-config/src/keys"), &mut files);
+    files
+}
+
 #[test]
 fn key_management_files_have_no_network_path() {
-    for file in [
-        "cli",
-        "cli/args",
-        "cli/display",
-        "store",
-        "file",
-        "time",
-        "usage",
-    ] {
-        let path = format!("src/keys/{file}.rs");
+    let keys = dependencies("crates/kanata-keys/Cargo.toml");
+    for name in NETWORK_CRATES {
+        assert!(
+            !keys.iter().any(|dependency| dependency == name),
+            "kanata-keys depends on network crate {name}"
+        );
+    }
+    for path in key_sources() {
         let source = fs::read_to_string(&path).expect("key module is readable");
         for term in NETWORK_TERMS {
             assert!(
@@ -76,13 +119,19 @@ fn key_management_files_have_no_network_path() {
 
 #[test]
 fn server_code_never_reaches_the_key_write_path() {
-    let mut files = vec![
-        "src/keys/reload.rs".into(),
-        "src/keys/usage.rs".into(),
-        "src/serve.rs".into(),
-    ];
-    collect_rs(Path::new("src/server"), &mut files);
-    collect_rs(Path::new("src/api"), &mut files);
+    // Every key module except the write path itself and the crate root declaring it.
+    let mut files = key_sources();
+    files.retain(|path| {
+        !matches!(
+            path.as_str(),
+            "crates/kanata-keys/src/lib.rs"
+                | "crates/kanata-keys/src/store.rs"
+                | "crates/kanata-keys/src/cli.rs"
+        ) && !path.starts_with("crates/kanata-keys/src/cli/")
+    });
+    files.push("src/serve.rs".into());
+    collect_rs(Path::new("src/serve"), &mut files);
+    collect_rs(Path::new("crates/kanata-server/src"), &mut files);
     for path in files {
         let source = fs::read_to_string(&path).expect("source file is UTF-8");
         let imports_write_path = source.contains("keys::store")
