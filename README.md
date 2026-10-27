@@ -168,7 +168,7 @@ deploy/scripts/kanata.sh logs
 | Put your reverse proxy on `kanata_private_ingress` → `172.30.0.2:8080` | [deploy/docker](deploy/docker/README.md) |
 | Expose chosen models publicly through a Cloudflare tunnel | [deploy/cloudflared](deploy/cloudflared/README.md) |
 | Issue a key for someone else | `kanata key new --config config/config.toml --id alice --chat <alias> --expires 30` |
-| List, inspect, change or revoke keys | `kanata key list`, `key show`, `key edit`, `key rm` (each with `--config`); see `kanata key` |
+| List, inspect, change or revoke keys | `kanata key list`, `key show`, `key edit`, `key rm` (each with `--config`); see `kanata key --help` |
 | Manage deployed keys in your browser | `deploy/scripts/kanata.sh portal`; see [private portal](docs/guides/private-portal.md) |
 | Sign in with ChatGPT for the private container | `deploy/scripts/kanata.sh chatgpt login`; see [Docker setup](deploy/docker/README.md#sign-in-with-chatgpt) |
 | Which routes are public | `kanata routes --config config/config.toml` |

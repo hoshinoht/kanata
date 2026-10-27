@@ -16,12 +16,17 @@
 ### Changed
 
 - Security-relevant: the public listener ignores a client-sent `x-request-id` entirely: it is no longer forwarded to the backend and a malformed one no longer returns `400`. On the private listener `client_request_id` is logged for every endpoint, including model discovery, not only inference.
+- Command-line parsing uses `clap`. Every command and subcommand accepts `--help` (`kanata help <command>` works too), `kanata --version` prints the version, and flags may appear in any order. Flag names, value syntax and behaviour are unchanged. Error messages use clap's format (`error: ...`, a usage line and a `--help` hint) instead of the old `usage: kanata ...` text, including for missing, conflicting or repeated flags.
 - `kanata serve` runs on a multi-threaded Tokio runtime (2 to 8 workers from the host's available parallelism; other commands stay single-threaded), so parsing a maximum-size request body no longer stalls every other request. In the manual `runtime_contention` test (debug build) a small request completed every 11 to 14 ms while maximum-size chat bodies were parsed, against every 250 to 430 ms on one thread.
 - Release builds strip symbols and use thin LTO; the macOS arm64 binary drops from 12.3 MB to about 7.5 MB and release and container builds take longer.
 - Exact dependency pins on `base64`, `futures-util`, `getrandom`, `ring`, `rustix` and `tracing-subscriber` are relaxed to caret ranges; `Cargo.lock` is unchanged and still enforced with `--locked`.
 - Configuration validation errors come from one typed catalog (`ConfigErrorClass`); messages are unchanged. The long adapter and route validators are split into helpers with the same check order and error precedence.
-- The OpenRouter stream parser runs on the shared chat-completions state machine through the dialect hooks it needed; vLLM, Ollama and OpenRouter behaviour is unchanged.
+- The OpenRouter stream parser runs on the shared chat-completions state machine through the dialect hooks it needed. Chat streams from vLLM, Ollama (including Apple FM) and OpenRouter are parsed one record at a time and no longer depend on how the upstream's bytes are split across reads: content already streamed is delivered before an upstream error that arrives in the same read, and data after `[DONE]` is ignored even when it arrives together with `[DONE]`.
 - The layering test also bans `anthropic`, `chatgpt`, `vllm`, `apple_fm` and `codex` outside the adapter and config layers, and the key-module network and write-path checks cover every file under `src/keys` instead of fixed lists.
+
+### Fixed
+
+- `kanata config compact` and `config plan` report a configuration error instead of panicking on unexpected internal state.
 
 ### Removed
 

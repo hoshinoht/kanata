@@ -467,7 +467,7 @@ case $command in
   chatgpt) chatgpt "$@" ;;
   portal) portal "$@" ;;
   key)
-    [[ $# -gt 0 ]] || die "usage: key <new|list|show|edit|rm|rotate|usage> [args] (see: kanata key)"
+    [[ $# -gt 0 ]] || die "usage: key <new|list|show|edit|rm|rotate|usage> [args] (see: kanata key --help)"
     key_passthrough "$@"
     ;;
   ollama-context) ollama_context "$@" ;;
