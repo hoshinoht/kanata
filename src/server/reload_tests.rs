@@ -43,7 +43,6 @@ impl Fixture {
     ) -> ValidatedConfig {
         let mut raw: toml::Table =
             toml::from_str(include_str!("../../config/embeddings.example.toml")).unwrap();
-        raw["adapters"][0]["kind"] = "vllm".into();
         raw["adapters"][0]
             .as_table_mut()
             .unwrap()

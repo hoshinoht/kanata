@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::config::{
-    ConfigError, KeyRateLimit, RawPermission, RawRateLimit, ValidatedRoute, parse_sha256_hex,
-    parse_toml, valid_identifier, validate_key_limits, validate_permissions,
+    ConfigError, ConfigErrorClass, KeyRateLimit, RawPermission, RawRateLimit, ValidatedRoute,
+    parse_sha256_hex, parse_toml, valid_identifier, validate_key_limits, validate_permissions,
 };
 use crate::core::RouteSelector;
 use crate::keys::time;
@@ -27,30 +27,33 @@ pub fn read(path: &Path) -> Result<Option<Vec<u8>>, ConfigError> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(ConfigError::new(FILE_PATH, "read_error")),
+        Err(_) => return Err(ConfigError::new(FILE_PATH, ConfigErrorClass::ReadError)),
     };
     let metadata = file
         .metadata()
-        .map_err(|_| ConfigError::new(FILE_PATH, "read_error"))?;
+        .map_err(|_| ConfigError::new(FILE_PATH, ConfigErrorClass::ReadError))?;
     if !metadata.is_file() {
-        return Err(ConfigError::new(FILE_PATH, "read_error"));
+        return Err(ConfigError::new(FILE_PATH, ConfigErrorClass::ReadError));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         if metadata.permissions().mode() & 0o022 != 0 {
-            return Err(ConfigError::new(FILE_PATH, "insecure_permissions"));
+            return Err(ConfigError::new(
+                FILE_PATH,
+                ConfigErrorClass::InsecurePermissions,
+            ));
         }
     }
     if metadata.len() > MAX_KEYS_FILE_BYTES {
-        return Err(ConfigError::new(FILE_PATH, "too_large"));
+        return Err(ConfigError::new(FILE_PATH, ConfigErrorClass::TooLarge));
     }
     let mut bytes = Vec::new();
     file.take(MAX_KEYS_FILE_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| ConfigError::new(FILE_PATH, "read_error"))?;
+        .map_err(|_| ConfigError::new(FILE_PATH, ConfigErrorClass::ReadError))?;
     if bytes.len() as u64 > MAX_KEYS_FILE_BYTES {
-        return Err(ConfigError::new(FILE_PATH, "too_large"));
+        return Err(ConfigError::new(FILE_PATH, ConfigErrorClass::TooLarge));
     }
     Ok(Some(bytes))
 }
@@ -271,20 +274,29 @@ struct RawStoredKey {
 
 fn parse_inner(bytes: &[u8], routes: Option<&[ValidatedRoute]>) -> Result<KeysFile, ConfigError> {
     let sha256 = Sha256::digest(bytes).into();
-    let contents = std::str::from_utf8(bytes).map_err(|_| ConfigError::new(ROOT, "parse_error"))?;
+    let contents = std::str::from_utf8(bytes)
+        .map_err(|_| ConfigError::new(ROOT, ConfigErrorClass::ParseError))?;
     let raw: RawKeysFile = parse_toml(contents, ROOT)?;
     match raw.version {
-        None => return Err(ConfigError::new(format!("{ROOT}.version"), "required")),
+        None => {
+            return Err(ConfigError::new(
+                format!("{ROOT}.version"),
+                ConfigErrorClass::Required,
+            ));
+        }
         Some(KEYS_FILE_VERSION) => {}
         Some(_) => {
             return Err(ConfigError::new(
                 format!("{ROOT}.version"),
-                "unsupported_version",
+                ConfigErrorClass::UnsupportedVersion,
             ));
         }
     }
     if raw.keys.len() > MAX_KEY_RECORDS {
-        return Err(ConfigError::new(format!("{ROOT}.keys"), "too_many"));
+        return Err(ConfigError::new(
+            format!("{ROOT}.keys"),
+            ConfigErrorClass::TooMany,
+        ));
     }
     let mut ids = BTreeSet::new();
     let mut digests = BTreeSet::new();
@@ -293,8 +305,12 @@ fn parse_inner(bytes: &[u8], routes: Option<&[ValidatedRoute]>) -> Result<KeysFi
     for (index, key) in raw.keys.into_iter().enumerate() {
         let path = format!("{ROOT}.keys[{index}]");
         let timestamp = |value: &str, field: &str| {
-            time::parse(value)
-                .ok_or_else(|| ConfigError::new(format!("{path}.{field}"), "invalid_timestamp"))
+            time::parse(value).ok_or_else(|| {
+                ConfigError::new(
+                    format!("{path}.{field}"),
+                    ConfigErrorClass::InvalidTimestamp,
+                )
+            })
         };
         let optional_timestamp = |value: Option<&str>, field: &str| {
             value.map(|value| timestamp(value, field)).transpose()
@@ -302,18 +318,20 @@ fn parse_inner(bytes: &[u8], routes: Option<&[ValidatedRoute]>) -> Result<KeysFi
         if !valid_identifier(&key.id) || !ids.insert(key.id.clone()) {
             return Err(ConfigError::new(
                 format!("{path}.id"),
-                "invalid_or_duplicate_id",
+                ConfigErrorClass::InvalidOrDuplicateId,
             ));
         }
         let digest = key
             .digest
             .strip_prefix("sha256:")
             .and_then(parse_sha256_hex)
-            .ok_or_else(|| ConfigError::new(format!("{path}.digest"), "invalid_digest"))?;
+            .ok_or_else(|| {
+                ConfigError::new(format!("{path}.digest"), ConfigErrorClass::InvalidDigest)
+            })?;
         if !digests.insert(digest) {
             return Err(ConfigError::new(
                 format!("{path}.digest"),
-                "duplicate_secret",
+                ConfigErrorClass::DuplicateSecret,
             ));
         }
         let created_at = timestamp(&key.created_at, "created_at")?;
@@ -322,7 +340,10 @@ fn parse_inner(bytes: &[u8], routes: Option<&[ValidatedRoute]>) -> Result<KeysFi
         let revoked_at = optional_timestamp(key.revoked_at.as_deref(), "revoked_at")?;
         if key.owner && revoked_at.is_none() {
             if owner_seen {
-                return Err(ConfigError::new(format!("{path}.owner"), "multiple_owners"));
+                return Err(ConfigError::new(
+                    format!("{path}.owner"),
+                    ConfigErrorClass::MultipleOwners,
+                ));
             }
             owner_seen = true;
         }

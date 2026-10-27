@@ -4,14 +4,17 @@ pub(in crate::config) fn validate_publication(
     publication: &RawPublication,
 ) -> Result<ValidatedPublication, ConfigError> {
     if publication.tailnet_addresses.is_empty() {
-        return Err(ConfigError::new("publication.tailnet_addresses", "empty"));
+        return Err(ConfigError::new(
+            "publication.tailnet_addresses",
+            ConfigErrorClass::Empty,
+        ));
     }
     let mut addresses = BTreeSet::new();
     for (index, value) in publication.tailnet_addresses.iter().enumerate() {
         let address = value.parse::<IpAddr>().map_err(|_| {
             ConfigError::new(
                 format!("publication.tailnet_addresses[{index}]"),
-                "invalid_ip",
+                ConfigErrorClass::InvalidIp,
             )
         })?;
         let valid = match address {
@@ -21,13 +24,13 @@ pub(in crate::config) fn validate_publication(
         if !valid {
             return Err(ConfigError::new(
                 format!("publication.tailnet_addresses[{index}]"),
-                "not_tailnet_address",
+                ConfigErrorClass::NotTailnetAddress,
             ));
         }
         if !addresses.insert(address) {
             return Err(ConfigError::new(
                 format!("publication.tailnet_addresses[{index}]"),
-                "duplicate",
+                ConfigErrorClass::Duplicate,
             ));
         }
     }
@@ -48,37 +51,46 @@ pub(in crate::config) fn validate_public_routes(
     for (index, selector) in selectors.iter().enumerate() {
         let path = format!("publication.public_routes[{index}]");
         if !public_listener_configured {
-            return Err(ConfigError::new(path, "public_listener_required"));
+            return Err(ConfigError::new(
+                path,
+                ConfigErrorClass::PublicListenerRequired,
+            ));
         }
         if !seen.insert((selector.model_alias.clone(), selector.operation)) {
-            return Err(ConfigError::new(path, "duplicate"));
+            return Err(ConfigError::new(path, ConfigErrorClass::Duplicate));
         }
         let Some(route) = routes.iter().find(|route| {
             route.identity.selector.model_alias.0 == selector.model_alias
                 && route.identity.selector.operation == selector.operation
         }) else {
-            return Err(ConfigError::new(path, "unknown_route_selector"));
+            return Err(ConfigError::new(
+                path,
+                ConfigErrorClass::UnknownRouteSelector,
+            ));
         };
         let Some(adapter) = adapters
             .iter()
             .find(|adapter| adapter.id == route.adapter_id)
         else {
-            return Err(ConfigError::new(path, "missing_adapter"));
+            return Err(ConfigError::new(path, ConfigErrorClass::MissingAdapter));
         };
         if !adapter
             .capabilities
             .operations
             .contains(&selector.operation)
         {
-            return Err(ConfigError::new(path, "unsupported_by_adapter"));
+            return Err(ConfigError::new(
+                path,
+                ConfigErrorClass::UnsupportedByAdapter,
+            ));
         }
         if adapter.kind.is_private_only() {
             return Err(ConfigError::new(
                 path,
                 match adapter.kind {
-                    ProviderKind::Cliproxy => "cliproxy_not_public",
-                    ProviderKind::Anthropic => "anthropic_not_public",
-                    _ => "chatgpt_not_public",
+                    ProviderKind::Cliproxy => ConfigErrorClass::CliproxyNotPublic,
+                    ProviderKind::Anthropic => ConfigErrorClass::AnthropicNotPublic,
+                    _ => ConfigErrorClass::ChatgptNotPublic,
                 },
             ));
         }

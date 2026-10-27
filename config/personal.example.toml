@@ -55,6 +55,8 @@ operations = ["chat", "transcription"]
 streaming_chat = false
 function_tools = false
 input_audio = true
+# With a tool-call parser (--enable-auto-tool-choice), set function_tools = true and:
+# audio_function_tools = true
 
 # A separate ASR-model endpoint uses vLLM's native transcription API.
 [[adapters]]
@@ -114,6 +116,8 @@ upstream_id = "replace-with-audio-vllm-model-id"
 requires_streaming_chat = false
 requires_function_tools = false
 allows_input_audio = true
+# Requires the adapter's audio_function_tools:
+# allows_audio_function_tools = true
 
 [[routes]]
 id = "vllm-audio-transcription"
@@ -123,6 +127,8 @@ adapter_id = "vllm-audio-chat"
 upstream_id = "replace-with-audio-vllm-model-id"
 requires_streaming_chat = false
 requires_function_tools = false
+# For Qwen3-style models with a reasoning parser, keep thinking from using up max_tokens:
+# enable_thinking = false
 
 [[routes]]
 id = "vllm-native-transcription"

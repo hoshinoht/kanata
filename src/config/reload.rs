@@ -1,11 +1,11 @@
-use super::{ConfigError, ValidatedConfig};
+use super::{ConfigError, ConfigErrorClass, ValidatedConfig};
 
 impl ValidatedConfig {
     pub(crate) fn check_reload_compatible(&self, next: &Self) -> Result<(), ConfigError> {
         if let Some(field) = self.restart_fields(next).first() {
             return Err(ConfigError::new(
                 format!("reload.{field}"),
-                "restart_required",
+                ConfigErrorClass::RestartRequired,
             ));
         }
         Ok(())

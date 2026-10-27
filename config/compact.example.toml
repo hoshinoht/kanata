@@ -1,4 +1,7 @@
 # Private account catalog. Select slugs and efforts from your own account.
+# Optional fragments holding more [[adapters]], [[routes]], [route_profiles] or [models],
+# relative to this file:
+# include = ["adapters.toml", "models/account.toml"]
 [listeners.client]
 bind = "127.0.0.1"
 port = 8080
@@ -34,6 +37,8 @@ efforts = ["low", "medium", "high"]
 [models.chat]
 assistant = { profile = "account", upstream_id = "replace-with-account-model-slug" }
 writer = { profile = "account", upstream_id = "replace-with-another-account-model-slug", efforts = ["low", "high"], reasoning_summary = "auto" }
+# Keep route IDs from an earlier config (default IDs are "writer", "writer-low", "writer-high"):
+# writer = { ..., route_ids = { base = "old-writer", low = "old-writer-low" } }
 
 [keys]
 file = "keys/keys.toml"

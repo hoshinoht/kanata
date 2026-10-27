@@ -28,7 +28,7 @@ pub(crate) fn run(arguments: &[String]) -> Result<String, String> {
 }
 
 fn absolute(path: &Path) -> Result<PathBuf, ConfigError> {
-    fs::canonicalize(path).map_err(|_| ConfigError::new("config", "read_error"))
+    fs::canonicalize(path).map_err(|_| ConfigError::new("config", ConfigErrorClass::ReadError))
 }
 
 fn export(path: &Path, output: &Path, compact: bool) -> Result<String, ConfigError> {
@@ -39,10 +39,10 @@ fn export(path: &Path, output: &Path, compact: bool) -> Result<String, ConfigErr
     let output = output_dir.join(
         output
             .file_name()
-            .ok_or_else(|| ConfigError::new("output", "invalid_path"))?,
+            .ok_or_else(|| ConfigError::new("output", ConfigErrorClass::InvalidPath))?,
     );
     if output.symlink_metadata().is_ok() {
-        return Err(ConfigError::new("output", "already_exists"));
+        return Err(ConfigError::new("output", ConfigErrorClass::AlreadyExists));
     }
     let mut raw = document.raw;
     if compact {
@@ -54,19 +54,20 @@ fn export(path: &Path, output: &Path, compact: bool) -> Result<String, ConfigErr
         keys.file = directory(&path)
             .join(&keys.file)
             .to_str()
-            .ok_or_else(|| ConfigError::new("keys.file", "invalid_path"))?
+            .ok_or_else(|| ConfigError::new("keys.file", ConfigErrorClass::InvalidPath))?
             .to_owned();
         if let Some(usage) = &mut keys.usage_dir {
             *usage = directory(&path)
                 .join(&*usage)
                 .to_str()
-                .ok_or_else(|| ConfigError::new("keys.usage_dir", "invalid_path"))?
+                .ok_or_else(|| ConfigError::new("keys.usage_dir", ConfigErrorClass::InvalidPath))?
                 .to_owned();
         }
     }
     let contents = render(&raw, compact)?;
     let mut nonce = [0; 16];
-    getrandom::fill(&mut nonce).map_err(|_| ConfigError::new("output", "random_error"))?;
+    getrandom::fill(&mut nonce)
+        .map_err(|_| ConfigError::new("output", ConfigErrorClass::RandomError))?;
     let name: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
     let temporary = Temporary(output_dir.join(format!(".kanata-config-{name}.tmp")));
     let mut options = OpenOptions::new();
@@ -78,21 +79,21 @@ fn export(path: &Path, output: &Path, compact: bool) -> Result<String, ConfigErr
     }
     let mut file = options
         .open(&temporary.0)
-        .map_err(|_| ConfigError::new("output", "write_error"))?;
+        .map_err(|_| ConfigError::new("output", ConfigErrorClass::WriteError))?;
     file.write_all(contents.as_bytes())
         .and_then(|()| file.sync_all())
-        .map_err(|_| ConfigError::new("output", "write_error"))?;
+        .map_err(|_| ConfigError::new("output", ConfigErrorClass::WriteError))?;
     let after = Document::load(&temporary.0)?.validate(&temporary.0, true)?;
     if canonical(before) != canonical(after) {
-        return Err(ConfigError::new("output", "not_equivalent"));
+        return Err(ConfigError::new("output", ConfigErrorClass::NotEquivalent));
     }
     fs::hard_link(&temporary.0, &output).map_err(|error| {
         ConfigError::new(
             "output",
             if error.kind() == std::io::ErrorKind::AlreadyExists {
-                "already_exists"
+                ConfigErrorClass::AlreadyExists
             } else {
-                "write_error"
+                ConfigErrorClass::WriteError
             },
         )
     })?;
@@ -302,7 +303,8 @@ fn compact_routes(raw: &mut RawConfig, config: &ValidatedConfig) -> Result<(), C
 
 fn deserialize<T: serde::de::DeserializeOwned>(table: &toml::Table) -> Result<T, ConfigError> {
     parse_toml(
-        &toml::to_string(table).map_err(|_| ConfigError::new("config", "serialization_error"))?,
+        &toml::to_string(table)
+            .map_err(|_| ConfigError::new("config", ConfigErrorClass::SerializationError))?,
         "config",
     )
 }
@@ -316,7 +318,7 @@ fn render(raw: &RawConfig, compact: bool) -> Result<String, ConfigError> {
         root.remove("routes");
     }
     let mut output = toml::to_string_pretty(&root)
-        .map_err(|_| ConfigError::new("config", "serialization_error"))?;
+        .map_err(|_| ConfigError::new("config", ConfigErrorClass::SerializationError))?;
     if compact {
         for (operation, models) in raw.models.entries() {
             if models.is_empty() {
@@ -511,7 +513,7 @@ fn key_views(config: &ValidatedConfig) -> Result<BTreeMap<String, serde_json::Va
             if usage_dir.is_none() && key.daily_quota().is_some() {
                 return Err(ConfigError::new(
                     "keys.usage_dir",
-                    "required_for_daily_quota",
+                    ConfigErrorClass::RequiredForDailyQuota,
                 ));
             }
             keys.insert(key.id().to_owned(), serde_json::json!({

@@ -8,13 +8,19 @@ pub(crate) fn validate_permissions(
     routes: Option<&[ValidatedRoute]>,
 ) -> Result<Vec<RouteSelector>, ConfigError> {
     if raw.is_empty() {
-        return Err(ConfigError::new(format!("{path}.permissions"), "empty"));
+        return Err(ConfigError::new(
+            format!("{path}.permissions"),
+            ConfigErrorClass::Empty,
+        ));
     }
     let mut seen = BTreeSet::new();
     for (index, permission) in raw.iter().enumerate() {
         let permission_path = || format!("{path}.permissions[{index}]");
         if !seen.insert((permission.model_alias.as_str(), permission.operation)) {
-            return Err(ConfigError::new(permission_path(), "duplicate"));
+            return Err(ConfigError::new(
+                permission_path(),
+                ConfigErrorClass::Duplicate,
+            ));
         }
         match routes {
             Some(routes)
@@ -25,11 +31,14 @@ pub(crate) fn validate_permissions(
             {
                 return Err(ConfigError::new(
                     permission_path(),
-                    "unknown_route_selector",
+                    ConfigErrorClass::UnknownRouteSelector,
                 ));
             }
             None if parse_model_alias(&permission.model_alias).is_none() => {
-                return Err(ConfigError::new(permission_path(), "invalid_exact_alias"));
+                return Err(ConfigError::new(
+                    permission_path(),
+                    ConfigErrorClass::InvalidExactAlias,
+                ));
             }
             _ => {}
         }
@@ -93,7 +102,7 @@ pub(in crate::config) fn load_key_file(
     if usage_dir.is_none() && file.active().any(|key| key.daily_quota().is_some()) {
         return Err(ConfigError::new(
             "keys.usage_dir",
-            "required_for_daily_quota",
+            ConfigErrorClass::RequiredForDailyQuota,
         ));
     }
     Ok((
@@ -125,7 +134,7 @@ pub(in crate::config) fn keys_from_file(
             {
                 return Err(ConfigError::new(
                     format!("keys_file.keys[{index}].permissions[{permission_index}]"),
-                    "unknown_route_selector",
+                    ConfigErrorClass::UnknownRouteSelector,
                 ));
             }
         }
@@ -147,25 +156,25 @@ fn validate_rate_limit(raw: RawRateLimit, path: &str) -> Result<KeyRateLimit, Co
     if raw.requests == 0 {
         return Err(ConfigError::new(
             format!("{path}.rate_limit.requests"),
-            "zero",
+            ConfigErrorClass::Zero,
         ));
     }
     if raw.requests > MAX_CONCURRENCY_LIMIT {
         return Err(ConfigError::new(
             format!("{path}.rate_limit.requests"),
-            "limit_too_large",
+            ConfigErrorClass::LimitTooLarge,
         ));
     }
     if raw.per_ms == 0 {
         return Err(ConfigError::new(
             format!("{path}.rate_limit.per_ms"),
-            "zero",
+            ConfigErrorClass::Zero,
         ));
     }
     if raw.per_ms > MAX_TIMEOUT_MS {
         return Err(ConfigError::new(
             format!("{path}.rate_limit.per_ms"),
-            "timeout_too_large",
+            ConfigErrorClass::TimeoutTooLarge,
         ));
     }
     Ok(KeyRateLimit {

@@ -1,7 +1,8 @@
 /// Declares a fieldless enum with a 1:1 variant ↔ string table.
 ///
 /// `Variant => "literal"` form: the trailing `const fn as_str;` and optional `fn parse;` lines
-/// generate those methods with the given visibility.
+/// generate those methods with the given visibility; a trailing `const ALL;` (after `as_str`
+/// only) adds `ALL` in declaration order.
 ///
 /// `Variant = index => "literal"` form (metric labels): generates `COUNT`, `index`, `as_str` and
 /// `Display` at the enum's visibility, plus `ALL` in declaration order when followed by
@@ -98,6 +99,26 @@ macro_rules! str_enum {
 
         impl $name {
             $vis const ALL: [Self; Self::COUNT] = [$(Self::$variant),+];
+        }
+    };
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $($(#[$variant_meta:meta])* $variant:ident => $str:literal),+ $(,)?
+        }
+        $as_str_vis:vis const fn as_str;
+        const ALL;
+    ) => {
+        str_enum! {
+            $(#[$meta])*
+            $vis enum $name {
+                $($(#[$variant_meta])* $variant => $str),+
+            }
+            $as_str_vis const fn as_str;
+        }
+
+        impl $name {
+            $as_str_vis const ALL: &'static [Self] = &[$(Self::$variant),+];
         }
     };
 }

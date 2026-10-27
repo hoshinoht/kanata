@@ -9,148 +9,26 @@ pub(in crate::config) fn validate_adapter(
     if !valid_identifier(&adapter.id) || !adapter_ids.insert(adapter.id.clone()) {
         return Err(ConfigError::new(
             format!("{path}.id"),
-            "invalid_or_duplicate_id",
+            ConfigErrorClass::InvalidOrDuplicateId,
         ));
     }
     let base_url = validate_url(&adapter, &path)?;
     let ca_bundle = validate_ca_file(&adapter, &base_url, &path, index)?;
-    let secret_ref = if adapter.kind == ProviderKind::Chatgpt {
-        if adapter.secret_ref.is_some() {
-            return Err(ConfigError::new(
-                format!("{path}.secret_ref"),
-                "chatgpt_secret_ref_unsupported",
-            ));
-        }
-        None
-    } else if let Some(secret_ref) = &adapter.secret_ref {
-        Some(validate_secret_ref(
-            secret_ref,
-            &format!("{path}.secret_ref"),
-        )?)
-    } else if matches!(
-        adapter.kind,
-        ProviderKind::Openrouter | ProviderKind::Cliproxy | ProviderKind::Anthropic
-    ) || (matches!(adapter.kind, ProviderKind::Vllm | ProviderKind::Speech)
-        && adapter.trust_zone == TrustZone::External)
-    {
-        return Err(ConfigError::new(format!("{path}.secret_ref"), "required"));
-    } else {
-        None
-    };
-    if matches!(
-        adapter.kind,
-        ProviderKind::Vllm | ProviderKind::Speech | ProviderKind::Cliproxy
-    ) && secret_ref.is_some()
-        && !url_permits_credentials(&base_url)
-    {
-        return Err(ConfigError::new(
-            format!("{path}.base_url"),
-            "https_required",
-        ));
-    }
+    let secret_ref = validate_adapter_secret(&adapter, &base_url, &path)?;
     validate_provider_zone(&adapter, &path)?;
     let extension_allowlist = validate_extension_allowlist(
         adapter.extension_allowlist,
         &format!("{path}.extension_allowlist"),
     )?;
-    let mut declared_operations = BTreeSet::new();
-    for (operation_index, operation) in adapter.capabilities.operations.iter().enumerate() {
-        if !declared_operations.insert(*operation) {
-            return Err(ConfigError::new(
-                format!("{path}.capabilities.operations[{operation_index}]"),
-                "duplicate",
-            ));
-        }
-    }
-    let operations: BTreeSet<_> = adapter.capabilities.operations.into_iter().collect();
-    if operations.is_empty() {
-        return Err(ConfigError::new(
-            format!("{path}.capabilities.operations"),
-            "empty",
-        ));
-    }
-    if operations.contains(&Operation::Speech) != (adapter.kind == ProviderKind::Speech) {
-        return Err(ConfigError::new(
-            format!("{path}.capabilities.operations"),
-            "speech_adapter_required",
-        ));
-    }
-    if adapter.kind == ProviderKind::Speech
-        && (operations.len() != 1
-            || adapter.capabilities.streaming_chat
-            || adapter.capabilities.function_tools)
-    {
-        return Err(ConfigError::new(
-            format!("{path}.capabilities"),
-            "speech_only",
-        ));
-    }
-    if operations.contains(&Operation::Embeddings)
-        && !matches!(
-            adapter.kind,
-            ProviderKind::Ollama | ProviderKind::Vllm | ProviderKind::Openrouter
-        )
-    {
-        return Err(ConfigError::new(
-            format!("{path}.capabilities.operations"),
-            "embeddings_unsupported_by_adapter_kind",
-        ));
-    }
-    if adapter.kind == ProviderKind::Chatgpt {
-        if operations != BTreeSet::from([Operation::Chat]) || adapter.capabilities.input_audio {
-            return Err(ConfigError::new(
-                format!("{path}.capabilities"),
-                "chatgpt_text_chat_only",
-            ));
-        }
-        if base_url.as_str() != "https://api.openai.com/v1" {
-            return Err(ConfigError::new(
-                format!("{path}.base_url"),
-                "chatgpt_pinned_origin_required",
-            ));
-        }
-        if !extension_allowlist.is_empty() {
-            return Err(ConfigError::new(
-                format!("{path}.extension_allowlist"),
-                "unsupported_by_adapter_kind",
-            ));
-        }
-    }
-    if adapter.kind == ProviderKind::AppleFm {
-        if operations.contains(&Operation::Transcription) {
-            return Err(ConfigError::new(
-                format!("{path}.capabilities.operations"),
-                "apple_fm_chat_only",
-            ));
-        }
-        // fm serve returns tool arguments as plain text and takes no audio.
-        for (name, declared) in [
-            ("function_tools", adapter.capabilities.function_tools),
-            ("input_audio", adapter.capabilities.input_audio),
-        ] {
-            if declared {
-                return Err(ConfigError::new(
-                    format!("{path}.capabilities.{name}"),
-                    "unsupported_by_adapter_kind",
-                ));
-            }
-        }
-    }
-    if adapter.kind == ProviderKind::Cliproxy {
-        if operations != BTreeSet::from([Operation::Chat]) {
-            return Err(ConfigError::new(
-                format!("{path}.capabilities.operations"),
-                "cliproxy_chat_only",
-            ));
-        }
-        // Inline audio chat is a vLLM model feature, unverified through CLIProxyAPI.
-        if adapter.capabilities.input_audio {
-            return Err(ConfigError::new(
-                format!("{path}.capabilities.input_audio"),
-                "unsupported_by_adapter_kind",
-            ));
-        }
-    }
+    let operations = validate_operations(&adapter.capabilities.operations, &path)?;
+    validate_kind_operations(
+        adapter.kind,
+        &adapter.capabilities,
+        &operations,
+        &base_url,
+        &extension_allowlist,
+        &path,
+    )?;
     let anthropic = validate_anthropic(
         adapter.kind,
         adapter.anthropic,
@@ -162,120 +40,17 @@ pub(in crate::config) fn validate_adapter(
     if adapter.kind == ProviderKind::Anthropic && !extension_allowlist.is_empty() {
         return Err(ConfigError::new(
             format!("{path}.extension_allowlist"),
-            "unsupported_by_adapter_kind",
+            ConfigErrorClass::UnsupportedByAdapterKind,
         ));
     }
-    let transcription_mode = match (adapter.kind, adapter.transcription_mode) {
-        (ProviderKind::Vllm, Some(_)) if !operations.contains(&Operation::Transcription) => {
-            return Err(ConfigError::new(
-                format!("{path}.transcription_mode"),
-                "without_transcription_operation",
-            ));
-        }
-        (ProviderKind::Vllm, Some(VllmTranscriptionMode::AudioChat))
-            if !adapter.capabilities.input_audio =>
-        {
-            return Err(ConfigError::new(
-                format!("{path}.transcription_mode"),
-                "requires_input_audio_capability",
-            ));
-        }
-        (ProviderKind::Vllm, mode) if operations.contains(&Operation::Transcription) => {
-            let Some(mode) = mode else {
-                return Err(ConfigError::new(
-                    format!("{path}.transcription_mode"),
-                    "required_for_transcription",
-                ));
-            };
-            Some(mode)
-        }
-        (ProviderKind::Vllm, mode) => mode,
-        (_, Some(_)) => {
-            return Err(ConfigError::new(
-                format!("{path}.transcription_mode"),
-                "vllm_only",
-            ));
-        }
-        (_, None) => None,
-    };
-    if adapter.capabilities.input_images {
-        if !matches!(
-            adapter.kind,
-            ProviderKind::Ollama
-                | ProviderKind::Vllm
-                | ProviderKind::Openrouter
-                | ProviderKind::Cliproxy
-                | ProviderKind::Anthropic
-        ) {
-            return Err(ConfigError::new(
-                format!("{path}.capabilities.input_images"),
-                "unsupported_by_adapter_kind",
-            ));
-        }
-        if !operations.contains(&Operation::Chat) {
-            return Err(ConfigError::new(
-                format!("{path}.capabilities.input_images"),
-                "chat_operation_required",
-            ));
-        }
-    }
-    if adapter.capabilities.input_audio && !operations.contains(&Operation::Chat) {
-        return Err(ConfigError::new(
-            format!("{path}.capabilities.input_audio"),
-            "chat_operation_required",
-        ));
-    }
-    if adapter.capabilities.audio_streaming_chat
-        && (!adapter.capabilities.input_audio || !adapter.capabilities.streaming_chat)
-    {
-        return Err(ConfigError::new(
-            format!("{path}.capabilities.audio_streaming_chat"),
-            "requires_audio_and_streaming_chat",
-        ));
-    }
-    if adapter.capabilities.audio_function_tools
-        && (!adapter.capabilities.input_audio || !adapter.capabilities.function_tools)
-    {
-        return Err(ConfigError::new(
-            format!("{path}.capabilities.audio_function_tools"),
-            "requires_audio_and_function_tools",
-        ));
-    }
-    let (structured_output, sampling_controls, reasoning_control) =
-        adapter.kind.supports_chat_options();
-    for (name, declared, supported) in [
-        (
-            "structured_output",
-            adapter.capabilities.structured_output,
-            structured_output,
-        ),
-        (
-            "sampling_controls",
-            adapter.capabilities.sampling_controls,
-            sampling_controls,
-        ),
-        (
-            "reasoning_control",
-            adapter.capabilities.reasoning_control,
-            reasoning_control,
-        ),
-    ] {
-        if !declared {
-            continue;
-        }
-        if !supported {
-            return Err(ConfigError::new(
-                format!("{path}.capabilities.{name}"),
-                "unsupported_by_adapter_kind",
-            ));
-        }
-        if !operations.contains(&Operation::Chat) {
-            return Err(ConfigError::new(
-                format!("{path}.capabilities.{name}"),
-                "chat_operation_required",
-            ));
-        }
-    }
+    let transcription_mode = validate_transcription_mode(
+        adapter.kind,
+        adapter.transcription_mode,
+        adapter.capabilities.input_audio,
+        &operations,
+        &path,
+    )?;
+    validate_capability_dependencies(adapter.kind, &adapter.capabilities, &operations, &path)?;
     let max_in_flight = validate_optional_limit(adapter.max_in_flight, &path)?;
     let circuit_breaker = validate_circuit_breaker(adapter.circuit_breaker, &path)?;
     Ok(ValidatedAdapter {
@@ -305,37 +80,326 @@ pub(in crate::config) fn validate_adapter(
     })
 }
 
+/// `secret_ref` rules per kind; credentials need a base URL that may carry them.
+fn validate_adapter_secret(
+    adapter: &RawAdapter,
+    base_url: &Url,
+    path: &str,
+) -> Result<Option<SecretReference>, ConfigError> {
+    let secret_ref = if adapter.kind == ProviderKind::Chatgpt {
+        if adapter.secret_ref.is_some() {
+            return Err(ConfigError::new(
+                format!("{path}.secret_ref"),
+                ConfigErrorClass::ChatgptSecretRefUnsupported,
+            ));
+        }
+        None
+    } else if let Some(secret_ref) = &adapter.secret_ref {
+        Some(validate_secret_ref(
+            secret_ref,
+            &format!("{path}.secret_ref"),
+        )?)
+    } else if matches!(
+        adapter.kind,
+        ProviderKind::Openrouter | ProviderKind::Cliproxy | ProviderKind::Anthropic
+    ) || (matches!(adapter.kind, ProviderKind::Vllm | ProviderKind::Speech)
+        && adapter.trust_zone == TrustZone::External)
+    {
+        return Err(ConfigError::new(
+            format!("{path}.secret_ref"),
+            ConfigErrorClass::Required,
+        ));
+    } else {
+        None
+    };
+    if matches!(
+        adapter.kind,
+        ProviderKind::Vllm | ProviderKind::Speech | ProviderKind::Cliproxy
+    ) && secret_ref.is_some()
+        && !url_permits_credentials(base_url)
+    {
+        return Err(ConfigError::new(
+            format!("{path}.base_url"),
+            ConfigErrorClass::HttpsRequired,
+        ));
+    }
+    Ok(secret_ref)
+}
+
+/// Declared operations, rejecting duplicates and an empty list.
+fn validate_operations(
+    operations: &[Operation],
+    path: &str,
+) -> Result<BTreeSet<Operation>, ConfigError> {
+    let mut declared = BTreeSet::new();
+    for (operation_index, operation) in operations.iter().enumerate() {
+        if !declared.insert(*operation) {
+            return Err(ConfigError::new(
+                format!("{path}.capabilities.operations[{operation_index}]"),
+                ConfigErrorClass::Duplicate,
+            ));
+        }
+    }
+    if declared.is_empty() {
+        return Err(ConfigError::new(
+            format!("{path}.capabilities.operations"),
+            ConfigErrorClass::Empty,
+        ));
+    }
+    Ok(declared)
+}
+
+/// Operation and capability limits of individual kinds.
+fn validate_kind_operations(
+    kind: ProviderKind,
+    capabilities: &RawCapabilities,
+    operations: &BTreeSet<Operation>,
+    base_url: &Url,
+    extension_allowlist: &BTreeSet<ExtensionKey>,
+    path: &str,
+) -> Result<(), ConfigError> {
+    if operations.contains(&Operation::Speech) != (kind == ProviderKind::Speech) {
+        return Err(ConfigError::new(
+            format!("{path}.capabilities.operations"),
+            ConfigErrorClass::SpeechAdapterRequired,
+        ));
+    }
+    if kind == ProviderKind::Speech
+        && (operations.len() != 1 || capabilities.streaming_chat || capabilities.function_tools)
+    {
+        return Err(ConfigError::new(
+            format!("{path}.capabilities"),
+            ConfigErrorClass::SpeechOnly,
+        ));
+    }
+    if operations.contains(&Operation::Embeddings)
+        && !matches!(
+            kind,
+            ProviderKind::Ollama | ProviderKind::Vllm | ProviderKind::Openrouter
+        )
+    {
+        return Err(ConfigError::new(
+            format!("{path}.capabilities.operations"),
+            ConfigErrorClass::EmbeddingsUnsupportedByAdapterKind,
+        ));
+    }
+    if kind == ProviderKind::Chatgpt {
+        if *operations != BTreeSet::from([Operation::Chat]) || capabilities.input_audio {
+            return Err(ConfigError::new(
+                format!("{path}.capabilities"),
+                ConfigErrorClass::ChatgptTextChatOnly,
+            ));
+        }
+        if base_url.as_str() != "https://api.openai.com/v1" {
+            return Err(ConfigError::new(
+                format!("{path}.base_url"),
+                ConfigErrorClass::ChatgptPinnedOriginRequired,
+            ));
+        }
+        if !extension_allowlist.is_empty() {
+            return Err(ConfigError::new(
+                format!("{path}.extension_allowlist"),
+                ConfigErrorClass::UnsupportedByAdapterKind,
+            ));
+        }
+    }
+    if kind == ProviderKind::AppleFm {
+        if operations.contains(&Operation::Transcription) {
+            return Err(ConfigError::new(
+                format!("{path}.capabilities.operations"),
+                ConfigErrorClass::AppleFmChatOnly,
+            ));
+        }
+        // fm serve returns tool arguments as plain text and takes no audio.
+        for (name, declared) in [
+            ("function_tools", capabilities.function_tools),
+            ("input_audio", capabilities.input_audio),
+        ] {
+            if declared {
+                return Err(ConfigError::new(
+                    format!("{path}.capabilities.{name}"),
+                    ConfigErrorClass::UnsupportedByAdapterKind,
+                ));
+            }
+        }
+    }
+    if kind == ProviderKind::Cliproxy {
+        if *operations != BTreeSet::from([Operation::Chat]) {
+            return Err(ConfigError::new(
+                format!("{path}.capabilities.operations"),
+                ConfigErrorClass::CliproxyChatOnly,
+            ));
+        }
+        // Inline audio chat is a vLLM model feature, unverified through CLIProxyAPI.
+        if capabilities.input_audio {
+            return Err(ConfigError::new(
+                format!("{path}.capabilities.input_audio"),
+                ConfigErrorClass::UnsupportedByAdapterKind,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `transcription_mode`: vLLM only, and required with its transcription operation.
+fn validate_transcription_mode(
+    kind: ProviderKind,
+    mode: Option<VllmTranscriptionMode>,
+    input_audio: bool,
+    operations: &BTreeSet<Operation>,
+    path: &str,
+) -> Result<Option<VllmTranscriptionMode>, ConfigError> {
+    Ok(match (kind, mode) {
+        (ProviderKind::Vllm, Some(_)) if !operations.contains(&Operation::Transcription) => {
+            return Err(ConfigError::new(
+                format!("{path}.transcription_mode"),
+                ConfigErrorClass::WithoutTranscriptionOperation,
+            ));
+        }
+        (ProviderKind::Vllm, Some(VllmTranscriptionMode::AudioChat)) if !input_audio => {
+            return Err(ConfigError::new(
+                format!("{path}.transcription_mode"),
+                ConfigErrorClass::RequiresInputAudioCapability,
+            ));
+        }
+        (ProviderKind::Vllm, mode) if operations.contains(&Operation::Transcription) => {
+            let Some(mode) = mode else {
+                return Err(ConfigError::new(
+                    format!("{path}.transcription_mode"),
+                    ConfigErrorClass::RequiredForTranscription,
+                ));
+            };
+            Some(mode)
+        }
+        (ProviderKind::Vllm, mode) => mode,
+        (_, Some(_)) => {
+            return Err(ConfigError::new(
+                format!("{path}.transcription_mode"),
+                ConfigErrorClass::VllmOnly,
+            ));
+        }
+        (_, None) => None,
+    })
+}
+
+/// Optional capabilities: supported by the kind and backed by the operations they need.
+fn validate_capability_dependencies(
+    kind: ProviderKind,
+    capabilities: &RawCapabilities,
+    operations: &BTreeSet<Operation>,
+    path: &str,
+) -> Result<(), ConfigError> {
+    if capabilities.input_images {
+        if !matches!(
+            kind,
+            ProviderKind::Ollama
+                | ProviderKind::Vllm
+                | ProviderKind::Openrouter
+                | ProviderKind::Cliproxy
+                | ProviderKind::Anthropic
+        ) {
+            return Err(ConfigError::new(
+                format!("{path}.capabilities.input_images"),
+                ConfigErrorClass::UnsupportedByAdapterKind,
+            ));
+        }
+        if !operations.contains(&Operation::Chat) {
+            return Err(ConfigError::new(
+                format!("{path}.capabilities.input_images"),
+                ConfigErrorClass::ChatOperationRequired,
+            ));
+        }
+    }
+    if capabilities.input_audio && !operations.contains(&Operation::Chat) {
+        return Err(ConfigError::new(
+            format!("{path}.capabilities.input_audio"),
+            ConfigErrorClass::ChatOperationRequired,
+        ));
+    }
+    if capabilities.audio_streaming_chat
+        && (!capabilities.input_audio || !capabilities.streaming_chat)
+    {
+        return Err(ConfigError::new(
+            format!("{path}.capabilities.audio_streaming_chat"),
+            ConfigErrorClass::RequiresAudioAndStreamingChat,
+        ));
+    }
+    if capabilities.audio_function_tools
+        && (!capabilities.input_audio || !capabilities.function_tools)
+    {
+        return Err(ConfigError::new(
+            format!("{path}.capabilities.audio_function_tools"),
+            ConfigErrorClass::RequiresAudioAndFunctionTools,
+        ));
+    }
+    let (structured_output, sampling_controls, reasoning_control) = kind.supports_chat_options();
+    for (name, declared, supported) in [
+        (
+            "structured_output",
+            capabilities.structured_output,
+            structured_output,
+        ),
+        (
+            "sampling_controls",
+            capabilities.sampling_controls,
+            sampling_controls,
+        ),
+        (
+            "reasoning_control",
+            capabilities.reasoning_control,
+            reasoning_control,
+        ),
+    ] {
+        if !declared {
+            continue;
+        }
+        if !supported {
+            return Err(ConfigError::new(
+                format!("{path}.capabilities.{name}"),
+                ConfigErrorClass::UnsupportedByAdapterKind,
+            ));
+        }
+        if !operations.contains(&Operation::Chat) {
+            return Err(ConfigError::new(
+                format!("{path}.capabilities.{name}"),
+                ConfigErrorClass::ChatOperationRequired,
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_url(adapter: &RawAdapter, path: &str) -> Result<Url, ConfigError> {
     let url = Url::parse(&adapter.base_url)
-        .map_err(|_| ConfigError::new(format!("{path}.base_url"), "invalid_url"))?;
+        .map_err(|_| ConfigError::new(format!("{path}.base_url"), ConfigErrorClass::InvalidUrl))?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
         return Err(ConfigError::new(
             format!("{path}.base_url"),
-            "invalid_http_url",
+            ConfigErrorClass::InvalidHttpUrl,
         ));
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(ConfigError::new(
             format!("{path}.base_url"),
-            "userinfo_forbidden",
+            ConfigErrorClass::UserinfoForbidden,
         ));
     }
     if url.fragment().is_some() {
         return Err(ConfigError::new(
             format!("{path}.base_url"),
-            "fragment_forbidden",
+            ConfigErrorClass::FragmentForbidden,
         ));
     }
     if url.query().is_some() {
         return Err(ConfigError::new(
             format!("{path}.base_url"),
-            "query_forbidden",
+            ConfigErrorClass::QueryForbidden,
         ));
     }
     if adapter.trust_zone == TrustZone::External && !url_permits_credentials(&url) {
         return Err(ConfigError::new(
             format!("{path}.base_url"),
-            "https_required",
+            ConfigErrorClass::HttpsRequired,
         ));
     }
     Ok(url)
@@ -367,14 +431,23 @@ fn validate_ca_file(
             | ProviderKind::Speech
             | ProviderKind::Cliproxy
     ) {
-        return Err(ConfigError::new(field, "unsupported_by_adapter_kind"));
+        return Err(ConfigError::new(
+            field,
+            ConfigErrorClass::UnsupportedByAdapterKind,
+        ));
     }
     if base_url.scheme() != "https" {
-        return Err(ConfigError::new(field, "https_base_url_required"));
+        return Err(ConfigError::new(
+            field,
+            ConfigErrorClass::HttpsBaseUrlRequired,
+        ));
     }
     let file = validate_key_path(file, &field)?;
     if !file.is_absolute() {
-        return Err(ConfigError::new(field, "absolute_path_required"));
+        return Err(ConfigError::new(
+            field,
+            ConfigErrorClass::AbsolutePathRequired,
+        ));
     }
     Ok(Some(CaBundle {
         path: file.to_owned(),
@@ -402,7 +475,7 @@ impl ValidatedConfig {
 
 fn read_ca_file(
     file: &Path,
-) -> Result<std::sync::Arc<[rustls::pki_types::CertificateDer<'static>]>, &'static str> {
+) -> Result<std::sync::Arc<[rustls::pki_types::CertificateDer<'static>]>, ConfigErrorClass> {
     use rustls::pki_types::{
         CertificateDer,
         pem::{PemObject as _, SectionKind},
@@ -416,27 +489,27 @@ fn read_ca_file(
                 .take(MAX_CA_FILE_BYTES as u64 + 1)
                 .read_to_end(&mut bytes)
         })
-        .map_err(|_| "read_error")?;
+        .map_err(|_| ConfigErrorClass::ReadError)?;
     if bytes.len() > MAX_CA_FILE_BYTES {
-        return Err("too_large");
+        return Err(ConfigErrorClass::TooLarge);
     }
     let mut roots = rustls::RootCertStore::empty();
     let mut certificates = Vec::new();
     for section in <(SectionKind, Vec<u8>)>::pem_slice_iter(&bytes) {
-        let (kind, der) = section.map_err(|_| "invalid_pem")?;
+        let (kind, der) = section.map_err(|_| ConfigErrorClass::InvalidPem)?;
         // A key or CSR in a trust bundle is a mistake worth failing on, not skipping.
         if !matches!(kind, SectionKind::Certificate) {
-            return Err("certificates_only");
+            return Err(ConfigErrorClass::CertificatesOnly);
         }
         let certificate = CertificateDer::from(der);
         // Parse as a trust anchor now so a bad bundle fails here, not on the first request.
         roots
             .add(certificate.clone())
-            .map_err(|_| "invalid_certificate")?;
+            .map_err(|_| ConfigErrorClass::InvalidCertificate)?;
         certificates.push(certificate);
     }
     if certificates.is_empty() {
-        return Err("no_certificates");
+        return Err(ConfigErrorClass::NoCertificates);
     }
     Ok(certificates.into())
 }
@@ -458,7 +531,7 @@ fn validate_provider_zone(adapter: &RawAdapter, path: &str) -> Result<(), Config
     } else {
         Err(ConfigError::new(
             format!("{path}.trust_zone"),
-            "provider_zone_mismatch",
+            ConfigErrorClass::ProviderZoneMismatch,
         ))
     }
 }
@@ -476,7 +549,7 @@ fn validate_anthropic(
         return match settings {
             Some(_) => Err(ConfigError::new(
                 format!("{path}.anthropic"),
-                "anthropic_only",
+                ConfigErrorClass::AnthropicOnly,
             )),
             None => Ok(None),
         };
@@ -484,19 +557,19 @@ fn validate_anthropic(
     if *operations != BTreeSet::from([Operation::Chat]) {
         return Err(ConfigError::new(
             format!("{path}.capabilities.operations"),
-            "anthropic_chat_only",
+            ConfigErrorClass::AnthropicChatOnly,
         ));
     }
     if input_audio {
         return Err(ConfigError::new(
             format!("{path}.capabilities.input_audio"),
-            "unsupported_by_adapter_kind",
+            ConfigErrorClass::UnsupportedByAdapterKind,
         ));
     }
     if base_url.as_str() != "https://api.anthropic.com/v1" {
         return Err(ConfigError::new(
             format!("{path}.base_url"),
-            "anthropic_pinned_origin_required",
+            ConfigErrorClass::AnthropicPinnedOriginRequired,
         ));
     }
     let settings = settings.unwrap_or(RawAnthropicSettings {
@@ -511,7 +584,7 @@ fn validate_anthropic(
         if !valid {
             return Err(ConfigError::new(
                 format!("{path}.anthropic.workspace_id"),
-                "invalid_workspace_id",
+                ConfigErrorClass::InvalidWorkspaceId,
             ));
         }
     }
@@ -521,7 +594,7 @@ fn validate_anthropic(
     if !(1..=crate::core::MAX_OUTPUT_TOKENS).contains(&default_max_output_tokens) {
         return Err(ConfigError::new(
             format!("{path}.anthropic.default_max_output_tokens"),
-            "out_of_range",
+            ConfigErrorClass::OutOfRange,
         ));
     }
     Ok(Some(ValidatedAnthropicSettings {
@@ -532,7 +605,10 @@ fn validate_anthropic(
 
 fn validate_secret_ref(value: &str, path: &str) -> Result<SecretReference, ConfigError> {
     if value.starts_with("sha256:") {
-        return Err(ConfigError::new(path, "digest_reference_unsupported"));
+        return Err(ConfigError::new(
+            path,
+            ConfigErrorClass::DigestReferenceUnsupported,
+        ));
     }
     if let Some(name) = value.strip_prefix("env:").filter(valid_env_name) {
         return Ok(SecretReference::Env(name.into()));
@@ -543,7 +619,10 @@ fn validate_secret_ref(value: &str, path: &str) -> Result<SecretReference, Confi
     {
         return Ok(SecretReference::File(name.into()));
     }
-    Err(ConfigError::new(path, "invalid_secret_reference"))
+    Err(ConfigError::new(
+        path,
+        ConfigErrorClass::InvalidSecretReference,
+    ))
 }
 
 fn validate_circuit_breaker(
@@ -562,19 +641,19 @@ fn validate_circuit_breaker(
     if policy.failures == 0 {
         return Err(ConfigError::new(
             format!("{path}.circuit_breaker.failures"),
-            "zero",
+            ConfigErrorClass::Zero,
         ));
     }
     if policy.cooldown_ms == 0 {
         return Err(ConfigError::new(
             format!("{path}.circuit_breaker.cooldown_ms"),
-            "zero",
+            ConfigErrorClass::Zero,
         ));
     }
     if policy.cooldown_ms > MAX_TIMEOUT_MS {
         return Err(ConfigError::new(
             format!("{path}.circuit_breaker.cooldown_ms"),
-            "timeout_too_large",
+            ConfigErrorClass::TimeoutTooLarge,
         ));
     }
     Ok(policy)

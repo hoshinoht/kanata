@@ -12,13 +12,13 @@ pub(in crate::config) fn validate_bounds(
         ("limits.max_extension_bytes", limits.max_extension_bytes),
     ] {
         if value == 0 {
-            return Err(ConfigError::new(path, "zero"));
+            return Err(ConfigError::new(path, ConfigErrorClass::Zero));
         }
     }
     if limits.max_audio_bytes > MAX_CONFIG_AUDIO_BYTES {
         return Err(ConfigError::new(
             "limits.max_audio_bytes",
-            "audio_limit_too_large",
+            ConfigErrorClass::AudioLimitTooLarge,
         ));
     }
     let encoded_audio_bytes = limits
@@ -26,16 +26,22 @@ pub(in crate::config) fn validate_bounds(
         .checked_add(2)
         .and_then(|value| value.checked_div(3))
         .and_then(|chunks| chunks.checked_mul(4))
-        .ok_or_else(|| ConfigError::new("limits", "audio_envelope_overflow"))?;
+        .ok_or_else(|| ConfigError::new("limits", ConfigErrorClass::AudioEnvelopeOverflow))?;
     let max_audio_chat_body_bytes = limits
         .max_body_bytes
         .checked_add(encoded_audio_bytes)
-        .ok_or_else(|| ConfigError::new("limits", "audio_envelope_overflow"))?;
+        .ok_or_else(|| ConfigError::new("limits", ConfigErrorClass::AudioEnvelopeOverflow))?;
     if timeouts.overall_ms == 0 {
-        return Err(ConfigError::new("timeouts.overall_ms", "zero"));
+        return Err(ConfigError::new(
+            "timeouts.overall_ms",
+            ConfigErrorClass::Zero,
+        ));
     }
     if timeouts.overall_ms > MAX_TIMEOUT_MS {
-        return Err(ConfigError::new("timeouts.overall_ms", "timeout_too_large"));
+        return Err(ConfigError::new(
+            "timeouts.overall_ms",
+            ConfigErrorClass::TimeoutTooLarge,
+        ));
     }
     for (path, value) in [
         ("timeouts.queue_ms", timeouts.queue_ms),
@@ -45,24 +51,27 @@ pub(in crate::config) fn validate_bounds(
         ("timeouts.idle_ms", timeouts.idle_ms),
     ] {
         if value == 0 {
-            return Err(ConfigError::new(path, "zero"));
+            return Err(ConfigError::new(path, ConfigErrorClass::Zero));
         }
         if value > MAX_TIMEOUT_MS {
-            return Err(ConfigError::new(path, "timeout_too_large"));
+            return Err(ConfigError::new(path, ConfigErrorClass::TimeoutTooLarge));
         }
         if value > timeouts.overall_ms {
-            return Err(ConfigError::new(path, "exceeds_overall"));
+            return Err(ConfigError::new(path, ConfigErrorClass::ExceedsOverall));
         }
     }
     let max_uploads = limits.max_uploads.unwrap_or(8);
     let max_buffered_bytes = limits.max_buffered_bytes.unwrap_or(256 * 1024 * 1024);
     if max_uploads == 0 || max_uploads > MAX_CONCURRENCY_LIMIT {
-        return Err(ConfigError::new("limits.max_uploads", "out_of_range"));
+        return Err(ConfigError::new(
+            "limits.max_uploads",
+            ConfigErrorClass::OutOfRange,
+        ));
     }
     if !(1..=4 * 1024 * 1024 * 1024).contains(&max_buffered_bytes) {
         return Err(ConfigError::new(
             "limits.max_buffered_bytes",
-            "out_of_range",
+            ConfigErrorClass::OutOfRange,
         ));
     }
     let largest = max_audio_chat_body_bytes.max(
@@ -76,25 +85,31 @@ pub(in crate::config) fn validate_bounds(
     {
         return Err(ConfigError::new(
             "limits.max_buffered_bytes",
-            "below_request_reservation",
+            ConfigErrorClass::BelowRequestReservation,
         ));
     }
     let upload_ms = timeouts
         .upload_ms
         .unwrap_or(30_000.min(timeouts.overall_ms));
     if upload_ms == 0 || upload_ms > timeouts.overall_ms {
-        return Err(ConfigError::new("timeouts.upload_ms", "out_of_range"));
+        return Err(ConfigError::new(
+            "timeouts.upload_ms",
+            ConfigErrorClass::OutOfRange,
+        ));
     }
     let sse_keepalive_ms = timeouts
         .sse_keepalive_ms
         .unwrap_or(15_000.min(timeouts.overall_ms));
     if sse_keepalive_ms == 0 {
-        return Err(ConfigError::new("timeouts.sse_keepalive_ms", "zero"));
+        return Err(ConfigError::new(
+            "timeouts.sse_keepalive_ms",
+            ConfigErrorClass::Zero,
+        ));
     }
     if sse_keepalive_ms > timeouts.overall_ms {
         return Err(ConfigError::new(
             "timeouts.sse_keepalive_ms",
-            "timeout_too_large",
+            ConfigErrorClass::TimeoutTooLarge,
         ));
     }
     Ok((

@@ -14,7 +14,7 @@ impl ValidatedConfig {
                 if config.listeners.public.is_none() {
                     return Err(ConfigError::new(
                         "listeners.public",
-                        "required_for_public_plane",
+                        ConfigErrorClass::RequiredForPublicPlane,
                     ));
                 }
                 let public = config.publication.public_routes.clone();

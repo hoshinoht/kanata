@@ -36,36 +36,9 @@ pub(super) fn validate(
         adapters.push(validate_adapter(index, adapter, &mut adapter_ids)?);
     }
     if adapters.is_empty() {
-        return Err(ConfigError::new("adapters", "empty"));
+        return Err(ConfigError::new("adapters", ConfigErrorClass::Empty));
     }
-    let has_chatgpt_adapter = adapters
-        .iter()
-        .any(|adapter| adapter.kind == ProviderKind::Chatgpt);
-    let chatgpt_auth = match (has_chatgpt_adapter, raw.chatgpt_auth) {
-        (true, Some(auth)) => {
-            let state_dir = PathBuf::from(&auth.state_dir);
-            if auth.state_dir.chars().any(char::is_control)
-                || !state_dir.is_absolute()
-                || state_dir
-                    .components()
-                    .any(|part| matches!(part, std::path::Component::ParentDir))
-                || !state_dir
-                    .components()
-                    .any(|part| matches!(part, std::path::Component::Normal(_)))
-            {
-                return Err(ConfigError::new(
-                    "chatgpt_auth.state_dir",
-                    "invalid_absolute_path",
-                ));
-            }
-            Some(ValidatedChatgptAuth { state_dir })
-        }
-        (true, None) => return Err(ConfigError::new("chatgpt_auth", "required")),
-        (false, Some(_)) => {
-            return Err(ConfigError::new("chatgpt_auth", "without_chatgpt_adapter"));
-        }
-        (false, None) => None,
-    };
+    let chatgpt_auth = validate_chatgpt_auth(&adapters, raw.chatgpt_auth)?;
 
     let mut route_ids = BTreeSet::new();
     let mut selectors = BTreeSet::new();
@@ -80,9 +53,82 @@ pub(super) fn validate(
         )?);
     }
     if routes.is_empty() {
-        return Err(ConfigError::new("routes", "empty"));
+        return Err(ConfigError::new("routes", ConfigErrorClass::Empty));
     }
 
+    validate_reasoning_families(&routes, &adapters)?;
+
+    publication.public_routes = validate_public_routes(
+        &raw.publication.public_routes,
+        listeners.public.is_some(),
+        &routes,
+        &adapters,
+    )?;
+    let keys = raw
+        .keys
+        .ok_or_else(|| ConfigError::new("keys", ConfigErrorClass::Required))?;
+    let (keys, key_source) = load_key_file(&keys, config_dir, &routes, read_files)?;
+    Ok(ValidatedConfig {
+        listeners,
+        publication,
+        chatgpt_auth,
+        adapters,
+        routes,
+        keys,
+        key_source,
+        limits,
+        timeouts,
+        route_sources: Default::default(),
+        logging: ValidatedLogging {
+            level: raw.logging.level,
+            format: raw.logging.format,
+        },
+    })
+}
+
+/// `[chatgpt_auth]`: required with a ChatGPT adapter and rejected without one.
+fn validate_chatgpt_auth(
+    adapters: &[ValidatedAdapter],
+    auth: Option<RawChatgptAuth>,
+) -> Result<Option<ValidatedChatgptAuth>, ConfigError> {
+    let has_chatgpt_adapter = adapters
+        .iter()
+        .any(|adapter| adapter.kind == ProviderKind::Chatgpt);
+    Ok(match (has_chatgpt_adapter, auth) {
+        (true, Some(auth)) => {
+            let state_dir = PathBuf::from(&auth.state_dir);
+            if auth.state_dir.chars().any(char::is_control)
+                || !state_dir.is_absolute()
+                || state_dir
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+                || !state_dir
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::Normal(_)))
+            {
+                return Err(ConfigError::new(
+                    "chatgpt_auth.state_dir",
+                    ConfigErrorClass::InvalidAbsolutePath,
+                ));
+            }
+            Some(ValidatedChatgptAuth { state_dir })
+        }
+        (true, None) => return Err(ConfigError::new("chatgpt_auth", ConfigErrorClass::Required)),
+        (false, Some(_)) => {
+            return Err(ConfigError::new(
+                "chatgpt_auth",
+                ConfigErrorClass::WithoutChatgptAdapter,
+            ));
+        }
+        (false, None) => None,
+    })
+}
+
+/// Pinned reasoning-control variants of one family share adapter, upstream and route policy.
+fn validate_reasoning_families(
+    routes: &[ValidatedRoute],
+    adapters: &[ValidatedAdapter],
+) -> Result<(), ConfigError> {
     for (index, route) in routes.iter().enumerate().filter(|(_, route)| {
         route.pinned_reasoning_effort().is_some()
             && adapters.iter().any(|adapter| {
@@ -110,36 +156,10 @@ pub(super) fn validate(
             {
                 return Err(ConfigError::new(
                     format!("routes[{index}]"),
-                    "inconsistent_reasoning_family",
+                    ConfigErrorClass::InconsistentReasoningFamily,
                 ));
             }
         }
     }
-
-    publication.public_routes = validate_public_routes(
-        &raw.publication.public_routes,
-        listeners.public.is_some(),
-        &routes,
-        &adapters,
-    )?;
-    let keys = raw
-        .keys
-        .ok_or_else(|| ConfigError::new("keys", "required"))?;
-    let (keys, key_source) = load_key_file(&keys, config_dir, &routes, read_files)?;
-    Ok(ValidatedConfig {
-        listeners,
-        publication,
-        chatgpt_auth,
-        adapters,
-        routes,
-        keys,
-        key_source,
-        limits,
-        timeouts,
-        route_sources: Default::default(),
-        logging: ValidatedLogging {
-            level: raw.logging.level,
-            format: raw.logging.format,
-        },
-    })
+    Ok(())
 }

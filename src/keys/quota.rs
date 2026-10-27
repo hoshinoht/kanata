@@ -9,7 +9,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{config::Plane, core::Usage};
+use crate::{
+    config::{ConfigErrorClass, Plane},
+    core::Usage,
+};
 
 use super::usage::TokenUsage;
 
@@ -30,17 +33,17 @@ pub struct DailyQuota {
 }
 
 impl DailyQuota {
-    pub fn validate(self) -> Result<(), &'static str> {
+    pub fn validate(self) -> Result<(), ConfigErrorClass> {
         if self.requests.is_none() && self.tokens.is_none() {
-            return Err("empty");
+            return Err(ConfigErrorClass::Empty);
         }
         if [self.requests, self.tokens, self.reservation_tokens].contains(&Some(0)) {
-            return Err("zero");
+            return Err(ConfigErrorClass::Zero);
         }
         match (self.tokens, self.reservation_tokens) {
             (Some(total), Some(reservation)) if reservation <= total => Ok(()),
             (None, None) => Ok(()),
-            _ => Err("invalid_token_reservation"),
+            _ => Err(ConfigErrorClass::InvalidTokenReservation),
         }
     }
 }

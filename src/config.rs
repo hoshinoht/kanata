@@ -1,10 +1,12 @@
 pub(crate) use raw::{RawPermission, RawRateLimit};
 mod catalog;
 pub(crate) mod commands;
+mod error;
 mod plane;
 mod raw;
 mod reload;
 mod validation;
+pub use error::{ConfigError, ConfigErrorClass};
 use raw::*;
 use std::collections::BTreeSet;
 use std::fmt;
@@ -79,7 +81,7 @@ impl ValidatedConfig {
         if usage_dir.is_none() && file.active().any(|key| key.daily_quota().is_some()) {
             return Err(ConfigError::new(
                 "keys.usage_dir",
-                "required_for_daily_quota",
+                ConfigErrorClass::RequiredForDailyQuota,
             ));
         }
         let keys = keys_from_file(file, &self.routes)?;
@@ -621,29 +623,6 @@ pub enum VllmTranscriptionMode {
     AudioChat,
 }
 
-#[derive(Debug)]
-pub struct ConfigError {
-    path: String,
-    class: &'static str,
-}
-
-impl ConfigError {
-    pub(crate) fn new(path: impl Into<String>, class: &'static str) -> Self {
-        Self {
-            path: path.into(),
-            class,
-        }
-    }
-}
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "config error at {}: {}", self.path, self.class)
-    }
-}
-
-impl std::error::Error for ConfigError {}
-
 /// Parses TOML into `T`; errors carry only the field path and a class.
 /// `root` is `"config"` for the config file (paths stay unprefixed) or a
 /// prefix for other files, whose unknown key names are never echoed.
@@ -652,7 +631,7 @@ pub(crate) fn parse_toml<T: serde::de::DeserializeOwned>(
     root: &str,
 ) -> Result<T, ConfigError> {
     let deserializer = toml::de::Deserializer::parse(contents)
-        .map_err(|_| ConfigError::new(root, "parse_error"))?;
+        .map_err(|_| ConfigError::new(root, ConfigErrorClass::ParseError))?;
     serde_path_to_error::deserialize(deserializer)
         .map_err(|error| sanitized_deserialize_error(error, root))
 }
@@ -675,11 +654,12 @@ fn sanitized_deserialize_error(
                 .rsplit_once('.')
                 .map_or_else(String::new, |(parent, _)| parent.to_owned());
         }
-        removed_setting_class(name, is_config && path == name).unwrap_or("unknown_field")
+        removed_setting_class(name, is_config && path == name)
+            .unwrap_or(ConfigErrorClass::UnknownField)
     } else if message.contains("invalid type") {
-        "type_error"
+        ConfigErrorClass::TypeError
     } else {
-        "schema_error"
+        ConfigErrorClass::SchemaError
     };
     let valid = valid_diagnostic_path(&path);
     let path = match (is_config, valid) {
@@ -691,9 +671,9 @@ fn sanitized_deserialize_error(
 }
 
 /// Explicit classes for removed settings; `top_level` means a key of the config root.
-fn removed_setting_class(name: &str, top_level: bool) -> Option<&'static str> {
+fn removed_setting_class(name: &str, top_level: bool) -> Option<ConfigErrorClass> {
     match name {
-        "application_keys" if top_level => Some("inline_keys_removed"),
+        "application_keys" if top_level => Some(ConfigErrorClass::InlineKeysRemoved),
         _ => None,
     }
 }

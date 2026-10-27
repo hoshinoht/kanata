@@ -1,7 +1,17 @@
 use std::fs;
 use std::path::Path;
 
-const FORBIDDEN_TERMS: &[&str] = &["ollama", "openrouter", "openai", "cliproxy"];
+const FORBIDDEN_TERMS: &[&str] = &[
+    "ollama",
+    "openrouter",
+    "openai",
+    "cliproxy",
+    "anthropic",
+    "chatgpt",
+    "vllm",
+    "apple_fm",
+    "codex",
+];
 
 #[test]
 fn concrete_adapter_names_stay_outside_core_and_non_provider_layers() {
@@ -54,21 +64,9 @@ const NETWORK_TERMS: &[&str] = &[
 
 #[test]
 fn key_management_files_have_no_network_path() {
-    for file in [
-        "cli",
-        "cli/args",
-        "cli/display",
-        "cli/edit",
-        "cli/new",
-        "cli/picker",
-        "cli/rm",
-        "cli/rotate",
-        "store",
-        "file",
-        "time",
-        "usage",
-    ] {
-        let path = format!("src/keys/{file}.rs");
+    let mut files = Vec::new();
+    collect_rs(Path::new("src/keys"), &mut files);
+    for path in files {
         let source = fs::read_to_string(&path).expect("key module is readable");
         for term in NETWORK_TERMS {
             assert!(
@@ -81,11 +79,16 @@ fn key_management_files_have_no_network_path() {
 
 #[test]
 fn server_code_never_reaches_the_key_write_path() {
-    let mut files = vec![
-        "src/keys/reload.rs".into(),
-        "src/keys/usage.rs".into(),
-        "src/serve.rs".into(),
-    ];
+    // Every key module except the write path itself and the module root declaring it.
+    let mut files = Vec::new();
+    collect_rs(Path::new("src/keys"), &mut files);
+    files.retain(|path| {
+        !matches!(
+            path.as_str(),
+            "src/keys/mod.rs" | "src/keys/store.rs" | "src/keys/cli.rs"
+        ) && !path.starts_with("src/keys/cli/")
+    });
+    files.push("src/serve.rs".into());
     collect_rs(Path::new("src/server"), &mut files);
     collect_rs(Path::new("src/api"), &mut files);
     for path in files {

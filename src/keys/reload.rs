@@ -6,7 +6,7 @@ use std::time::Duration;
 use sha2::{Digest as _, Sha256};
 
 use crate::auth::{ApplicationAuth, KeyHandle};
-use crate::config::{ConfigError, KeySource, Plane, ValidatedConfig};
+use crate::config::{ConfigError, ConfigErrorClass, KeySource, Plane, ValidatedConfig};
 use crate::keys::{file, time};
 
 pub const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -87,7 +87,7 @@ impl KeyReloader {
         let keys = file::parse(bytes, self.config.routes())?;
         let config = self.config.with_keys(&keys)?.for_plane(self.plane)?;
         let auth = ApplicationAuth::rebuild(&config, &self.handle.current())
-            .map_err(|_| ConfigError::new("keys_file", "build_error"))?;
+            .map_err(|_| ConfigError::new("keys_file", ConfigErrorClass::BuildError))?;
         self.handle.replace(auth);
         let ids: Vec<&str> = config.keys().iter().map(|key| key.id()).collect();
         tracing::info!(
@@ -117,5 +117,5 @@ impl KeyReloader {
 }
 
 fn not_found() -> ConfigError {
-    ConfigError::new("keys.file", "not_found")
+    ConfigError::new("keys.file", ConfigErrorClass::NotFound)
 }

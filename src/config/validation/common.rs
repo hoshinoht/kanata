@@ -60,10 +60,10 @@ pub(in crate::config) fn validate_key_path<'a>(
     path: &str,
 ) -> Result<&'a Path, ConfigError> {
     if value.is_empty() {
-        return Err(ConfigError::new(path, "empty"));
+        return Err(ConfigError::new(path, ConfigErrorClass::Empty));
     }
     if value.chars().any(char::is_control) {
-        return Err(ConfigError::new(path, "invalid_path"));
+        return Err(ConfigError::new(path, ConfigErrorClass::InvalidPath));
     }
     Ok(Path::new(value))
 }
@@ -75,10 +75,11 @@ pub(in crate::config) fn validate_extension_allowlist(
     let mut validated = BTreeSet::new();
     for (index, value) in values.into_iter().enumerate() {
         let entry_path = format!("{path}[{index}]");
-        let key = ExtensionKey::parse(value)
-            .map_err(|_| ConfigError::new(entry_path.clone(), "invalid_extension_key"))?;
+        let key = ExtensionKey::parse(value).map_err(|_| {
+            ConfigError::new(entry_path.clone(), ConfigErrorClass::InvalidExtensionKey)
+        })?;
         if !validated.insert(key) {
-            return Err(ConfigError::new(entry_path, "duplicate"));
+            return Err(ConfigError::new(entry_path, ConfigErrorClass::Duplicate));
         }
     }
     Ok(validated)
@@ -90,10 +91,13 @@ pub(in crate::config) fn validate_optional_limit(
     path: &str,
 ) -> Result<Option<u64>, ConfigError> {
     match value {
-        Some(0) => Err(ConfigError::new(format!("{path}.max_in_flight"), "zero")),
+        Some(0) => Err(ConfigError::new(
+            format!("{path}.max_in_flight"),
+            ConfigErrorClass::Zero,
+        )),
         Some(value) if value > MAX_CONCURRENCY_LIMIT => Err(ConfigError::new(
             format!("{path}.max_in_flight"),
-            "limit_too_large",
+            ConfigErrorClass::LimitTooLarge,
         )),
         value => Ok(value),
     }

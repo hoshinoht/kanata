@@ -159,3 +159,157 @@ Long agent transcripts may exceed the default `limits.max_body_bytes` (1 MiB); r
 ## Sign in with ChatGPT
 
 `kind = "chatgpt"` requires `[chatgpt_auth].state_dir` (an absolute private host path), `trust_zone = "external"`, and the exact `base_url = "https://api.openai.com/v1"`. No `secret_ref` is accepted. Chat text and function tools are supported. For selectable reasoning, declare `reasoning_control = true` and pin every route with `reasoning_effort = "low" | "medium" | ...` (required on ChatGPT, optional on other `reasoning_control` adapters); suffix variants must match their pin. Select pins from the account catalog's `supported_reasoning_efforts` and use its `default_reasoning_effort` for the base alias. Other optional modality/chat-option capabilities stay false. Routes cannot be public and their scoped keys are excluded from a public process. Select an `upstream_id` from `kanata auth chatgpt models --config <path>` after signing in. Authentication paths require a restart to change. See [setup and trial](../docs/guides/sign-in-with-chatgpt.md).
+
+## Field reference
+
+Every setting the config schema accepts; unknown fields fail with `unknown_field`. Fields marked optional may be omitted.
+
+- **Root:** `listeners`, `publication`, `limits` and `timeouts` are required; `adapters` and `routes` must end up non-empty (directly, through `include` fragments or through `models` catalogs); `keys` is required; `chatgpt_auth` and `logging` are optional.
+- **`[logging]`:** `level` (`trace`, `debug`, `info` (default), `warn`, `error`) and `format` (`text` (default) or `json`).
+- **`[listeners]`:** `client` (the private API), `admin` (loopback `/live`, `/ready`, `/status` and `/metrics`) and optional `public`, each with `bind` (an IP literal) and `port` (non-zero). The client bind must be loopback, unspecified, private/unique-local or one of `publication.tailnet_addresses`; the public bind must be a concrete private or unique-local address outside the tailnet prefix and must not collide with the client listener.
+- **`[publication]`:** `tailnet_addresses` (required, at least one): the host's own Tailscale addresses (`100.64.0.0/10` or `fd7a:115c:a1e0::/48`), used to accept a client listener bound to one of them and to keep the public listener off the tailnet. `public_routes` (optional): exact `{ model_alias, operation }` selectors served on the public listener.
+- **`[chatgpt_auth]`:** `state_dir`, see [Sign in with ChatGPT](#sign-in-with-chatgpt).
+- **`[[adapters]]`:** `id`, `kind` (`ollama`, `vllm`, `openrouter`, `chatgpt`, `apple_fm`, `speech`, `cliproxy`, `anthropic`), `base_url`, `trust_zone` (`local`, `private_network` or `external`), optional `secret_ref` (`env:NAME` or `file:/abs/path`), `transcription_mode`, `extension_allowlist`, `max_in_flight`, `circuit_breaker` (`enabled`, `failures`, `cooldown_ms`), `ca_file` and `anthropic` (`workspace_id`, `default_max_output_tokens`), and the required `capabilities` table:
+  - `operations` (required: `chat`, `transcription`, `embeddings`, `speech`), `streaming_chat` and `function_tools` (both required booleans).
+  - Optional booleans, default false: `input_audio`, `input_images`, `audio_streaming_chat` (streamed chat with inline audio; needs `input_audio` and `streaming_chat`), `audio_function_tools` (tool calls with inline audio; needs `input_audio` and `function_tools`), `structured_output`, `sampling_controls` and `reasoning_control`.
+- **`[[routes]]`:** `id`, `model_alias`, `operation`, `adapter_id`, `upstream_id`, `requires_streaming_chat` and `requires_function_tools` are required. Optional: `reasoning_effort`, `reasoning_summary`, `extension_allowlist`, `allows_input_audio`, `allows_input_images`, `allows_audio_streaming_chat` (accepts streamed chat with inline audio; needs `allows_input_audio` and the adapter's `audio_streaming_chat`), `allows_audio_function_tools` (accepts tool calls with inline audio; needs `allows_input_audio` and the adapter's `audio_function_tools`), `speech_voices`, `speech_formats` (`mp3`, `wav`), `context_tokens`, `max_output_tokens` and `enable_thinking`.
+- **Request extensions:** `extension_allowlist` on an adapter and on a route lists namespaced keys (two or more dot-separated lowercase segments such as `io.example.trace`, at most 128 bytes) that a request may carry in its top-level `extensions` object (or the multipart `extensions` field of a transcription). A key must be on both lists, and the serialized object must fit `limits.max_extension_bytes`; otherwise the request fails with `400` before dispatch. Both lists default to empty, which refuses every extension. ChatGPT and Anthropic adapters reject a non-empty list, and the bundled adapters currently refuse requests that carry extensions, so leave the lists empty unless an adapter documents support.
+- **`[keys]`:** `file` (required) and `usage_dir` (optional). Keys-file records use the same `{ model_alias, operation }` permission shape and `rate_limit = { requests, per_ms }`.
+- **`[limits]`:** `max_queue` and `max_in_flight` (per route), `max_body_bytes` (JSON request bodies), `max_audio_bytes` (decoded inline or uploaded audio), `max_extension_bytes` (serialized request `extensions`), all required and non-zero; `max_uploads` and `max_buffered_bytes` are optional, see [shared reservations](#shared-reservations).
+- **`[timeouts]`** (milliseconds, each non-zero, at most seven days and at most `overall_ms`): `queue_ms` (waiting for a route and adapter slot), `connect_ms` (opening the upstream connection), `headers_ms` (upstream response headers), `first_byte_ms` (first upstream body byte or stream event), `idle_ms` (gap between upstream stream chunks) and `overall_ms` (the whole request) are required; `upload_ms` and `sse_keepalive_ms` are optional, see [request buffers](#request-buffers-and-diagnostics).
+- **Catalogs:** `include`, `route_profiles` and `models` (`chat`, `transcription`, `embeddings`, `speech`), see [compact model catalogs](#compact-model-catalogs). A model or profile takes the route fields above plus `profile`, `id`, `route_ids`, `default_effort`, `efforts` and `unset`.
+
+## Validation errors
+
+`kanata check`, `serve`, SIGHUP reloads and the key CLI report a rejected config as `config error at <path>: <class>`. The path names the field (for example `adapters[0].base_url` or `models.chat.assistant.efforts`). Neither part contains a secret value, and for files other than the config the path never echoes an unknown key.
+
+| Class | Meaning |
+| --- | --- |
+| **Parsing and reading** | |
+| `parse_error` | The file is not valid UTF-8 TOML. |
+| `schema_error` | The TOML does not match the schema (for example a missing required field). |
+| `type_error` | A field has the wrong TOML type. |
+| `unknown_field` | A field or table the schema does not define. |
+| `inline_keys_removed` | The config still has inline `[[application_keys]]`; move keys to the `[keys] file`. |
+| `read_error` | A config, fragment, keys or CA file could not be read. |
+| `serialization_error` | A config table could not be re-encoded while expanding catalogs or writing `config compact`/`expand` output. |
+| **Shared value rules** | |
+| `required` | A setting required in this context is missing (for example `[keys]`, `secret_ref` or a ChatGPT route's `reasoning_effort`). |
+| `empty` | A list or value that must not be empty is empty. |
+| `zero` | A count, port or duration is zero. |
+| `duplicate` | A list entry, profile or permission appears twice. |
+| `out_of_range` | A number is outside its accepted range. |
+| `too_large` | A keys or CA file exceeds its size limit. |
+| `too_many` | The keys file holds more than 1000 records. |
+| `limit_too_large` | A `max_in_flight` or rate-limit count exceeds 1,000,000. |
+| `timeout_too_large` | A duration exceeds seven days, or `sse_keepalive_ms` exceeds `overall_ms`. |
+| `invalid_or_duplicate_id` | An adapter, route or key id is empty, has characters outside `A-Z a-z 0-9 - _ .`, or is reused. |
+| `invalid_or_empty` | A route `upstream_id` is blank. |
+| `invalid_exact_alias` | A model alias is not an exact identifier, optionally with one valid `:effort` suffix. |
+| `invalid_path` | A path contains control characters or cannot be represented. |
+| `invalid_absolute_path` | `[chatgpt_auth].state_dir` is not a clean absolute path. |
+| `absolute_path_required` | An adapter `ca_file` is relative. |
+| `invalid_extension_key` | An `extension_allowlist` entry is not a valid extension key. |
+| `invalid_allowlist` | A speech route's `speech_voices` or `speech_formats` is empty, duplicated, invalid or too long. |
+| `invalid_ip` | A bind or tailnet address is not an IP literal. |
+| **Listeners and publication** | |
+| `not_loopback` | `listeners.admin.bind` is not a loopback address. |
+| `not_internal_address` | A client or public bind is not an accepted internal address (loopback, private, unique-local or a configured tailnet address for the client). |
+| `not_concrete` | `listeners.public.bind` is loopback or unspecified. |
+| `tailnet_address_forbidden` | `listeners.public.bind` shares a configured tailnet prefix. |
+| `client_admin_port_collision` | The client and admin listeners use the same port. |
+| `client_port_collision` | The public listener's bind and port overlap the client listener's. |
+| `client_bind_collision` | The public listener binds the client listener's address. |
+| `not_tailnet_address` | A `publication.tailnet_addresses` entry is outside the Tailscale ranges. |
+| `public_listener_required` | `publication.public_routes` is set without `[listeners.public]`. |
+| `unknown_route_selector` | A public route or key permission names no configured `(model_alias, operation)`. |
+| `chatgpt_not_public` | A ChatGPT route is listed in `publication.public_routes`. |
+| `cliproxy_not_public` | A CLIProxyAPI route is listed in `publication.public_routes`. |
+| `anthropic_not_public` | An Anthropic route is listed in `publication.public_routes`. |
+| `required_for_public_plane` | `--plane public` was requested without `[listeners.public]`. |
+| **Limits and timeouts** | |
+| `audio_limit_too_large` | `limits.max_audio_bytes` exceeds the built-in audio maximum. |
+| `audio_envelope_overflow` | The base64 audio envelope added to `max_body_bytes` overflows. |
+| `exceeds_overall` | A per-phase timeout exceeds `timeouts.overall_ms`. |
+| `below_request_reservation` | `limits.max_buffered_bytes` cannot hold one maximum-size request reservation. |
+| **Adapters** | |
+| `invalid_url` | `base_url` does not parse. |
+| `invalid_http_url` | `base_url` is not `http`/`https` with a host. |
+| `userinfo_forbidden` | `base_url` contains a user name or password. |
+| `fragment_forbidden` | `base_url` contains a `#fragment`. |
+| `query_forbidden` | `base_url` contains a `?query`. |
+| `https_required` | An external adapter, or one with `secret_ref`, uses plain `http` to anything but a literal loopback IP. |
+| `https_base_url_required` | `ca_file` is set on an `http` adapter. |
+| `invalid_secret_reference` | `secret_ref` is neither `env:NAME` nor `file:/absolute/path`. |
+| `digest_reference_unsupported` | `secret_ref` is a `sha256:` digest. |
+| `provider_zone_mismatch` | `trust_zone` is not allowed for the adapter kind. |
+| `unsupported_by_adapter_kind` | A capability, `extension_allowlist` or `ca_file` the adapter kind cannot use. |
+| `chat_operation_required` | A chat-only capability is declared without the `chat` operation. |
+| `speech_adapter_required` | The `speech` operation and `kind = "speech"` must go together. |
+| `speech_only` | A speech adapter declares other operations or chat capabilities, or a non-speech route sets `speech_voices`/`speech_formats`. |
+| `embeddings_unsupported_by_adapter_kind` | `embeddings` on a kind other than Ollama, vLLM or OpenRouter. |
+| `chatgpt_text_chat_only` | A ChatGPT adapter declares operations other than `chat`, or `input_audio`. |
+| `chatgpt_pinned_origin_required` | A ChatGPT adapter's `base_url` is not `https://api.openai.com/v1`. |
+| `chatgpt_secret_ref_unsupported` | A ChatGPT adapter sets `secret_ref`. |
+| `without_chatgpt_adapter` | `[chatgpt_auth]` is set but no ChatGPT adapter exists. |
+| `apple_fm_chat_only` | An Apple FM adapter declares `transcription`. |
+| `cliproxy_chat_only` | A CLIProxyAPI adapter declares operations other than `chat`. |
+| `anthropic_chat_only` | An Anthropic adapter declares operations other than `chat`. |
+| `anthropic_only` | `[adapters.anthropic]` on another kind. |
+| `anthropic_pinned_origin_required` | An Anthropic adapter's `base_url` is not `https://api.anthropic.com/v1`. |
+| `invalid_workspace_id` | `anthropic.workspace_id` is not `wrkspc_` followed by letters and digits (at most 128 bytes). |
+| `without_transcription_operation` | `transcription_mode` is set without the `transcription` operation. |
+| `requires_input_audio_capability` | `transcription_mode = "audio_chat"` without `capabilities.input_audio`. |
+| `required_for_transcription` | A vLLM adapter declares `transcription` without `transcription_mode`. |
+| `vllm_only` | `transcription_mode` or a route's `enable_thinking` on a non-vLLM adapter. |
+| `requires_audio_and_streaming_chat` | `audio_streaming_chat` without `input_audio` and `streaming_chat`. |
+| `requires_audio_and_function_tools` | `audio_function_tools` without `input_audio` and `function_tools`. |
+| `invalid_pem` | A `ca_file` is not valid PEM. |
+| `certificates_only` | A `ca_file` contains a non-certificate PEM block. |
+| `invalid_certificate` | A `ca_file` certificate cannot be used as a trust anchor. |
+| `no_certificates` | A `ca_file` contains no certificates. |
+| **Routes** | |
+| `missing_adapter` | A route, model or public route names an adapter that does not exist. |
+| `duplicate_selector` | Two routes or catalog models share a `(model_alias, operation)`. |
+| `effort_alias_requires_reasoning_effort` | An `alias:effort` route on a non-ChatGPT adapter has no `reasoning_effort` pin. |
+| `unsupported_by_adapter` | The route's operation or a route policy (`requires_*`, `allows_*`, `reasoning_effort`, `reasoning_summary`) is not supported by its adapter. |
+| `unsupported_effort` | A pinned or family effort the adapter kind does not accept. |
+| `does_not_match_alias` | `reasoning_effort` differs from the alias's `:effort` suffix. |
+| `chat_only` | `context_tokens` or `max_output_tokens` on a non-chat route. |
+| `unsupported_output_cap` | `max_output_tokens` on an adapter without `sampling_controls`. |
+| `exceeds_context_tokens` | `max_output_tokens` is larger than `context_tokens`. |
+| `requires_chat_template` | `enable_thinking` on a route that does not use a chat template. |
+| `conflicts_with_reasoning_control` | `enable_thinking` on a chat route of a `reasoning_control` adapter. |
+| `inconsistent_reasoning_family` | Variants of one reasoning family differ in adapter, upstream or route policy. |
+| **Catalogs and fragments** | |
+| `too_many_fragments` | `include` lists more than 64 fragments. |
+| `relative_fragment_required` | An `include` entry is empty, absolute or uses `..`. |
+| `outside_config_directory` | An `include` entry resolves outside the config directory. |
+| `duplicate_fragment` | A fragment (or the root config) is included twice. |
+| `document_too_large` | The config and its fragments exceed 8 MiB. |
+| `changed_during_read` | A file changed while the config was being loaded. |
+| `invalid_profile` | A `route_profiles` name is not a valid identifier. |
+| `model_only_field` | A profile sets `profile`, `id`, `route_ids`, `upstream_id` or `unset`. |
+| `missing_profile` | A model names an undefined profile. |
+| `invalid_clear_field` | An `unset` entry is not a clearable field. |
+| `conflicting_override` | A model both clears and sets the same field. |
+| `reasoning_chat_family_required` | `default_effort`/`efforts` on a model that cannot form a chat reasoning family. |
+| `conflicting_effort_options` | `default_effort`/`efforts` combined with `reasoning_effort`. |
+| `unknown_variant` | A `route_ids` key is not `base` or one of the model's efforts. |
+| **Keys** | |
+| `required_for_daily_quota` | A key has `daily_quota` but `[keys] usage_dir` is unset. |
+| `not_found` | The keys file is missing at reload. |
+| `insecure_permissions` | The keys file is group- or world-writable. |
+| `unsupported_version` | The keys file `version` is not supported. |
+| `invalid_timestamp` | A key timestamp is malformed. |
+| `invalid_digest` | A key digest is not `sha256:` plus 64 lowercase hex digits. |
+| `duplicate_secret` | Two keys share a digest. |
+| `multiple_owners` | More than one key is marked owner. |
+| `invalid_token_reservation` | A daily quota's `reservation_tokens` is set without `tokens` or exceeds it. |
+| `build_error` | A valid keys file could not be applied to the running config. |
+| **Reload and config commands** | |
+| `restart_required` | A SIGHUP reload changes a restart-only setting (`reload.<field>`). |
+| `already_exists` | The `--output` of `config compact`/`expand` already exists. |
+| `write_error` | The output file could not be written. |
+| `random_error` | No randomness was available for the temporary output name. |
+| `not_equivalent` | The rewritten config does not validate to the same effective config. |
