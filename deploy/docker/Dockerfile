@@ -6,6 +6,7 @@ FROM rust:1.99.1-bookworm@sha256:48b7f435b8fc6378ce43b44f15e3a47fd8919b2825f835c
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY crates ./crates
 
 RUN cargo build --locked --release \
     && install -D -o 10001 -g 10001 -m 0755 target/release/kanata /out/usr/local/bin/kanata

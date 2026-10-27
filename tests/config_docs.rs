@@ -21,9 +21,10 @@ fn every_config_error_class_is_documented() {
     );
 }
 
-/// Serialized field names of every struct in `src/config/raw.rs`.
+/// Serialized field names of every struct in `crates/kanata-config/src/raw.rs`.
 fn raw_field_names() -> BTreeSet<String> {
-    let source = fs::read_to_string("src/config/raw.rs").expect("raw schema is readable");
+    let source =
+        fs::read_to_string("crates/kanata-config/src/raw.rs").expect("raw schema is readable");
     let mut names = BTreeSet::new();
     let mut in_struct = false;
     let mut rename = None;

@@ -33,10 +33,12 @@ const JAVASCRIPT: &str = "text/javascript; charset=utf-8";
 const STYLE: &str = include_str!("style.css");
 const SCRIPT: &str = include_str!("app.js");
 const ROUTE_GROUPS: &str = include_str!("route-groups.js");
-const LOGO: &str = include_str!("../server/guide/relay.svg");
-const FAVICON: &str = include_str!("../server/guide/favicon.svg");
-const FONT: &[u8] = include_bytes!("../server/guide/fonts/MapleMono-Regular.woff2");
-const FONT_LICENSE: &str = include_str!("../server/guide/fonts/OFL.txt");
+const LOGO: &str = include_str!("../../crates/kanata-server/src/server/guide/relay.svg");
+const FAVICON: &str = include_str!("../../crates/kanata-server/src/server/guide/favicon.svg");
+const FONT: &[u8] =
+    include_bytes!("../../crates/kanata-server/src/server/guide/fonts/MapleMono-Regular.woff2");
+const FONT_LICENSE: &str =
+    include_str!("../../crates/kanata-server/src/server/guide/fonts/OFL.txt");
 
 #[derive(Clone)]
 struct Portal {

@@ -1,0 +1,19 @@
+[package]
+name = "kanata-core"
+description = "Provider-neutral request, response and adapter contracts for kanata"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+kanata-contract.workspace = true
+
+base64.workspace = true
+futures-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[features]
+test-support = []

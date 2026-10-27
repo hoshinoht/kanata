@@ -1,5 +1,5 @@
 //! `kind = "anthropic"`: Claude Messages API with a Console key, private-only. Wire behaviour
-//! against a loopback TLS fixture lives in `src/adapter/anthropic/tests.rs`.
+//! against a loopback TLS fixture lives in `crates/kanata-adapters/src/anthropic/tests.rs`.
 
 #[path = "support/scratch.rs"]
 mod scratch;

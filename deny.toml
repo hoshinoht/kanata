@@ -26,6 +26,8 @@ ignore = true
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Unpublished workspace members reference each other by path only.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

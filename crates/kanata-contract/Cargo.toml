@@ -1,0 +1,12 @@
+[package]
+name = "kanata-contract"
+description = "Client-facing kanata wire contract: error envelope, model metadata and limits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

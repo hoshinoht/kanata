@@ -6,7 +6,6 @@ use crate::{
     adapter::{Adapter, ollama::OllamaAdapter, openrouter::OpenRouterAdapter, vllm::VllmAdapter},
     auth::EnvironmentSecretResolver,
     config::{self, ProviderKind, ValidatedConfig},
-    core::Operation,
     keys::cli::{Exposure, RouteChoice},
 };
 
@@ -141,16 +140,7 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Parsed, String> 
     }
 }
 
-/// `all`, `private` or `public`.
-pub(crate) fn parse_plane(value: &str) -> Result<config::Plane, String> {
-    config::Plane::parse(value).ok_or_else(|| "expected all, private or public".into())
-}
-
-/// `chat`, `transcription`, `embeddings` or `speech`.
-pub(crate) fn parse_operation(value: &str) -> Result<Operation, String> {
-    Operation::parse(value)
-        .ok_or_else(|| "expected chat, transcription, embeddings or speech".into())
-}
+pub(crate) use crate::config::{parse_operation, parse_plane};
 
 pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>, String> {
     match parse(arguments)? {

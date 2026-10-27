@@ -1,6 +1,7 @@
 ## Layout
 - Each `tests/<suite>.rs` is one test binary (`cargo test --test <suite>`). Larger suites keep a thin entry file plus a same-named directory (`#[path = "<suite>/cases.rs"] mod cases;`, suite-local `support.rs`).
-- In-crate test helpers live in `src/test_support.rs`; unit tests stay next to the code.
+- In-crate test helpers live next to the crate that uses them (`crates/kanata-adapters/src/test_support.rs`; `SseFramer::feed` behind `kanata-core`'s `test-support` feature); unit tests stay next to the code.
+- Unit tests in `crates/*` run with the crate directory as the working directory: reach repo files with `concat!(env!("CARGO_MANIFEST_DIR"), "/../../...")` or a relative `include_str!`.
 
 ## Shared helpers
 - `support/scratch.rs`: self-cleaning temp paths/dirs/files and config loading from text. Declare it once per binary (`#[path = "support/scratch.rs"] mod scratch;`) and reach it from support modules via `crate::scratch`; loading it twice fails clippy (`duplicate_mod`).

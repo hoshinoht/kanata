@@ -713,8 +713,39 @@ version = "1.0.0-beta.9"
 dependencies = [
  "axum",
  "base64",
- "bytes",
  "clap",
+ "futures-core",
+ "futures-util",
+ "getrandom 0.4.3",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "kanata-adapters",
+ "kanata-config",
+ "kanata-core",
+ "kanata-keys",
+ "kanata-server",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tokio",
+ "tokio-rustls",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kanata-adapters"
+version = "1.0.0-beta.9"
+dependencies = [
+ "base64",
+ "bytes",
  "futures-core",
  "futures-util",
  "getrandom 0.4.3",
@@ -724,6 +755,8 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "kanata-config",
+ "kanata-core",
  "multer",
  "rcgen",
  "ring",
@@ -731,11 +764,95 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "serde_path_to_error",
  "sha2",
  "subtle",
  "tokio",
  "tokio-rustls",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "kanata-config"
+version = "1.0.0-beta.9"
+dependencies = [
+ "clap",
+ "getrandom 0.4.3",
+ "kanata-core",
+ "rustls",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "sha2",
+ "toml",
+ "url",
+]
+
+[[package]]
+name = "kanata-contract"
+version = "1.0.0-beta.9"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "kanata-core"
+version = "1.0.0-beta.9"
+dependencies = [
+ "base64",
+ "futures-core",
+ "kanata-contract",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "kanata-keys"
+version = "1.0.0-beta.9"
+dependencies = [
+ "base64",
+ "clap",
+ "getrandom 0.4.3",
+ "kanata-config",
+ "kanata-core",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "kanata-server"
+version = "1.0.0-beta.9"
+dependencies = [
+ "axum",
+ "base64",
+ "bytes",
+ "clap",
+ "futures-core",
+ "futures-util",
+ "getrandom 0.4.3",
+ "http",
+ "http-body",
+ "hyper",
+ "hyper-util",
+ "kanata-config",
+ "kanata-contract",
+ "kanata-core",
+ "kanata-keys",
+ "multer",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "sha2",
+ "subtle",
+ "tokio",
  "toml",
  "tower",
  "tracing",
