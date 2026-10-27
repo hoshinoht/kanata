@@ -234,7 +234,7 @@ pub(crate) fn unpolled_request(
     polled: Arc<AtomicBool>,
     authorization: Option<&str>,
 ) -> Request<Body> {
-    let observed = polled.clone();
+    let observed = polled;
     let body = Body::from_stream(stream::poll_fn(move |_| {
         observed.store(true, Ordering::SeqCst);
         Poll::Ready(None::<Result<Bytes, Infallible>>)

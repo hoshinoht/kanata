@@ -65,8 +65,8 @@ impl KeyReloader {
     fn poll(&mut self) -> ReloadOutcome {
         let bytes = match file::read(&self.path) {
             Ok(Some(bytes)) => bytes,
-            Ok(None) => return self.reject(None, not_found()),
-            Err(error) => return self.reject(None, error),
+            Ok(None) => return self.reject(None, &not_found()),
+            Err(error) => return self.reject(None, &error),
         };
         let sha256: [u8; 32] = Sha256::digest(&bytes).into();
         if self.applied == Some(sha256) {
@@ -79,7 +79,7 @@ impl KeyReloader {
                 self.last_warning = None;
                 ReloadOutcome::Applied
             }
-            Err(error) => self.reject(Some(sha256), error),
+            Err(error) => self.reject(Some(sha256), &error),
         }
     }
 
@@ -102,7 +102,7 @@ impl KeyReloader {
         Ok(())
     }
 
-    fn reject(&mut self, sha256: Option<[u8; 32]>, error: ConfigError) -> ReloadOutcome {
+    fn reject(&mut self, sha256: Option<[u8; 32]>, error: &ConfigError) -> ReloadOutcome {
         let warning = (sha256, error.to_string());
         if self.last_warning.as_ref() != Some(&warning) {
             tracing::warn!(

@@ -342,7 +342,7 @@ fn signed_identity_requires_signature_issuer_audience_nonce_and_valid_times() {
         )
         .is_err()
     );
-    let mut multiple = claims.clone();
+    let mut multiple = claims;
     multiple["aud"] = json!([CLIENT, "other"]);
     assert!(
         jwt::verify(

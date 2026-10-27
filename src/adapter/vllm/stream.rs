@@ -26,7 +26,7 @@ impl StreamDialect for Vllm {
 #[cfg(test)]
 mod tests {
     use crate::{
-        adapter::chat_completions::stream_state::StreamState,
+        adapter::chat_completions::{stream::ChatStream, stream_state::StreamState},
         core::{FinishReason, ModelAlias, NormalizedEvent, Usage},
     };
 
@@ -115,5 +115,13 @@ mod tests {
             1,
         );
         assert!(run(&conflicting).is_err());
+    }
+
+    #[tokio::test]
+    async fn delivery_does_not_depend_on_read_boundaries() {
+        crate::adapter::chat_completions::stream::test_support::assert_read_independent(
+            |body, model| Box::pin(ChatStream::<Vllm>::new(body, model)),
+        )
+        .await;
     }
 }

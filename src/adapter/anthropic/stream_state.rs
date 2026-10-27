@@ -111,7 +111,7 @@ impl StreamState {
                 response::check_finish(reason, !self.tool_ids.is_empty())?;
                 self.finish = Some(reason);
                 if let Some(usage) = usage {
-                    self.usage.merge(usage);
+                    self.usage.merge(&usage);
                 }
                 Ok(Vec::new())
             }

@@ -178,7 +178,7 @@ impl Output {
     ) -> Result<Vec<Value>, GatewayError> {
         let mut frames = Vec::new();
         match event {
-            NormalizedEvent::ChatTextDelta { text } => self.accept_text(text, &mut frames)?,
+            NormalizedEvent::ChatTextDelta { text } => self.accept_text(&text, &mut frames)?,
             NormalizedEvent::ChatToolCallDelta {
                 call_id,
                 name,
@@ -195,7 +195,7 @@ impl Output {
         Ok(frames)
     }
 
-    fn accept_text(&mut self, text: String, frames: &mut Vec<Value>) -> Result<(), GatewayError> {
+    fn accept_text(&mut self, text: &str, frames: &mut Vec<Value>) -> Result<(), GatewayError> {
         if text.is_empty() {
             return Ok(());
         }
@@ -208,7 +208,7 @@ impl Output {
         frames.push(json!({"type":"response.output_text.delta","item_id":item["id"],"output_index":index,"content_index":0,"delta":text,"logprobs":[]}));
         item["content"][0]["text"].as_str().ok_or_else(failure)?;
         if let Value::String(current) = &mut item["content"][0]["text"] {
-            current.push_str(&text);
+            current.push_str(text);
         }
         Ok(())
     }

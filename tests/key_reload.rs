@@ -192,7 +192,7 @@ fn invalid_keys_files_are_rejected_once_and_keep_the_current_keys() {
             0o600,
             "keys_file.keys[1].permissions[0]: unknown_route_selector",
         ),
-        (valid.clone(), 0o620, "keys.file: insecure_permissions"),
+        (valid, 0o620, "keys.file: insecure_permissions"),
     ];
     tracing::subscriber::with_default(subscriber, || {
         tracing::callsite::rebuild_interest_cache();

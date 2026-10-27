@@ -57,6 +57,7 @@ impl SseFramer {
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn feed(&mut self, bytes: &[u8]) -> Result<Vec<SseRecord>, GatewayError> {
         self.feed_until(bytes, |_| false)
             .map(|(records, _)| records)
@@ -65,11 +66,32 @@ impl SseFramer {
     pub(crate) fn feed_until(
         &mut self,
         bytes: &[u8],
-        mut stop: impl FnMut(&SseRecord) -> bool,
+        stop: impl FnMut(&SseRecord) -> bool,
     ) -> Result<(Vec<SseRecord>, bool), GatewayError> {
+        let (records, outcome) = self.feed_records(bytes, stop);
+        outcome.map(|done| (records, done))
+    }
+
+    /// Frames `bytes` up to the first record matching `stop`; returns the records framed
+    /// before any error alongside it.
+    pub(crate) fn feed_records(
+        &mut self,
+        bytes: &[u8],
+        mut stop: impl FnMut(&SseRecord) -> bool,
+    ) -> (Vec<SseRecord>, Result<bool, GatewayError>) {
+        let mut records = Vec::new();
+        let outcome = self.frame(bytes, &mut records, &mut stop);
+        (records, outcome)
+    }
+
+    fn frame(
+        &mut self,
+        bytes: &[u8],
+        records: &mut Vec<SseRecord>,
+        stop: &mut impl FnMut(&SseRecord) -> bool,
+    ) -> Result<bool, GatewayError> {
         self.pending.extend_from_slice(bytes);
         self.check_bom()?;
-        let mut records = Vec::new();
         while let Some(offset) = self.pending[self.scanned..]
             .iter()
             .position(|byte| *byte == b'\n')
@@ -99,7 +121,7 @@ impl SseFramer {
                     if should_stop {
                         self.pending.clear();
                         self.scanned = 0;
-                        return Ok((records, true));
+                        return Ok(true);
                     }
                 }
             } else {
@@ -110,7 +132,7 @@ impl SseFramer {
         if self.pending.len() > self.max_line_bytes {
             return Err(upstream_failure());
         }
-        Ok((records, false))
+        Ok(false)
     }
 
     pub(crate) fn finish(&mut self) -> Result<(), GatewayError> {

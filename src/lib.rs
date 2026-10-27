@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(clippy::await_holding_lock, clippy::await_holding_refcell_ref)]
 
 #[macro_use]
 mod macros;

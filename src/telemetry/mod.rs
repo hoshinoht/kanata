@@ -311,7 +311,7 @@ impl Observer {
         let status_class = StatusClass::from_status(status);
         let (outcome, phase) = self
             .explicit_labels()
-            .unwrap_or_else(|| fallback_labels(status, reason));
+            .unwrap_or_else(|| fallback_labels(status, &reason));
         let duration = self.state.started.elapsed();
         self.state
             .metrics
@@ -409,7 +409,7 @@ impl Observer {
     }
 }
 
-fn fallback_labels(status: u16, reason: CompletionReason) -> (Outcome, Phase) {
+fn fallback_labels(status: u16, reason: &CompletionReason) -> (Outcome, Phase) {
     match reason {
         CompletionReason::BodyError => (Outcome::InternalError, Phase::None),
         CompletionReason::CancelledBeforeHeaders | CompletionReason::BodyDrop

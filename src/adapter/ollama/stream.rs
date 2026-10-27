@@ -50,3 +50,15 @@ fn guardrail_error(data: &str) -> bool {
         .unwrap_or_default();
     apple_fm::classify(500, &error) == Some(apple_fm::Failure::Guardrail)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::adapter::chat_completions::stream::test_support::assert_read_independent;
+
+    #[tokio::test]
+    async fn delivery_does_not_depend_on_read_boundaries() {
+        for apple_fm in [false, true] {
+            assert_read_independent(|body, model| super::event_stream(body, model, apple_fm)).await;
+        }
+    }
+}

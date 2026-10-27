@@ -30,7 +30,6 @@ impl StreamDialect for OpenRouter {
     const REQUIRES_USAGE: bool = true;
     const EXACT_TOOL_FINISH: bool = true;
     const EMPTY_TOOL_CONTINUATION: bool = true;
-    const RECORD_AT_A_TIME: bool = true;
 
     fn chunk(&mut self, chunk: StreamChunk) -> Result<chat_wire::StreamChunk<Usage>, GatewayError> {
         if chunk.id.is_empty()

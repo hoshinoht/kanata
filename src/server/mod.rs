@@ -262,9 +262,9 @@ impl TwoPlaneServer {
         let client_state = ClientState {
             uploads: uploads.clone(),
             upload_ms: config.timeouts().upload_ms(),
-            keys: keys.clone(),
+            keys,
             usage: usage.clone(),
-            registry: registry.clone(),
+            registry,
             admission: admission.clone(),
             adapters: Arc::new(bound),
             public_routes: None,

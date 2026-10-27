@@ -72,7 +72,7 @@ struct OutputTokensDetails {
 
 impl UsageFields {
     /// Later counts replace earlier ones.
-    pub(super) fn merge(&mut self, update: UsageFields) {
+    pub(super) fn merge(&mut self, update: &UsageFields) {
         self.input_tokens = update.input_tokens.or(self.input_tokens);
         self.output_tokens = update.output_tokens.or(self.output_tokens);
         self.cache_creation_input_tokens = update

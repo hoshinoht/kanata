@@ -29,9 +29,6 @@ pub(crate) trait StreamDialect: Default + Unpin {
     const EXACT_TOOL_FINISH: bool = false;
     /// A tool-call continuation may carry no id, type or function.
     const EMPTY_TOOL_CONTINUATION: bool = false;
-    /// Framing stops at `[DONE]` and each record's events are yielded before the next
-    /// record is parsed; otherwise one read's records are parsed together.
-    const RECORD_AT_A_TIME: bool = false;
 
     /// Checks one chunk's envelope and returns its choices and usage.
     fn chunk(&mut self, chunk: Self::Chunk) -> Result<StreamChunk<Self::Usage>, GatewayError>;
