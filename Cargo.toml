@@ -44,4 +44,3 @@ tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring
 [profile.release]
 strip = true
 lto = "thin"
-codegen-units = 1
