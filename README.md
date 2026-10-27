@@ -22,7 +22,7 @@
 > Model execution, batching, tokenization, GPU scheduling and model loading belong to runtimes such as Ollama, vLLM and hosted providers. Kanata owns the application-facing boundary: keys, routing, validation, limits and a safe public edge.
 
 > [!NOTE]
-> **Beta (`1.0.0-beta.9`).** Kanata targets single-host personal deployments. Interfaces may still change before 1.0.
+> **Stable (`1.0.0`).** Kanata targets single-host personal deployments. The client API, configuration schema and key file format follow semantic versioning from this release: breaking changes come with a major version bump and a migration note in the `CHANGELOG`.
 
 ## At a glance
 
@@ -97,7 +97,7 @@ The private `chatgpt` provider uses OpenAI's [documented OAuth flow](https://dev
 - **Compact configuration:** named profiles and keyed model catalogs share route policies and expand explicitly listed reasoning efforts. Optional fragments organize larger catalogs; `kanata config compact`, `expand` and `plan` preserve existing routes and preview changes. See [configuration syntax and migration](config/README.md#compact-model-catalogs).
 - **Private key portal:** `kanata portal --config <path>` opens a host-only dashboard on `127.0.0.1:9091` for creating, inspecting, editing, rotating and revoking keys. A one-use login code unlocks a one-hour browser session. Press Enter in the portal terminal or choose **New login code** while unlocked to renew it without restarting; see [private portal](docs/guides/private-portal.md).
 - **Selectable reasoning levels:** pinned effort families advertise one model ID and key-accessible `kanata.reasoning_efforts`. Send the base ID with Chat `reasoning_effort` or Responses `reasoning.effort`; legacy suffixed requests remain accepted. See [client integration and migration](docs/guides/service-handoff.md).
-- **Daily allowances:** optional per-key request limits and token reservations survive restarts. `kanata key usage` reports model and UTC-day usage with explicit missing reports and optional cost estimates; see [usage and quotas](docs/guides/usage-quotas.md). Each process plane has a separate allowance.
+- **Daily and monthly allowances:** optional per-key request limits and token reservations, per UTC day and per UTC calendar month, survive restarts. `kanata key usage` reports model usage per UTC day or month (`--period month`) with explicit missing reports and optional cost estimates; see [usage and quotas](docs/guides/usage-quotas.md). Each process plane has a separate allowance.
 - **Usage and audit:** the server records per-key request counts, last use and reported token totals; the CLI appends every change to `keys/audit.jsonl` (never secrets).
 - **Owner key:** only one key may be the owner. Any key may be given private provider scopes. ChatGPT, CLIProxyAPI and Anthropic routes are never served publicly, and the public container never loads the owner key or keys with any of their scopes, so use a separate key for public routes.
 - **Public listener:** its allowlist is empty by default. Missing or invalid keys get 403 except on the exact public guide paths (`GET`/`HEAD /v1` and `/v1/`); it never serves the Sign in with ChatGPT provider, CLIProxyAPI or Anthropic.
