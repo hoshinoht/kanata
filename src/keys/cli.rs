@@ -7,7 +7,7 @@ mod report;
 mod rm;
 mod rotate;
 use args::*;
-pub(crate) use args::{expires_at, parse_expires};
+pub(crate) use args::{KeyCommand, expires_at, parse_expires};
 use display::*;
 pub(crate) use display::{key_json, missing_routes_json, rate_limit_json, scope_json};
 use edit::edit;
@@ -19,7 +19,7 @@ use rotate::rotate;
 
 // `kanata key` commands. Synchronous, host-only; writes go through store.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -30,14 +30,6 @@ use crate::keys::file::{self, KeysFile, StoredKey};
 use crate::keys::store::{self, AuditEvent, LockedKeys, SecretFile};
 use crate::keys::time::{self, SECONDS_PER_DAY};
 use crate::keys::usage::{self, KeyUsage};
-
-pub const KEY_USAGE: &str = "usage: kanata key new --config <path> --id <id> [--chat <alias>]... [--transcription <alias>]... [--embeddings <alias>]... [--speech <alias>]... --expires <1|3|7|13|30|60|unlimited> [--owner] [--max-in-flight N] [--rate-limit N/MS] [--daily-requests N] [--daily-tokens N --reservation-tokens N] [--key-out <path>] [--keys <path>]
-       kanata key list (--config <path>|--keys <path>) [--usage-dir <path>] [--all] [--json]
-       kanata key show <id> (--config <path>|--keys <path>) [--usage-dir <path>] [--json]
-       kanata key edit <id> --config <path> [--add-chat A]... [--remove-chat A]... [--add-transcription A]... [--remove-transcription A]... [--add-embeddings A]... [--remove-embeddings A]... [--add-speech A]... [--remove-speech A]... [--expires <choice>] [--max-in-flight N] [--rate-limit N/MS] [--daily-requests N] [--daily-tokens N --reservation-tokens N] [--clear-quota] [--clear-limits] [--force] [--keys <path>]
-       kanata key rm <id> --config <path> [--force] [--keys <path>]
-       kanata key rotate (<id>|--owner) --config <path> --expires <choice> [--key-out <path>] [--keys <path>]
-       kanata key usage (--config <path>|--usage-dir <path>) [--plane all|private|public] [--key-id <id>] [--model <alias>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--input-cost-per-million N --output-cost-per-million N --cost-unit <label>] [--json]";
 
 const KEY_PREFIX: &str = "kanata_sk_";
 const PICKER_ATTEMPTS: usize = 3;
@@ -61,38 +53,35 @@ pub struct RouteChoice {
     pub exposure: Exposure,
 }
 
-/// Runs `kanata key <arguments>`; `Ok` is the stdout text.
-pub fn run(
-    arguments: &[String],
+/// Runs a `kanata key` command; `Ok` is the stdout text.
+pub(crate) fn run(
+    command: KeyCommand,
     catalog: fn(&ValidatedConfig) -> Vec<RouteChoice>,
 ) -> Result<String, String> {
-    let Some((command, rest)) = arguments.split_first() else {
-        return Err(KEY_USAGE.into());
-    };
-    match command.as_str() {
-        "new" => new(rest, catalog),
-        "list" => list(rest),
-        "show" => show(rest),
-        "usage" => report::run(rest),
-        "edit" => edit(rest, catalog),
-        "rm" => rm(rest),
-        "rotate" => rotate(rest),
-        _ => Err(KEY_USAGE.into()),
+    match command {
+        KeyCommand::New(args) => new(args, catalog),
+        KeyCommand::List(args) => list(args),
+        KeyCommand::Show(args) => show(args),
+        KeyCommand::Usage(args) => report::run(args),
+        KeyCommand::Edit(args) => edit(args, catalog),
+        KeyCommand::Rm(args) => rm(args),
+        KeyCommand::Rotate(args) => rotate(args),
     }
 }
 
-// ---- arguments ----
+// ---- locations ----
 
 /// Loads configuration without reading keys.
-fn load_config(path: &str) -> Result<ValidatedConfig, String> {
+fn load_config(path: &Path) -> Result<ValidatedConfig, String> {
     config::load_deferring_keys(path).map_err(|error| error.to_string())
 }
 
 /// `--keys` resolved against the current directory.
-fn keys_override(args: &Args) -> Result<Option<PathBuf>, String> {
-    args.one("--keys")?
-        .map(|path| std::path::absolute(path).map_err(|_| format!("cannot resolve --keys {path}")))
-        .transpose()
+fn keys_override(keys: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    keys.map(|path| {
+        std::path::absolute(path).map_err(|_| format!("cannot resolve --keys {}", path.display()))
+    })
+    .transpose()
 }
 
 /// Active scopes whose route is no longer in the config, per key id.
@@ -151,37 +140,32 @@ fn write_keys(
     locked.write(keys, config.routes())
 }
 
-/// Config plus keys path for a mutating command: `--config` is required.
-fn mutating_location(args: &Args, command: &str) -> Result<(ValidatedConfig, PathBuf), String> {
-    let config_path = args
-        .one("--config")?
-        .ok_or_else(|| format!("kanata key {command} requires --config <path>"))?;
-    let config = load_config(config_path)?;
-    let keys_path = keys_override(args)?.unwrap_or_else(|| config.key_source().path.clone());
+/// Config plus keys path for a mutating command.
+fn mutating_location(location: &WriteLocation) -> Result<(ValidatedConfig, PathBuf), String> {
+    let config = load_config(&location.config)?;
+    let keys_path = keys_override(location.keys.as_deref())?
+        .unwrap_or_else(|| config.key_source().path.clone());
     Ok((config, keys_path))
 }
 
-struct ReadLocation {
+struct ReadSource {
     config: Option<ValidatedConfig>,
     keys: KeysFile,
     usage_dir: Option<PathBuf>,
 }
 
-fn read_location(args: &Args) -> Result<ReadLocation, String> {
-    let config = args.one("--config")?.map(load_config).transpose()?;
+fn read_location(location: &ReadLocation, usage_dir: Option<&Path>) -> Result<ReadSource, String> {
+    let config = location.config.as_deref().map(load_config).transpose()?;
     let (derived_path, derived_usage) = config.as_ref().map_or((None, None), |config| {
         let source = config.key_source();
         (Some(source.path.clone()), source.usage_dir.clone())
     });
-    let keys_path = keys_override(args)?
+    let keys_path = keys_override(location.keys.as_deref())?
         .or(derived_path)
         .ok_or_else(|| "pass --config <path> or --keys <path>".to_owned())?;
-    let usage_dir = args
-        .one("--usage-dir")?
-        .map(PathBuf::from)
-        .or(derived_usage);
+    let usage_dir = usage_dir.map(Path::to_path_buf).or(derived_usage);
     let keys = file::load(&keys_path)?;
-    Ok(ReadLocation {
+    Ok(ReadSource {
         config,
         keys,
         usage_dir,
@@ -294,18 +278,13 @@ fn edit_distance(left: &str, right: &str) -> usize {
 }
 
 fn scope_flags(
-    args: &Args,
+    given: [(Operation, &[String]); 4],
     routes: &[RouteChoice],
     flag: fn(Operation) -> &'static str,
 ) -> Result<Vec<RouteSelector>, String> {
     let mut scopes = Vec::new();
-    for operation in [
-        Operation::Chat,
-        Operation::Transcription,
-        Operation::Embeddings,
-        Operation::Speech,
-    ] {
-        for alias in args.all(flag(operation)) {
+    for (operation, aliases) in given {
+        for alias in aliases {
             if parse_model_alias(alias).is_none() {
                 return Err(format!("model alias \"{alias}\" is invalid"));
             }
@@ -418,26 +397,22 @@ fn commit_secret(
     }
 }
 
+/// The quota after `args`; `--clear-quota` is exclusive with the quota flags at parse time.
 fn quota_flags(
-    args: &Args,
+    args: &QuotaArgs,
+    clear: bool,
     existing: Option<crate::keys::quota::DailyQuota>,
     config: &ValidatedConfig,
 ) -> Result<Option<crate::keys::quota::DailyQuota>, String> {
-    let number = |flag| {
-        args.one(flag)?
-            .map(|value| parse_positive(flag, value))
-            .transpose()
-    };
-    let requests = number("--daily-requests")?;
-    let tokens = number("--daily-tokens")?;
-    let reservation_tokens = number("--reservation-tokens")?;
-    if args.has("--clear-quota") {
-        if requests.is_some() || tokens.is_some() || reservation_tokens.is_some() {
-            return Err("--clear-quota cannot be combined with quota flags".into());
-        }
+    let QuotaArgs {
+        daily_requests: requests,
+        daily_tokens: tokens,
+        reservation_tokens,
+    } = *args;
+    if clear {
         return Ok(None);
     }
-    if requests.is_none() && tokens.is_none() && reservation_tokens.is_none() {
+    if !args.given() {
         return Ok(existing);
     }
     if usage_dir(config).is_none() {

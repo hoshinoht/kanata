@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde_json::{Value, json};
 
 use crate::{
@@ -5,42 +7,46 @@ use crate::{
     core::{ModelAlias, Operation, RouteSelector},
 };
 
-const USAGE: &str = "usage: kanata routes explain --config <path> --model <alias> --operation chat|transcription|embeddings|speech --key-id <id> [--plane all|private|public] [--json]";
+#[derive(Debug, clap::Args)]
+pub(crate) struct ExplainArgs {
+    /// Configuration file.
+    #[arg(long, value_name = "path")]
+    config: PathBuf,
+    /// Route alias.
+    #[arg(long, value_name = "alias")]
+    model: String,
+    /// Route operation.
+    #[arg(long, value_name = "chat|transcription|embeddings|speech", value_parser = crate::cli::parse_operation)]
+    operation: Operation,
+    /// Key id.
+    #[arg(long, value_name = "id")]
+    key_id: String,
+    /// Plane to evaluate.
+    #[arg(long, value_name = "all|private|public", value_parser = crate::cli::parse_plane, default_value = "all")]
+    plane: Plane,
+    /// Print JSON.
+    #[arg(long)]
+    json: bool,
+}
 
-pub(crate) fn run(arguments: &[String]) -> Result<String, String> {
-    let mut path = None;
-    let mut model = None;
-    let mut operation = None;
-    let mut key = None;
-    let mut plane = None;
-    let mut json_output = false;
-    let mut flags = arguments.iter();
-    while let Some(flag) = flags.next() {
-        match flag.as_str() {
-            "--config" if path.is_none() => path = Some(flags.next().ok_or(USAGE)?),
-            "--model" if model.is_none() => model = Some(flags.next().ok_or(USAGE)?),
-            "--operation" if operation.is_none() => {
-                operation = Some(Operation::parse(flags.next().ok_or(USAGE)?).ok_or(USAGE)?)
-            }
-            "--key-id" if key.is_none() => key = Some(flags.next().ok_or(USAGE)?),
-            "--plane" if plane.is_none() => {
-                plane = Some(Plane::parse(flags.next().ok_or(USAGE)?).ok_or(USAGE)?)
-            }
-            "--json" if !json_output => json_output = true,
-            _ => return Err(USAGE.into()),
-        }
-    }
-    let model = model.ok_or(USAGE)?;
-    let key = key.ok_or(USAGE)?;
-    if config::parse_model_alias(model).is_none() || !config::valid_identifier(key) {
+pub(crate) fn run(args: ExplainArgs) -> Result<String, String> {
+    let ExplainArgs {
+        config: path,
+        model,
+        operation,
+        key_id: key,
+        plane,
+        json: json_output,
+    } = args;
+    let key = key.as_str();
+    if config::parse_model_alias(&model).is_none() || !config::valid_identifier(key) {
         return Err("invalid model alias or key id".into());
     }
     let selector = RouteSelector {
         model_alias: ModelAlias(model.clone()),
-        operation: operation.ok_or(USAGE)?,
+        operation,
     };
-    let full = config::load(path.ok_or(USAGE)?).map_err(|error| error.to_string())?;
-    let plane = plane.unwrap_or(Plane::All);
+    let full = config::load(path).map_err(|error| error.to_string())?;
     let effective = full.for_plane(plane).map_err(|error| error.to_string())?;
     let registry = super::Registry::from_validated(&effective);
     let route = registry.resolve(&selector);

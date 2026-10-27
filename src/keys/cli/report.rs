@@ -2,68 +2,28 @@ use super::*;
 use crate::config::Plane;
 use crate::keys::quota::DailyLedger;
 
-pub(super) fn run(arguments: &[String]) -> Result<String, String> {
-    let args = Args::parse(
-        arguments,
-        &[
-            "--config",
-            "--usage-dir",
-            "--plane",
-            "--key-id",
-            "--model",
-            "--from",
-            "--to",
-            "--input-cost-per-million",
-            "--output-cost-per-million",
-            "--cost-unit",
-        ],
-        &["--json"],
-        0,
-    )?;
-    let config = args.one("--config")?.map(load_config).transpose()?;
+pub(super) fn run(args: UsageArgs) -> Result<String, String> {
+    let config = args.config.as_deref().map(load_config).transpose()?;
     let dir = args
-        .one("--usage-dir")?
-        .map(PathBuf::from)
+        .usage_dir
+        .clone()
         .or_else(|| config.as_ref().and_then(usage_dir).map(Path::to_path_buf))
         .ok_or("usage reports require --usage-dir or [keys] usage_dir")?;
-    let planes = match args.one("--plane")? {
-        Some(value) => vec![Plane::parse(value).ok_or("invalid --plane")?],
+    let planes = match args.plane {
+        Some(plane) => vec![plane],
         None => vec![Plane::All, Plane::Private, Plane::Public],
     };
-    let key = args.one("--key-id")?.map(parse_id).transpose()?;
-    let model = args.one("--model")?;
-    let date = |flag| -> Result<Option<u64>, String> {
-        args.one(flag)?
-            .map(|value| {
-                if value.len() != 10 {
-                    return Err(format!("{flag} requires YYYY-MM-DD"));
-                }
-                time::parse(&format!("{value}T00:00:00Z"))
-                    .map(|seconds| seconds / SECONDS_PER_DAY)
-                    .ok_or_else(|| format!("invalid {flag}"))
-            })
-            .transpose()
-    };
-    let from = date("--from")?;
-    let to = date("--to")?;
+    let key = args.key_id.as_deref();
+    let model = args.model.as_deref();
+    let (from, to) = (args.from, args.to);
     if from.zip(to).is_some_and(|(from, to)| from > to) {
         return Err("--from must not exceed --to".into());
     }
-    let rate = |flag| -> Result<Option<f64>, String> {
-        args.one(flag)?
-            .map(|value| {
-                value
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|rate| rate.is_finite() && *rate >= 0.0 && *rate <= 1_000_000_000.0)
-                    .ok_or_else(|| format!("invalid {flag}"))
-            })
-            .transpose()
-    };
-    let input = rate("--input-cost-per-million")?;
-    let output = rate("--output-cost-per-million")?;
-    let unit = args.one("--cost-unit")?;
-    let rates = match (input, output, unit) {
+    let rates = match (
+        args.input_cost_per_million,
+        args.output_cost_per_million,
+        args.cost_unit.as_deref(),
+    ) {
         (None, None, None) => None,
         (Some(input), Some(output), Some(unit)) if !unit.is_empty() && unit.len() <= 16 && unit.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') => Some((input, output, unit)),
         _ => return Err("cost estimates require both rates and --cost-unit (1–16 letters, digits or underscores)".into()),
@@ -102,7 +62,7 @@ pub(super) fn run(arguments: &[String]) -> Result<String, String> {
                 )
             })?;
             for row in records {
-                if key.as_ref().is_some_and(|key| row.key_id != *key)
+                if key.is_some_and(|key| row.key_id != key)
                     || model.is_some_and(|model| row.model != model)
                     || from.is_some_and(|from| row.day < from)
                     || to.is_some_and(|to| row.day > to)
@@ -142,7 +102,7 @@ pub(super) fn run(arguments: &[String]) -> Result<String, String> {
             row["operation"].as_str().unwrap_or_default().to_owned(),
         )
     });
-    if args.has("--json") {
+    if args.json {
         return serde_json::to_string_pretty(&json!({"retention_days": 90, "cost_unit": rates.map(|(_, _, unit)| unit), "cost_basis": "operator_rates_and_reported_tokens_only", "rows": rows})).map_err(|_| "usage report could not be rendered".into());
     }
     let mut lines = vec![

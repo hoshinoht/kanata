@@ -1,20 +1,15 @@
 use super::*;
 
-pub(super) fn rm(arguments: &[String]) -> Result<String, String> {
-    let args = Args::parse(arguments, &["--config", "--keys"], &["--force"], 1)?;
-    let id = parse_id(
-        args.positional
-            .first()
-            .ok_or_else(|| KEY_USAGE.to_owned())?,
-    )?;
-    let (config, keys_path) = mutating_location(&args, "rm")?;
+pub(super) fn rm(args: RmArgs) -> Result<String, String> {
+    let id = args.id;
+    let (config, keys_path) = mutating_location(&args.location)?;
     let locked = store::lock(&keys_path, store::LOCK_TIMEOUT)?;
     let mut keys = locked.read()?;
     let record = keys.get_mut(&id).ok_or_else(|| format!("no key {id:?}"))?;
     if record.is_revoked() {
         return Ok(format!("key {id} is already revoked"));
     }
-    if record.is_owner() && !args.has("--force") {
+    if record.is_owner() && !args.force {
         return Err(format!(
             "key {id:?} is the owner key; pass --force to revoke it"
         ));

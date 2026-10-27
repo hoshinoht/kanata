@@ -6,25 +6,44 @@ use std::path::{Path, PathBuf};
 use super::catalog::{Document, default_id, directory, table};
 use super::*;
 
-const USAGE: &str = "usage: kanata config {compact,expand} --config <path> --output <new-path> | kanata config plan --config <candidate> --against <current>";
+/// `kanata config` subcommands.
+#[derive(Debug, clap::Subcommand)]
+pub(crate) enum ConfigCommand {
+    /// Write an equivalent config with shared profiles and reasoning families.
+    Compact(ExportArgs),
+    /// Write an equivalent standalone config with explicit routes.
+    Expand(ExportArgs),
+    /// Preview the changes from the current config to a candidate.
+    Plan(PlanArgs),
+}
 
-pub(crate) fn run(arguments: &[String]) -> Result<String, String> {
-    match arguments {
-        [action, flag, path, output_flag, output]
-            if matches!(action.as_str(), "compact" | "expand")
-                && flag == "--config"
-                && output_flag == "--output" =>
-        {
-            export(Path::new(path), Path::new(output), action == "compact")
-                .map_err(|e| e.to_string())
-        }
-        [action, flag, path, against_flag, against]
-            if action == "plan" && flag == "--config" && against_flag == "--against" =>
-        {
-            plan(Path::new(path), Path::new(against)).map_err(|e| e.to_string())
-        }
-        _ => Err(USAGE.into()),
+#[derive(Debug, clap::Args)]
+pub(crate) struct ExportArgs {
+    /// Configuration file.
+    #[arg(long, value_name = "path")]
+    config: PathBuf,
+    /// New file to write; must not exist.
+    #[arg(long, value_name = "new-path")]
+    output: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct PlanArgs {
+    /// Candidate configuration file.
+    #[arg(long, value_name = "candidate")]
+    config: PathBuf,
+    /// Current configuration file.
+    #[arg(long, value_name = "current")]
+    against: PathBuf,
+}
+
+pub(crate) fn run(command: ConfigCommand) -> Result<String, String> {
+    match command {
+        ConfigCommand::Compact(args) => export(&args.config, &args.output, true),
+        ConfigCommand::Expand(args) => export(&args.config, &args.output, false),
+        ConfigCommand::Plan(args) => plan(&args.config, &args.against),
     }
+    .map_err(|error| error.to_string())
 }
 
 fn absolute(path: &Path) -> Result<PathBuf, ConfigError> {
@@ -145,6 +164,13 @@ fn family_policy(route: &RawRoute) -> Result<toml::Table, ConfigError> {
     Ok(policy)
 }
 
+/// A compacted model table, its adapter and the profile it joins.
+struct Entry {
+    adapter: String,
+    model: toml::Table,
+    profile: Option<String>,
+}
+
 fn compact_routes(raw: &mut RawConfig, config: &ValidatedConfig) -> Result<(), ConfigError> {
     let mut consumed = BTreeSet::new();
     let mut entries = BTreeMap::new();
@@ -165,34 +191,33 @@ fn compact_routes(raw: &mut RawConfig, config: &ValidatedConfig) -> Result<(), C
             .routes
             .iter()
             .find(|r| r.identity.route_id == route.id)
-            .expect("validated route");
+            .ok_or_else(|| ConfigError::new("routes", ConfigErrorClass::NotEquivalent))?;
         let mut model = model_from_route(route)?;
         if route.operation == Operation::Chat
             && !route.model_alias.contains(':')
             && let Some(default) = validated.pinned_reasoning_effort()
         {
             let policy = family_policy(route)?;
-            let variants: Vec<_> = raw
+            let prefix = format!("{}:", route.model_alias);
+            let variants: Vec<(&RawRoute, &str)> = raw
                 .routes
                 .iter()
-                .filter(|other| {
-                    other.operation == Operation::Chat
-                        && other
-                            .model_alias
-                            .starts_with(&format!("{}:", route.model_alias))
+                .filter(|other| other.operation == Operation::Chat)
+                .filter_map(|other| {
+                    let effort = other.model_alias.strip_prefix(&prefix)?;
+                    Some((other, effort))
                 })
                 .collect();
             if !variants.is_empty()
                 && variants
                     .iter()
-                    .all(|other| family_policy(other).is_ok_and(|other| other == policy))
+                    .all(|(other, _)| family_policy(other).is_ok_and(|other| other == policy))
             {
                 model.remove("reasoning_effort");
                 model.insert("default_effort".into(), default.into());
                 let mut efforts = Vec::new();
                 let mut ids = toml::Table::new();
-                for variant in variants {
-                    let (_, effort) = variant.model_alias.split_once(':').expect("effort alias");
+                for (variant, effort) in variants {
                     efforts.push(toml::Value::String(effort.into()));
                     if variant.id != format!("{}-{effort}", route.id) {
                         ids.insert(effort.into(), variant.id.clone().into());
@@ -206,13 +231,19 @@ fn compact_routes(raw: &mut RawConfig, config: &ValidatedConfig) -> Result<(), C
             }
         }
         consumed.insert(route.id.clone());
-        entries.insert((route.operation, route.model_alias.clone()), model);
+        entries.insert(
+            (route.operation, route.model_alias.clone()),
+            Entry {
+                adapter: route.adapter_id.clone(),
+                model,
+                profile: None,
+            },
+        );
     }
     let mut groups: BTreeMap<(Operation, String), Vec<(Operation, String)>> = BTreeMap::new();
-    for ((operation, alias), model) in &entries {
-        let adapter = model["adapter_id"].as_str().expect("validated adapter");
+    for ((operation, alias), entry) in &entries {
         groups
-            .entry((*operation, adapter.into()))
+            .entry((*operation, entry.adapter.clone()))
             .or_default()
             .push((*operation, alias.clone()));
     }
@@ -222,9 +253,14 @@ fn compact_routes(raw: &mut RawConfig, config: &ValidatedConfig) -> Result<(), C
         }
         let name = format!("{adapter}-{}", operation.as_str());
         let mut profile = toml::Table::new();
-        let fields: BTreeSet<_> = models
+        let tables: Vec<&toml::Table> = models
             .iter()
-            .flat_map(|key| entries[key].keys().cloned())
+            .filter_map(|key| entries.get(key))
+            .map(|entry| &entry.model)
+            .collect();
+        let fields: BTreeSet<_> = tables
+            .iter()
+            .flat_map(|model| model.keys().cloned())
             .collect();
         for field in fields {
             if matches!(
@@ -235,8 +271,8 @@ fn compact_routes(raw: &mut RawConfig, config: &ValidatedConfig) -> Result<(), C
             }
             let mut counts: BTreeMap<String, (usize, toml::Value)> = BTreeMap::new();
             let mut absent = 0;
-            for key in &models {
-                match entries[key].get(&field) {
+            for model in &tables {
+                match model.get(&field) {
                     Some(value) => {
                         let entry = counts
                             .entry(value.to_string())
@@ -255,8 +291,11 @@ fn compact_routes(raw: &mut RawConfig, config: &ValidatedConfig) -> Result<(), C
                 profile.insert(field, value);
             }
         }
-        for key in models {
-            let model = entries.get_mut(&key).expect("model entry");
+        for key in &models {
+            let Some(entry) = entries.get_mut(key) else {
+                continue;
+            };
+            let model = &mut entry.model;
             let mut unset = Vec::new();
             for (field, value) in &profile {
                 match model.get(field) {
@@ -271,16 +310,27 @@ fn compact_routes(raw: &mut RawConfig, config: &ValidatedConfig) -> Result<(), C
             if !unset.is_empty() {
                 model.insert("unset".into(), unset.into());
             }
+            entry.profile = Some(name.clone());
         }
         raw.route_profiles.insert(name, deserialize(&profile)?);
     }
-    for ((operation, alias), mut model) in entries {
-        let profile = model
-            .get("profile")
-            .and_then(toml::Value::as_str)
-            .map(|name| table(&raw.route_profiles[name]))
+    for ((operation, alias), entry) in entries {
+        let profile = entry
+            .profile
+            .map(|name| {
+                raw.route_profiles
+                    .get(&name)
+                    .ok_or_else(|| {
+                        ConfigError::new(
+                            format!("route_profiles.{name}"),
+                            ConfigErrorClass::MissingProfile,
+                        )
+                    })
+                    .and_then(table)
+            })
             .transpose()?
             .unwrap_or_default();
+        let mut model = entry.model;
         model.retain(|field, value| {
             if field != "enable_thinking" && value == &toml::Value::Boolean(false) {
                 return profile.get(field) == Some(&toml::Value::Boolean(true));
@@ -346,6 +396,14 @@ fn selector(route: &ValidatedRoute) -> (String, Operation) {
     )
 }
 
+/// The declaration a route came from.
+fn source<'a>(config: &'a ValidatedConfig, route: &ValidatedRoute) -> &'a str {
+    config
+        .route_sources
+        .get(&route.identity.route_id)
+        .map_or("unknown source", String::as_str)
+}
+
 fn plan(candidate: &Path, current: &Path) -> Result<String, ConfigError> {
     let current = absolute(current)?;
     let candidate = absolute(candidate)?;
@@ -358,19 +416,17 @@ fn plan(candidate: &Path, current: &Path) -> Result<String, ConfigError> {
         let (alias, operation) = key;
         let label = format!("{} {alias}", operation.as_str());
         match (old.get(key), new.get(key)) {
-            (None, Some(route)) => changes.push(format!(
-                "+ route {label} [{}]",
-                after.route_sources[&route.identity.route_id]
-            )),
-            (Some(route), None) => changes.push(format!(
-                "- route {label} [{}]",
-                before.route_sources[&route.identity.route_id]
-            )),
+            (None, Some(route)) => {
+                changes.push(format!("+ route {label} [{}]", source(&after, route)))
+            }
+            (Some(route), None) => {
+                changes.push(format!("- route {label} [{}]", source(&before, route)))
+            }
             (Some(previous), Some(next)) if previous != next => {
                 changes.push(format!(
                     "~ route {label}: {} [{}]",
                     route_changes(previous, next).join(", "),
-                    after.route_sources[&next.identity.route_id]
+                    source(&after, next)
                 ));
             }
             _ => {}
@@ -429,15 +485,12 @@ fn plan(candidate: &Path, current: &Path) -> Result<String, ConfigError> {
         }
     }
     for (id, key) in &next_keys {
-        for permission in key["permissions"].as_array().expect("permissions") {
-            let alias = permission["model_alias"].as_str().expect("alias");
-            let operation = permission["operation"].as_str().expect("operation");
-            if !new.contains_key(&(
-                alias.to_owned(),
-                Operation::parse(operation).expect("operation"),
-            )) {
+        for permission in &key.permissions {
+            let alias = &permission.model_alias.0;
+            if !new.contains_key(&(alias.clone(), permission.operation)) {
                 changes.push(format!(
-                    "! key {id}: grant targets missing route {operation} {alias}"
+                    "! key {id}: grant targets missing route {} {alias}",
+                    permission.operation.as_str()
                 ));
             }
         }
@@ -502,7 +555,19 @@ fn adapter_changes(a: &ValidatedAdapter, b: &ValidatedAdapter) -> Vec<&'static s
     fields
 }
 
-fn key_views(config: &ValidatedConfig) -> Result<BTreeMap<String, serde_json::Value>, ConfigError> {
+/// What `plan` compares for one active key; permissions sorted.
+#[derive(PartialEq)]
+struct KeyView {
+    permissions: Vec<RouteSelector>,
+    owner: bool,
+    digest: [u8; 32],
+    expires_at: Option<u64>,
+    daily_quota: Option<keys::quota::DailyQuota>,
+    max_in_flight: Option<u64>,
+    rate_limit: Option<KeyRateLimit>,
+}
+
+fn key_views(config: &ValidatedConfig) -> Result<BTreeMap<String, KeyView>, ConfigError> {
     let mut keys = BTreeMap::new();
     let KeySource {
         path, usage_dir, ..
@@ -516,19 +581,23 @@ fn key_views(config: &ValidatedConfig) -> Result<BTreeMap<String, serde_json::Va
                     ConfigErrorClass::RequiredForDailyQuota,
                 ));
             }
-            keys.insert(key.id().to_owned(), serde_json::json!({
-                "permissions": key.permissions(), "owner": key.is_owner(), "digest": key.digest(),
-                "expires_at": key.expires_at(), "daily_quota": key.daily_quota(),
-                "max_in_flight": key.max_in_flight(),
-                "rate_limit": key.rate_limit().map(|rate| (rate.requests, rate.per_ms)),
-            }));
+            let mut permissions = key.permissions().to_vec();
+            permissions.sort_by(|a, b| {
+                (&a.model_alias.0, a.operation).cmp(&(&b.model_alias.0, b.operation))
+            });
+            keys.insert(
+                key.id().to_owned(),
+                KeyView {
+                    permissions,
+                    owner: key.is_owner(),
+                    digest: *key.digest(),
+                    expires_at: key.expires_at(),
+                    daily_quota: key.daily_quota(),
+                    max_in_flight: key.max_in_flight(),
+                    rate_limit: key.rate_limit(),
+                },
+            );
         }
-    }
-    for key in keys.values_mut() {
-        key["permissions"]
-            .as_array_mut()
-            .expect("permissions")
-            .sort_by_key(|permission| permission.to_string());
     }
     Ok(keys)
 }

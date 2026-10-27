@@ -1,48 +1,15 @@
 use super::*;
 
 pub(super) fn new(
-    arguments: &[String],
+    args: NewArgs,
     catalog: fn(&ValidatedConfig) -> Vec<RouteChoice>,
 ) -> Result<String, String> {
-    let args = Args::parse(
-        arguments,
-        &[
-            "--config",
-            "--keys",
-            "--id",
-            "--chat",
-            "--transcription",
-            "--embeddings",
-            "--speech",
-            "--expires",
-            "--max-in-flight",
-            "--rate-limit",
-            "--daily-requests",
-            "--daily-tokens",
-            "--reservation-tokens",
-            "--key-out",
-        ],
-        &["--owner"],
-        0,
-    )?;
-    let id = parse_id(args.one("--id")?.ok_or_else(|| KEY_USAGE.to_owned())?)?;
-    let days = parse_expires(
-        args.one("--expires")?
-            .ok_or("--expires <1|3|7|13|30|60|unlimited> is required")?,
-    )?;
-    let max_in_flight = args
-        .one("--max-in-flight")?
-        .map(|value| parse_positive("--max-in-flight", value))
-        .transpose()?;
-    let rate_limit = args
-        .one("--rate-limit")?
-        .map(parse_rate_limit)
-        .transpose()?;
-    let key_out = args.one("--key-out")?.map(PathBuf::from);
-    let owner = args.has("--owner");
-    let (config, keys_path) = mutating_location(&args, "new")?;
+    let id = args.id.clone();
+    let days = args.expires.0;
+    let owner = args.owner;
+    let (config, keys_path) = mutating_location(&args.location)?;
     let routes = catalog(&config);
-    let mut scopes = scope_flags(&args, &routes, new_flag)?;
+    let mut scopes = scope_flags(args.scopes(), &routes, new_flag)?;
     if scopes.is_empty() {
         scopes = run_picker(
             &routes,
@@ -52,7 +19,8 @@ pub(super) fn new(
     }
 
     let (key, digest) = generate_key()?;
-    let pending = key_out
+    let pending = args
+        .key_out
         .as_deref()
         .map(|path| SecretFile::prepare(path, &key, false))
         .transpose()?;
@@ -75,12 +43,12 @@ pub(super) fn new(
         digest,
         owner,
         scopes,
-        max_in_flight,
-        rate_limit,
+        args.limits.max_in_flight,
+        args.limits.rate_limit,
         now,
         expires_at,
     );
-    record.set_daily_quota(quota_flags(&args, None, &config)?);
+    record.set_daily_quota(quota_flags(&args.quota, false, None, &config)?);
     keys.push(record);
     let event = AuditEvent {
         action: "new",
@@ -91,5 +59,11 @@ pub(super) fn new(
     commit_secret(&locked, &keys, &config, event, &key, pending)?;
     drop(locked);
     long_lived_warning(&id, days);
-    Ok(reveal(&id, &key, expires_at, key_out.as_deref(), "created"))
+    Ok(reveal(
+        &id,
+        &key,
+        expires_at,
+        args.key_out.as_deref(),
+        "created",
+    ))
 }

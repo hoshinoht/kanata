@@ -1,23 +1,11 @@
 use super::*;
 
-pub(super) fn rotate(arguments: &[String]) -> Result<String, String> {
-    let args = Args::parse(
-        arguments,
-        &["--config", "--keys", "--expires", "--key-out"],
-        &["--owner"],
-        1,
-    )?;
-    let target = match (args.positional.first(), args.has("--owner")) {
-        (Some(id), false) => Some(parse_id(id)?),
-        (None, true) => None,
-        _ => return Err(KEY_USAGE.into()),
-    };
-    let days = parse_expires(
-        args.one("--expires")?
-            .ok_or("--expires <1|3|7|13|30|60|unlimited> is required")?,
-    )?;
-    let key_out = args.one("--key-out")?.map(PathBuf::from);
-    let (config, keys_path) = mutating_location(&args, "rotate")?;
+/// Rotates the key `args.id`, or the active owner key when none is given.
+pub(super) fn rotate(args: RotateArgs) -> Result<String, String> {
+    let target = args.id;
+    let days = args.expires.0;
+    let key_out = args.key_out;
+    let (config, keys_path) = mutating_location(&args.location)?;
 
     let (key, digest) = generate_key()?;
     let pending = key_out

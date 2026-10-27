@@ -25,7 +25,6 @@ use subtle::ConstantTimeEq as _;
 use crate::config::ValidatedConfig;
 use crate::keys::cli::RouteChoice;
 
-const USAGE: &str = "usage: kanata portal --config <path> [--port <port>]";
 const BODY_LIMIT: usize = 32 * 1024;
 const SESSION_DURATION: Duration = Duration::from_secs(3600);
 const LOGIN_DURATION: Duration = Duration::from_secs(600);
@@ -55,27 +54,25 @@ struct Login {
     session: Option<([u8; 32], Instant)>,
 }
 
+/// `kanata portal`: prints a one-use login code; Enter on stdin issues a new one.
+#[derive(Debug, clap::Args)]
+pub(crate) struct PortalArgs {
+    /// Configuration file.
+    #[arg(long, value_name = "path")]
+    config: PathBuf,
+    /// Loopback port.
+    #[arg(long, value_name = "port", default_value_t = 9091)]
+    port: u16,
+}
+
 pub(crate) async fn run(
-    arguments: &[String],
+    args: PortalArgs,
     catalog: fn(&ValidatedConfig) -> Vec<RouteChoice>,
     output: &mut impl FnMut(String),
 ) -> Result<String, String> {
-    let mut path = None;
-    let mut port = None;
-    for pair in arguments.chunks(2) {
-        match pair {
-            [flag, value] if flag == "--config" && path.is_none() => {
-                path = Some(PathBuf::from(value));
-            }
-            [flag, value] if flag == "--port" && port.is_none() => {
-                port = Some(value.parse::<u16>().map_err(|_| USAGE.to_owned())?);
-            }
-            _ => return Err(USAGE.into()),
-        }
-    }
-    let path = path.ok_or(USAGE)?;
+    let path = args.config;
     service::validate_location(&path)?;
-    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port.unwrap_or(9091)))
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, args.port))
         .await
         .map_err(|_| "cannot bind private portal to 127.0.0.1; choose another --port")?;
     let address = listener

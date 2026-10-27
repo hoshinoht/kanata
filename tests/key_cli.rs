@@ -511,8 +511,41 @@ fn new_refuses_bad_requests_before_writing() {
             "--expires",
             "7",
         ]),
-        "requires --config",
+        "required arguments were not provided:\n  --config <path>",
     );
+    assert_eq!(scratch.keys_text(), before);
+}
+
+#[test]
+fn exclusive_and_repeated_flags_are_rejected_before_writing() {
+    let scratch = Scratch::new();
+    scratch.new_key("t", &["--chat", "local-chat"]);
+    let before = scratch.keys_text();
+    for (args, message) in [
+        (
+            &["edit", "t", "--clear-limits", "--max-in-flight", "2"][..],
+            "'--clear-limits' cannot be used with '--max-in-flight <N>'",
+        ),
+        (
+            &["edit", "t", "--clear-quota", "--daily-requests", "5"][..],
+            "'--clear-quota' cannot be used with '--daily-requests <N>'",
+        ),
+        (
+            &["edit", "t", "--expires", "7", "--expires", "30"][..],
+            "cannot be used multiple times",
+        ),
+        (
+            &["rotate", "t", "--owner", "--expires", "7"][..],
+            "cannot be used with",
+        ),
+        (&["rotate", "--expires", "7"][..], "<id|--owner>"),
+        (
+            &["edit", "t", "--max-in-flight", "0"][..],
+            "must be a positive integer",
+        ),
+    ] {
+        assert_failed(&scratch.key(args), message);
+    }
     assert_eq!(scratch.keys_text(), before);
 }
 

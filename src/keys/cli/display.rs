@@ -91,23 +91,17 @@ pub(crate) fn missing_routes_json(record: &StoredKey, config: &ValidatedConfig) 
     )
 }
 
-pub(super) fn list(arguments: &[String]) -> Result<String, String> {
-    let args = Args::parse(
-        arguments,
-        &["--config", "--keys", "--usage-dir"],
-        &["--all", "--json"],
-        0,
-    )?;
-    let location = read_location(&args)?;
+pub(super) fn list(args: ListArgs) -> Result<String, String> {
+    let location = read_location(&args.location, args.usage_dir.as_deref())?;
     let usage = usage_for(location.usage_dir.as_deref());
     let now = time::now();
     let records: Vec<&StoredKey> = location
         .keys
         .records()
         .iter()
-        .filter(|record| args.has("--all") || !record.is_revoked())
+        .filter(|record| args.all || !record.is_revoked())
         .collect();
-    if args.has("--json") {
+    if args.json {
         let array: Vec<Value> = records
             .iter()
             .map(|record| {
@@ -189,19 +183,9 @@ pub(super) fn render_table<const N: usize>(rows: &[[String; N]]) -> String {
         .join("\n")
 }
 
-pub(super) fn show(arguments: &[String]) -> Result<String, String> {
-    let args = Args::parse(
-        arguments,
-        &["--config", "--keys", "--usage-dir"],
-        &["--json"],
-        1,
-    )?;
-    let id = parse_id(
-        args.positional
-            .first()
-            .ok_or_else(|| KEY_USAGE.to_owned())?,
-    )?;
-    let location = read_location(&args)?;
+pub(super) fn show(args: ShowArgs) -> Result<String, String> {
+    let id = args.id;
+    let location = read_location(&args.location, args.usage_dir.as_deref())?;
     let record = location
         .keys
         .records()
@@ -216,7 +200,7 @@ pub(super) fn show(arguments: &[String]) -> Result<String, String> {
             .as_ref()
             .is_some_and(|config| !route_exists(config, scope))
     };
-    if args.has("--json") {
+    if args.json {
         let mut object = key_json(record, usage.as_ref(), now);
         object.insert("max_in_flight".into(), json!(record.max_in_flight()));
         object.insert("rate_limit".into(), rate_limit_json(record.rate_limit()));

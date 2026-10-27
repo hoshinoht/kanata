@@ -1,46 +1,191 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use clap::{Args, Parser, Subcommand, error::ErrorKind};
 
 use crate::{
     adapter::{Adapter, ollama::OllamaAdapter, openrouter::OpenRouterAdapter, vllm::VllmAdapter},
     auth::EnvironmentSecretResolver,
     config::{self, ProviderKind, ValidatedConfig},
+    core::Operation,
     keys::cli::{Exposure, RouteChoice},
 };
 
-const USAGE: &str = "usage: kanata config {compact,expand,plan} ... | kanata portal --config <path> [--port <port>] | kanata doctor --config <path> [--plane all|private|public] [--probe-backends] [--probe-models] [--probe-inference <alias> --operation <operation>] | kanata health --config <path> | kanata check --config <path> [--plane all|private|public] | kanata serve --config <path> [--plane all|private|public] | kanata auth chatgpt {login,status,logout,models} --config <path> [--profile <name>] | kanata key {new,list,show,edit,rm,rotate} ... (see `kanata key`) | kanata routes --config <path> [--json] | kanata routes explain --config <path> --model <alias> --operation <operation> --key-id <id> [--plane all|private|public] [--json]";
+/// `kanata` command line.
+#[derive(Debug, Parser)]
+#[command(name = "kanata", version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
 
-pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>, String> {
-    let arguments: Vec<_> = arguments.into_iter().collect();
-    if arguments.is_empty() {
-        return Ok(None);
-    }
-    if arguments
-        .first()
-        .is_some_and(|argument| argument == "check")
-    {
-        let (path, plane) = parse_config_plane(&arguments[1..]).ok_or_else(|| USAGE.to_owned())?;
-        let (_, config) = config::load_plane(path, plane).map_err(|error| error.to_string())?;
-        for warning in config.key_warnings(crate::keys::time::now()) {
-            eprintln!("warning: {warning}");
-        }
-        return Ok(Some("configuration valid".into()));
-    }
-    match arguments[0].as_str() {
-        "config" => config::commands::run(&arguments[1..]).map(Some),
-        "key" => crate::keys::cli::run(&arguments[1..], route_choices).map(Some),
-        "routes" => run_routes(&arguments[1..]).map(Some),
-        _ => Err(USAGE.into()),
-    }
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Validate a configuration file.
+    Check(PlaneArgs),
+    /// Run the gateway listeners.
+    Serve(PlaneArgs),
+    /// Report configuration, key and gateway state, with optional backend probes.
+    Doctor(crate::diagnostics::DoctorArgs),
+    /// Exit successfully when the running gateway is ready.
+    Health(crate::diagnostics::HealthArgs),
+    /// Serve the host-only key portal on loopback.
+    Portal(crate::portal::PortalArgs),
+    /// Manage provider sign-in.
+    Auth {
+        #[command(subcommand)]
+        provider: AuthProvider,
+    },
+    /// Manage client keys.
+    Key {
+        #[command(subcommand)]
+        command: Box<crate::keys::cli::KeyCommand>,
+    },
+    /// Rewrite or compare configuration files.
+    Config {
+        #[command(subcommand)]
+        command: config::commands::ConfigCommand,
+    },
+    /// List grantable routes, or explain one route decision.
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+    Routes(RoutesArgs),
 }
 
 /// `--config <path> [--plane all|private|public]`.
-fn parse_config_plane(arguments: &[String]) -> Option<(PathBuf, config::Plane)> {
-    match arguments {
-        [flag, path] if flag == "--config" => Some((PathBuf::from(path), config::Plane::All)),
-        [flag, path, plane_flag, plane] if flag == "--config" && plane_flag == "--plane" => {
-            Some((PathBuf::from(path), config::Plane::parse(plane)?))
+#[derive(Debug, Args)]
+struct PlaneArgs {
+    /// Configuration file.
+    #[arg(long, value_name = "path")]
+    config: PathBuf,
+    /// Listeners to validate or run.
+    #[arg(long, value_name = "all|private|public", value_parser = parse_plane, default_value = "all")]
+    plane: config::Plane,
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthProvider {
+    /// ChatGPT account sign-in.
+    Chatgpt {
+        #[command(subcommand)]
+        action: ChatgptAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ChatgptAction {
+    /// Sign in through the browser.
+    Login(ProfileArgs),
+    /// Show the stored sign-in state.
+    Status(ConfigArgs),
+    /// Remove stored credentials.
+    Logout(ProfileArgs),
+    /// Print the account's model catalog.
+    Models(ConfigArgs),
+}
+
+#[derive(Debug, Args)]
+struct ConfigArgs {
+    /// Configuration file.
+    #[arg(long, value_name = "path")]
+    config: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct ProfileArgs {
+    /// Configuration file.
+    #[arg(long, value_name = "path")]
+    config: PathBuf,
+    /// Credential profile.
+    #[arg(long, value_name = "name")]
+    profile: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct RoutesArgs {
+    #[command(subcommand)]
+    command: Option<RoutesCommand>,
+    /// Configuration file.
+    #[arg(long, value_name = "path", required = true)]
+    config: Option<PathBuf>,
+    /// Print JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum RoutesCommand {
+    /// Explain whether a key may use a route, from configuration only.
+    Explain(crate::routing::explain::ExplainArgs),
+}
+
+/// Parsed arguments, or text to print without running a command.
+enum Parsed {
+    Exit(Option<String>),
+    Run(Command),
+}
+
+/// No arguments prints name and version; help and version text are output, not errors.
+fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
+    let arguments: Vec<_> = arguments.into_iter().collect();
+    if arguments.is_empty() {
+        return Ok(Parsed::Exit(None));
+    }
+    match Cli::try_parse_from(std::iter::once(crate::NAME.to_owned()).chain(arguments)) {
+        Ok(cli) => Ok(Parsed::Run(cli.command)),
+        Err(error) => {
+            let text = error.render().to_string().trim_end().to_owned();
+            match error.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => Ok(Parsed::Exit(Some(text))),
+                _ => Err(text),
+            }
         }
-        _ => None,
+    }
+}
+
+/// `all`, `private` or `public`.
+pub(crate) fn parse_plane(value: &str) -> Result<config::Plane, String> {
+    config::Plane::parse(value).ok_or_else(|| "expected all, private or public".into())
+}
+
+/// `chat`, `transcription`, `embeddings` or `speech`.
+pub(crate) fn parse_operation(value: &str) -> Result<Operation, String> {
+    Operation::parse(value)
+        .ok_or_else(|| "expected chat, transcription, embeddings or speech".into())
+}
+
+pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<Option<String>, String> {
+    match parse(arguments)? {
+        Parsed::Exit(text) => Ok(text),
+        Parsed::Run(command) => run_sync(command),
+    }
+}
+
+fn run_sync(command: Command) -> Result<Option<String>, String> {
+    match command {
+        Command::Check(PlaneArgs {
+            config: path,
+            plane,
+        }) => {
+            let (_, config) = config::load_plane(path, plane).map_err(|error| error.to_string())?;
+            for warning in config.key_warnings(crate::keys::time::now()) {
+                eprintln!("warning: {warning}");
+            }
+            Ok(Some("configuration valid".into()))
+        }
+        Command::Config { command } => config::commands::run(command).map(Some),
+        Command::Key { command } => crate::keys::cli::run(*command, route_choices).map(Some),
+        Command::Routes(RoutesArgs {
+            command: Some(RoutesCommand::Explain(args)),
+            ..
+        }) => crate::routing::explain::run(args).map(Some),
+        Command::Routes(RoutesArgs { config, json, .. }) => {
+            let path = config.ok_or("kanata routes requires --config <path>")?;
+            run_routes(&path, json).map(Some)
+        }
+        Command::Serve(_)
+        | Command::Doctor(_)
+        | Command::Health(_)
+        | Command::Portal(_)
+        | Command::Auth { .. } => Err("this command needs the async runtime".into()),
     }
 }
 
@@ -77,18 +222,7 @@ fn route_choices(config: &ValidatedConfig) -> Vec<RouteChoice> {
 }
 
 /// `kanata routes`: grantable aliases only; never upstream ids, URLs or secrets.
-fn run_routes(arguments: &[String]) -> Result<String, String> {
-    if arguments
-        .first()
-        .is_some_and(|argument| argument == "explain")
-    {
-        return crate::routing::explain::run(&arguments[1..]);
-    }
-    let (path, json) = match arguments {
-        [flag, path] if flag == "--config" => (path, false),
-        [flag, path, json] if flag == "--config" && json == "--json" => (path, true),
-        _ => return Err("usage: kanata routes --config <path> [--json]".into()),
-    };
+fn run_routes(path: &Path, json: bool) -> Result<String, String> {
     let config = config::load(path).map_err(|error| error.to_string())?;
     let rows: Vec<[String; 5]> = config
         .routes()
@@ -166,43 +300,32 @@ async fn run_async_with_output<F>(
 where
     F: FnMut(String),
 {
-    let arguments: Vec<_> = arguments.into_iter().collect();
-    if arguments
-        .first()
-        .is_some_and(|argument| argument == "doctor" || argument == "health")
-    {
-        return crate::diagnostics::run(&arguments, |config, id| {
+    let command = match parse(arguments)? {
+        Parsed::Exit(text) => return Ok(text),
+        Parsed::Run(command) => command,
+    };
+    match command {
+        Command::Doctor(args) => crate::diagnostics::doctor(args, |config, id| {
             build_adapter(config, id, &EnvironmentSecretResolver)
         })
         .await
-        .map(Some);
-    }
-    if arguments
-        .first()
-        .is_some_and(|argument| argument == "portal")
-    {
-        return crate::portal::run(&arguments[1..], route_choices, &mut output)
+        .map(Some),
+        Command::Health(args) => crate::diagnostics::health(args).await.map(Some),
+        Command::Portal(args) => crate::portal::run(args, route_choices, &mut output)
             .await
-            .map(Some);
+            .map(Some),
+        Command::Auth {
+            provider: AuthProvider::Chatgpt { action },
+        } => run_chatgpt_auth(action, &mut output).await.map(Some),
+        Command::Serve(PlaneArgs {
+            config: path,
+            plane,
+        }) => {
+            crate::serve::run(path, plane, build_serve_adapters).await?;
+            Ok(Some("server stopped".into()))
+        }
+        command => run_sync(command),
     }
-    if arguments.first().is_some_and(|argument| argument == "auth")
-        && arguments
-            .get(1)
-            .is_some_and(|argument| argument == "chatgpt")
-    {
-        return run_chatgpt_auth(&arguments[2..], &mut output)
-            .await
-            .map(Some);
-    }
-    if arguments
-        .first()
-        .is_some_and(|argument| argument == "serve")
-    {
-        let (path, plane) = parse_config_plane(&arguments[1..]).ok_or_else(|| USAGE.to_owned())?;
-        crate::serve::run(path, plane, build_serve_adapters).await?;
-        return Ok(Some("server stopped".into()));
-    }
-    run(arguments)
 }
 
 fn build_serve_adapters(
@@ -281,37 +404,30 @@ fn build_adapter(
     Ok(adapter)
 }
 async fn run_chatgpt_auth<F: FnMut(String)>(
-    arguments: &[String],
+    action: ChatgptAction,
     output: &mut F,
 ) -> Result<String, String> {
-    let usage = "usage: kanata auth chatgpt {login,status,logout,models} --config <path> [--profile <name>]";
-    let (action, path, profile) = match arguments {
-        [action, flag, path] if flag == "--config" => (action.as_str(), path, None),
-        [action, flag, path, profile_flag, profile]
-            if flag == "--config"
-                && profile_flag == "--profile"
-                && matches!(action.as_str(), "login" | "logout") =>
-        {
-            (action.as_str(), path, Some(profile.as_str()))
+    let (path, profile) = match &action {
+        ChatgptAction::Login(args) | ChatgptAction::Logout(args) => {
+            (&args.config, args.profile.as_deref())
         }
-        _ => return Err(usage.into()),
+        ChatgptAction::Status(args) | ChatgptAction::Models(args) => (&args.config, None),
     };
-    if !matches!(action, "login" | "status" | "logout" | "models") {
-        return Err(usage.into());
-    }
     let config = config::load(path).map_err(|error| error.to_string())?;
-    if action == "models" {
-        return serde_json::to_string_pretty(&crate::adapter::chatgpt::models(&config).await?)
-            .map_err(|_| "model catalog could not be formatted".into());
-    }
-    let settings = config
-        .chatgpt_auth()
-        .ok_or("ChatGPT authentication is not configured")?;
-    let manager = crate::adapter::chatgpt::auth::AuthManager::new(settings, config.timeouts())
-        .map_err(|error| error.to_string())?;
+    let manager = || {
+        let settings = config
+            .chatgpt_auth()
+            .ok_or("ChatGPT authentication is not configured")?;
+        crate::adapter::chatgpt::auth::AuthManager::new(settings, config.timeouts())
+            .map_err(|error| error.to_string())
+    };
     match action {
-        "login" => {
-            let flow = manager
+        ChatgptAction::Models(_) => {
+            serde_json::to_string_pretty(&crate::adapter::chatgpt::models(&config).await?)
+                .map_err(|_| "model catalog could not be formatted".into())
+        }
+        ChatgptAction::Login(_) => {
+            let flow = manager()?
                 .begin_login(profile.unwrap_or("default"))
                 .await
                 .map_err(|error| error.to_string())?;
@@ -328,18 +444,20 @@ async fn run_chatgpt_auth<F: FnMut(String)>(
             serde_json::to_string_pretty(&status)
                 .map_err(|_| "sign-in result could not be formatted".into())
         }
-        "status" => serde_json::to_string_pretty(
-            &manager.status().await.map_err(|error| error.to_string())?,
+        ChatgptAction::Status(_) => serde_json::to_string_pretty(
+            &manager()?
+                .status()
+                .await
+                .map_err(|error| error.to_string())?,
         )
         .map_err(|_| "sign-in status could not be formatted".into()),
-        "logout" => serde_json::to_string_pretty(
-            &manager
+        ChatgptAction::Logout(_) => serde_json::to_string_pretty(
+            &manager()?
                 .logout(profile)
                 .await
                 .map_err(|error| error.to_string())?,
         )
         .map_err(|_| "sign-out result could not be formatted".into()),
-        _ => Err(usage.into()),
     }
 }
 
@@ -374,15 +492,41 @@ mod tests {
             run(args(&["check", "--config", config, "--plane", "public"])),
             Err("config error at listeners.public: required_for_public_plane".into())
         );
-        for bad in [
-            &["check", "--config", config, "--plane", "bogus"][..],
-            &["check", "--config", config, "--plane"][..],
-            &["check", "--plane", "public", "--config", config][..],
-        ] {
-            assert!(run(args(bad)).unwrap_err().starts_with("usage: kanata"));
-        }
-        assert!(
-            super::parse_config_plane(&args(&["--config", config, "--plane", "bogus"])).is_none()
+        assert_eq!(
+            run(args(&["check", "--plane", "public", "--config", config])),
+            Err("config error at listeners.public: required_for_public_plane".into())
         );
+        for (bad, message) in [
+            (
+                &["check", "--config", config, "--plane", "bogus"][..],
+                "expected all, private or public",
+            ),
+            (
+                &["check", "--config", config, "--plane"][..],
+                "a value is required",
+            ),
+            (
+                &["check", "--config", config, "--bogus"][..],
+                "unexpected argument",
+            ),
+            (&["check"][..], "--config <path>"),
+        ] {
+            let error = run(args(bad)).unwrap_err();
+            assert!(
+                error.starts_with("error: ") && error.contains(message),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn help_and_version_are_output_not_errors() {
+        let help = run(args(&["key", "new", "--help"])).unwrap().unwrap();
+        assert!(help.contains("Usage: kanata key new"), "{help}");
+        assert_eq!(
+            run(args(&["--version"])),
+            Ok(Some(format!("{} {}", crate::NAME, crate::VERSION)))
+        );
+        assert_eq!(run(Vec::new()), Ok(None));
     }
 }
