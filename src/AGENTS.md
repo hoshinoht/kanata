@@ -10,10 +10,10 @@
 - `macros.rs`: `str_enum!` (enum ↔ string tables) and `getters!` (trivial field getters); use them instead of hand-writing either.
 
 ## Layering
-- `tests/architecture_boundaries.rs` fails if `ollama`, `openrouter`, `openai` or `cliproxy` appear (case-insensitive, comments included) in any `.rs` file under `src/` outside `adapter/`, `config/`, `main.rs`, `config.rs` and `cli.rs`. Other layers use `core` types and `ProviderKind` methods (e.g. `label()`).
+- `tests/architecture_boundaries.rs` fails if `ollama`, `openrouter`, `openai`, `cliproxy`, `anthropic`, `chatgpt`, `vllm`, `apple_fm` or `codex` appear (case-insensitive, comments included) in any `.rs` file under `src/` outside `adapter/`, `config/`, `main.rs`, `config.rs` and `cli.rs`. Other layers use `core` types and `ProviderKind` methods (e.g. `label()`).
 - Metric labels are bounded enums, never adapter IDs or free text. The only keyed series uses configured key IDs and aliases.
 
 ## Config conventions
 - `Raw*` structs are `#[serde(deny_unknown_fields)]`; `validate()` produces `Validated*` types with private fields and getters.
-- Errors: `ConfigError::new(path, class)` with short snake_case classes (`zero`, `duplicate`, `timeout_too_large`). Never put secret values in paths or classes.
+- Errors: `ConfigError::new(path, ConfigErrorClass::Variant)`; classes live in `config/error.rs` and every one is listed in the `config/README.md` validation-error table (a test enforces it). Never put secret values in paths.
 - Optional settings: `#[serde(default)] Option<_>`, defaults applied in validation.

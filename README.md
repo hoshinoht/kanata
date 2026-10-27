@@ -28,7 +28,7 @@
 
 | | |
 | --- | --- |
-| **Endpoints** | `GET /v1/models` · `POST /v1/chat/completions` (JSON and SSE) · `POST /v1/responses` (stateless text/tools/SSE) · `POST /v1/messages` (stateless Messages subset) · `POST /v1/audio/transcriptions` · `POST /v1/embeddings` · `POST /v1/audio/speech` |
+| **Endpoints** | `GET /v1/models` · `GET /v1/models/{id}` · `POST /v1/chat/completions` (JSON and SSE) · `POST /v1/responses` (stateless text/tools/SSE) · `POST /v1/messages` (stateless Messages subset) · `POST /v1/audio/transcriptions` · `POST /v1/embeddings` · `POST /v1/audio/speech` |
 | **Backends** | Ollama · vLLM · OpenRouter · Apple Foundation Models (macOS 27+) · Sign in with ChatGPT · CLIProxyAPI (private) · Anthropic Claude API (private) · speech |
 | **Auth** | `Authorization: Bearer` or `x-api-key` with static `kanata_sk_…` keys, exact per-model scopes and SHA-256 digest storage |
 | **Listeners** | Private (behind your tailnet proxy) · optional public (Cloudflare tunnel) · loopback admin |
@@ -63,7 +63,7 @@ A Material 3 Expressive reference with the [Relay identity](docs/brand/README.md
 - **Image input:** declared chat routes accept bounded inline PNG/JPEG images with Ollama, vLLM or OpenRouter. See [image input](docs/guides/image-input.md) and the [vision template](config/vision.example.toml).
 - **Embeddings:** text or batches of up to 128 strings through Ollama, vLLM or OpenRouter, with float or base64 results. Embedding access has its own exact key scope. See the [embedding template](config/embeddings.example.toml).
 - **Browser guide:** open `/v1` for public API documentation. Connect a key to see its permitted models, capabilities and examples on that listener. The page keeps the key only in memory; disconnect or navigate away to clear it. Examples include highlighted cURL, JavaScript, Python, Go and Rust, rendered in bundled Maple Mono. Use HTTPS outside localhost.
-- **Scoped listing:** `/v1/models` lists only what the caller's key may use, and each entry includes a `kanata` capability object.
+- **Scoped listing:** `/v1/models` lists only what the caller's key may use, and each entry includes a `kanata` capability object. `GET /v1/models/{id}` returns one entry and answers `404` for aliases the key cannot see, so it does not reveal which aliases exist.
 
 ### 🔌 Adapters
 
@@ -105,7 +105,7 @@ The private `chatgpt` provider uses OpenAI's [documented OAuth flow](https://dev
 ### 📈 Operations
 - **Admission and limits:** bounded admission, shared request-buffer reservations, upload concurrency limits and a dedicated upload deadline.
 - **Lifecycle:** cancellation on client disconnect and graceful drain.
-- **Logs:** one access line per request (key id, model, status, timing, reasoning effort, and on the private listener the caller's `x-request-id` when sent), and upstream-failure diagnostics that never include keys, prompts or bodies.
+- **Logs:** one access line per request (request id, key id, model, status, timing, reasoning effort, and on the private listener the caller's `x-request-id` when sent), and upstream-failure diagnostics that never include keys, prompts or bodies. Every response carries an `x-request-id` header: the caller's on the private listener when valid, otherwise a generated one.
 - **Metrics:** Prometheus-style `/metrics` with per-key/model counters, queue and upstream timing, first-content latency, buffer occupancy and key-reload health. See [operations](docs/guides/operations.md).
 
 ## Architecture
@@ -214,7 +214,7 @@ curl https://kanata.example.com/v1/chat/completions \
 
 `context_tokens` is the route's declared context window, or `null` for the provider's full window (cloud models). For local Ollama models, see [context length](config/README.md#concepts). `max_output_tokens` is the route's declared output cap (`null` if none); a larger `max_tokens` is rejected, and omitted limits inherit the cap. `admission` shows the per-route limits from `[limits]` and `[timeouts]`, plus the backend's shared cap (`null` if uncapped), and a live snapshot of the route: `in_flight`, `queued`, the backend's `adapter_in_flight` (`null` if uncapped) and its circuit `breaker` (`closed`, `open` or `half_open`). It appears only on the private listener. When a route or backend is full, Kanata answers `429 gateway_queue_full`, or `503 gateway_busy` if no slot frees up within `queue_ms`. Per-key limits answer `429 gateway_key_busy` or `429 gateway_key_rate_limited`, and a backend whose circuit breaker is open answers `503 upstream_unavailable` straight away. All of these carry `Retry-After` and are separate from an upstream `429 rate_limit_exceeded` or `504 upstream_timeout`. See [capacity](config/README.md#concepts).
 
-Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you give keys to.
+Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you give keys to. A machine-readable [OpenAPI 3.1 description](docs/openapi.json) covers every client endpoint, the accepted request fields and their bounds, the streaming formats and the error codes.
 
 ## Security
 

@@ -784,7 +784,7 @@
         "name": "x-request-id",
         "in": "header",
         "required": false,
-        "description": "Optional client request id: 1–128 ASCII letters, digits, `-` or `_`, sent at most once. Inference endpoints reject an invalid or repeated value with `400 invalid_request`.",
+        "description": "Optional client request id: 1–128 ASCII letters, digits, `-` or `_`, sent at most once. On the private listener, inference endpoints reject an invalid or repeated value with `400 invalid_request` and valid values are echoed in the response header; the public listener ignores the header entirely.",
         "schema": {
           "type": "string",
           "pattern": "^[A-Za-z0-9_-]{1,128}$"
