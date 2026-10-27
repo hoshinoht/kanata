@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "kanata",
-    "version": "1.0.0-beta.9",
+    "version": "1.0.0",
     "description": "OpenAI-compatible inference gateway with a private listener and an optional public listener. Both listeners serve the same paths; the public listener serves only allowlisted routes and never private-only providers. Every model and operation is an exact `(model_alias, operation)` route with no fallback, wildcard or retries. Requests accept only the documented members: unknown members and unsupported options return `400 invalid_request` with the member's JSON path in `param` where it can be named safely. Capabilities per model are published under `kanata` on `GET /v1/models`.",
     "license": {
       "name": "GPL-3.0-only",

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="src/server/guide/relay.svg" alt="Kanata Relay logo" width="80" height="80">
+<img src="crates/kanata-server/src/server/guide/relay.svg" alt="Kanata Relay logo" width="80" height="80">
 
 # Kanata
 
@@ -8,7 +8,7 @@
 
 *Built for homelabs. Designed as the model gateway for [kanade](https://github.com/hoshinoht/kanade-bot).*
 
-[![Version](https://img.shields.io/badge/version-1.0.0--beta.9-orange)](CHANGELOG)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue)](CHANGELOG)
 [![Rust](https://img.shields.io/badge/rust-1.98%2B-b7410e?logo=rust)](Cargo.toml)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![OpenAI compatible](https://img.shields.io/badge/API-OpenAI%20compatible-412991)](#api)
@@ -232,7 +232,7 @@ Share [the API quickstart](docs/guides/public-api-quickstart.md) with people you
 
 ## Build from source
 
-Requires Rust **1.98+**:
+Requires Rust **1.98+**. The repository is a Cargo workspace (`crates/*`); the root package builds the `kanata` binary, and `kanata-contract` is the serde-only client contract other projects can depend on by git tag:
 
 ```sh
 cargo install --locked --path .

@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "kanata"
-version = "1.0.0-beta.9"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64",
@@ -742,7 +742,7 @@ dependencies = [
 
 [[package]]
 name = "kanata-adapters"
-version = "1.0.0-beta.9"
+version = "1.0.0"
 dependencies = [
  "base64",
  "bytes",
@@ -777,7 +777,7 @@ dependencies = [
 
 [[package]]
 name = "kanata-config"
-version = "1.0.0-beta.9"
+version = "1.0.0"
 dependencies = [
  "clap",
  "getrandom 0.4.3",
@@ -793,7 +793,7 @@ dependencies = [
 
 [[package]]
 name = "kanata-contract"
-version = "1.0.0-beta.9"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -801,7 +801,7 @@ dependencies = [
 
 [[package]]
 name = "kanata-core"
-version = "1.0.0-beta.9"
+version = "1.0.0"
 dependencies = [
  "base64",
  "futures-core",
@@ -812,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "kanata-keys"
-version = "1.0.0-beta.9"
+version = "1.0.0"
 dependencies = [
  "base64",
  "clap",
@@ -829,7 +829,7 @@ dependencies = [
 
 [[package]]
 name = "kanata-server"
-version = "1.0.0-beta.9"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64",
