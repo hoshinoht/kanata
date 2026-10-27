@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use serde::de::DeserializeOwned;
 
 use crate::{
@@ -16,13 +14,27 @@ use super::{
 
 const MAX_ARGUMENT_DELTA_BYTES: usize = 16 * 1024;
 
-/// What a lenient chunk stream accepts after its finish reason.
-pub(crate) trait StreamDialect {
-    type Usage: DeserializeOwned + Into<Usage>;
+/// A provider's chunk envelope and the rules its stream follows.
+pub(crate) trait StreamDialect: Default + Unpin {
+    /// One `data` record as sent.
+    type Chunk: DeserializeOwned;
+    type Usage: Into<Usage>;
     /// A trailing usage chunk may repeat one empty choice (LiteLLM).
     const TRAILING_EMPTY_CHOICE: bool;
     /// The final usage may be repeated if identical.
     const REPEATED_USAGE: bool;
+    /// `[DONE]` needs a usage chunk before it.
+    const REQUIRES_USAGE: bool = false;
+    /// Only a `tool_calls` finish may follow tool calls.
+    const EXACT_TOOL_FINISH: bool = false;
+    /// A tool-call continuation may carry no id, type or function.
+    const EMPTY_TOOL_CONTINUATION: bool = false;
+    /// Framing stops at `[DONE]` and each record's events are yielded before the next
+    /// record is parsed; otherwise one read's records are parsed together.
+    const RECORD_AT_A_TIME: bool = false;
+
+    /// Checks one chunk's envelope and returns its choices and usage.
+    fn chunk(&mut self, chunk: Self::Chunk) -> Result<StreamChunk<Self::Usage>, GatewayError>;
 }
 
 struct ToolState {
@@ -115,7 +127,7 @@ pub(crate) struct StreamState<D> {
     usage: Option<Usage>,
     tools: ToolCalls,
     done: bool,
-    dialect: PhantomData<fn() -> D>,
+    dialect: D,
 }
 
 impl<D: StreamDialect> StreamState<D> {
@@ -126,9 +138,9 @@ impl<D: StreamDialect> StreamState<D> {
             has_visible_text: false,
             finished: None,
             usage: None,
-            tools: ToolCalls::new(false),
+            tools: ToolCalls::new(D::EMPTY_TOOL_CONTINUATION),
             done: false,
-            dialect: PhantomData,
+            dialect: D::default(),
         }
     }
 
@@ -136,7 +148,7 @@ impl<D: StreamDialect> StreamState<D> {
         if self.done {
             return Err(upstream_failure());
         }
-        let chunk = stream_wire::parse(data)?;
+        let chunk = self.dialect.chunk(stream_wire::parse(data)?)?;
         self.chunk(chunk)
     }
 
@@ -145,6 +157,9 @@ impl<D: StreamDialect> StreamState<D> {
             return Err(upstream_failure());
         }
         let finish_reason = self.finished.ok_or_else(upstream_failure)?;
+        if D::REQUIRES_USAGE && self.usage.is_none() {
+            return Err(upstream_failure());
+        }
         self.done = true;
         Ok(NormalizedEvent::ChatCompleted {
             finish_reason,
@@ -267,6 +282,7 @@ impl<D: StreamDialect> StreamState<D> {
         let has_tools = !self.tools.is_empty();
         if (reason == FinishReason::Stop && has_tools)
             || (reason == FinishReason::ToolCalls && !has_tools)
+            || (D::EXACT_TOOL_FINISH && has_tools && reason != FinishReason::ToolCalls)
         {
             return Err(upstream_failure());
         }

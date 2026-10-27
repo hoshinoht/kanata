@@ -299,8 +299,9 @@ fn stop_or_length_without_text_completes_empty_and_content_filter_does_not() {
         ("stop", Some(FinishReason::Stop)),
         ("content_filter", None),
     ] {
-        let mut state =
-            super::super::stream_state::StreamState::new(ModelAlias(PUBLIC_MODEL.into()));
+        let mut state = crate::adapter::chat_completions::stream_state::StreamState::<
+            super::super::stream::OpenRouter,
+        >::new(ModelAlias(PUBLIC_MODEL.into()));
         let mut events = state
             .data(&chunk(
                 json!({"role":"assistant"}),

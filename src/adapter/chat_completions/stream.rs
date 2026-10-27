@@ -24,6 +24,7 @@ pub(crate) struct ChatStream<D> {
     body: Option<ResponseBody>,
     framer: SseFramer,
     state: StreamState<D>,
+    records: VecDeque<SseRecord>,
     pending: VecDeque<NormalizedEvent>,
     terminal: bool,
     /// Reads an `event: error` record's data; `true` ends the stream with a content-filter
@@ -59,6 +60,7 @@ impl<D: StreamDialect> ChatStream<D> {
             body: Some(body),
             framer,
             state: StreamState::new(public_model),
+            records: VecDeque::new(),
             pending: VecDeque::new(),
             terminal: false,
             error_event,
@@ -66,18 +68,38 @@ impl<D: StreamDialect> ChatStream<D> {
     }
 
     fn fail(&mut self, error: GatewayError) -> Poll<Option<Result<NormalizedEvent, GatewayError>>> {
-        self.body.take();
+        self.terminate();
         self.pending.clear();
-        self.terminal = true;
         Poll::Ready(Some(Err(error)))
     }
 
-    fn records(&mut self, records: Vec<SseRecord>) -> Result<(), GatewayError> {
-        let mut events = Vec::new();
-        for record in records {
-            if self.terminal {
-                return Err(upstream_failure());
+    fn terminate(&mut self) {
+        self.body.take();
+        self.records.clear();
+        self.terminal = true;
+    }
+
+    /// Queues the records framed from `bytes`.
+    fn feed(&mut self, bytes: &[u8]) -> Result<(), GatewayError> {
+        if D::RECORD_AT_A_TIME {
+            let (records, done) = self
+                .framer
+                .feed_until(bytes, |record| record.data == "[DONE]")?;
+            self.records.extend(records);
+            if done {
+                self.body.take();
             }
+        } else {
+            self.records.extend(self.framer.feed(bytes)?);
+        }
+        Ok(())
+    }
+
+    /// Parses the queued records, or with `RECORD_AT_A_TIME` those up to the first that
+    /// yields events.
+    fn records(&mut self) -> Result<(), GatewayError> {
+        let mut events = Vec::new();
+        while let Some(record) = self.records.pop_front() {
             if let Some(content_filtered) = self.error_event
                 && record.event.as_deref() == Some("error")
             {
@@ -85,8 +107,7 @@ impl<D: StreamDialect> ChatStream<D> {
                     return Err(upstream_failure());
                 }
                 events.extend(self.state.interrupt(FinishReason::ContentFilter)?);
-                self.body.take();
-                self.terminal = true;
+                self.terminate();
                 break;
             }
             if record
@@ -98,11 +119,13 @@ impl<D: StreamDialect> ChatStream<D> {
             }
             if record.data == "[DONE]" {
                 events.push(self.state.done()?);
-                self.body.take();
-                self.terminal = true;
+                self.terminate();
                 break;
             }
             events.extend(self.state.data(&record.data)?);
+            if D::RECORD_AT_A_TIME && !events.is_empty() {
+                break;
+            }
         }
         self.pending.extend(events);
         Ok(())
@@ -121,24 +144,27 @@ impl<D: StreamDialect> Stream for ChatStream<D> {
             return Poll::Ready(None);
         }
         loop {
+            if !this.records.is_empty() {
+                if let Err(error) = this.records() {
+                    return this.fail(error);
+                }
+                if let Some(event) = this.pending.pop_front() {
+                    return Poll::Ready(Some(Ok(event)));
+                }
+                if this.terminal {
+                    return Poll::Ready(None);
+                }
+                continue;
+            }
             let Some(body) = this.body.as_mut() else {
                 return this.fail(upstream_failure());
             };
             match body.as_mut().poll_next(cx) {
-                Poll::Ready(Some(Ok(bytes))) => match this.framer.feed(&bytes) {
-                    Ok(records) => {
-                        if let Err(error) = this.records(records) {
-                            return this.fail(error);
-                        }
-                        if let Some(event) = this.pending.pop_front() {
-                            return Poll::Ready(Some(Ok(event)));
-                        }
-                        if this.terminal {
-                            return Poll::Ready(None);
-                        }
+                Poll::Ready(Some(Ok(bytes))) => {
+                    if let Err(error) = this.feed(&bytes) {
+                        return this.fail(error);
                     }
-                    Err(error) => return this.fail(error),
-                },
+                }
                 Poll::Ready(Some(Err(error))) => return this.fail(error),
                 Poll::Ready(None) => {
                     if let Err(error) = this.framer.finish() {

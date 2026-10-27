@@ -1,21 +1,29 @@
 use crate::{
     adapter::{
         EventStream,
-        chat_completions::{stream::ChatStream, stream_state::StreamDialect},
+        chat_completions::{
+            stream::ChatStream, stream_state::StreamDialect, stream_wire::StreamChunk,
+        },
         diagnostics::ProviderError,
         transport::ResponseBody,
     },
-    core::ModelAlias,
+    core::{GatewayError, ModelAlias},
 };
 
 use super::{apple_fm, response::UsagePayload};
 
-enum Ollama {}
+#[derive(Default)]
+struct Ollama;
 
 impl StreamDialect for Ollama {
+    type Chunk = StreamChunk<UsagePayload>;
     type Usage = UsagePayload;
     const TRAILING_EMPTY_CHOICE: bool = false;
     const REPEATED_USAGE: bool = false;
+
+    fn chunk(&mut self, chunk: Self::Chunk) -> Result<Self::Chunk, GatewayError> {
+        Ok(chunk)
+    }
 }
 
 pub(super) fn event_stream(

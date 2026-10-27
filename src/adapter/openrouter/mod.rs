@@ -1,7 +1,6 @@
 mod request;
 mod response;
 mod stream;
-mod stream_state;
 mod stream_wire;
 mod validation;
 

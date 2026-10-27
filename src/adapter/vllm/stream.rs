@@ -1,14 +1,26 @@
-use crate::adapter::chat_completions::{stream_state::StreamDialect, stream_wire::UsagePayload};
+use crate::{
+    adapter::chat_completions::{
+        stream_state::StreamDialect,
+        stream_wire::{StreamChunk, UsagePayload},
+    },
+    core::GatewayError,
+};
 
 /// Chat-completions SSE from vLLM, directly or behind LiteLLM.
-pub(super) enum Vllm {}
+#[derive(Default)]
+pub(super) struct Vllm;
 
 impl StreamDialect for Vllm {
+    type Chunk = StreamChunk<UsagePayload>;
     type Usage = UsagePayload;
     // LiteLLM repeats an empty choice on the trailing usage chunk.
     const TRAILING_EMPTY_CHOICE: bool = true;
     // Some gateways repeat the final usage in a trailing chunk.
     const REPEATED_USAGE: bool = true;
+
+    fn chunk(&mut self, chunk: Self::Chunk) -> Result<Self::Chunk, GatewayError> {
+        Ok(chunk)
+    }
 }
 
 #[cfg(test)]
