@@ -35,7 +35,7 @@ impl MessageWire {
         total_audio_bytes: &mut usize,
         image_budget: &mut ImageBudget,
     ) -> Result<Option<ChatMessage>, ChatWireError> {
-        let invalid = |member: &str| ChatWireError::param(format!("messages[{index}].{member}"));
+        let invalid = |member: &str| member_error(index, member);
         let role = match self.role.as_str() {
             "system" => ChatRole::System,
             "developer" => ChatRole::Developer,
@@ -46,23 +46,14 @@ impl MessageWire {
         };
         let content_present = matches!(&self.content, OptionalField::Value(_));
         let content_given = !matches!(&self.content, OptionalField::Missing);
-        let mut content = match self.content {
-            OptionalField::Missing | OptionalField::Null => Vec::new(),
-            OptionalField::Value(ContentWire::Text(text)) => {
-                vec![ChatContent::Text { text }]
-            }
-            OptionalField::Value(ContentWire::Parts(parts)) => parts
-                .into_iter()
-                .enumerate()
-                .map(|(part_index, part)| {
-                    part.into_core(role, max_audio_bytes, total_audio_bytes, image_budget)
-                        .map_err(|error| match error {
-                            PartError::TooLarge => ChatWireError::TooLarge,
-                            PartError::Invalid => invalid(&format!("content[{part_index}]")),
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        };
+        let mut content = content_parts(
+            self.content,
+            role,
+            index,
+            max_audio_bytes,
+            total_audio_bytes,
+            image_budget,
+        )?;
 
         let tool_calls_field = self.tool_calls;
         let tool_calls_present = !matches!(&tool_calls_field, OptionalField::Missing);
@@ -88,80 +79,32 @@ impl MessageWire {
                 if tool_call_id_present {
                     return Err(invalid("tool_call_id"));
                 }
-                // Same per-message cap as reasoning Kanata emits.
-                if matches!(&reasoning_content, OptionalField::Value(text) if text.len() > MAX_REASONING_BYTES)
-                {
-                    return Err(invalid("reasoning_content"));
-                }
-                for (call_index, call) in tool_calls.into_iter().enumerate() {
-                    if call.kind != "function"
-                        || !valid_name(&call.function.name)
-                        || call.id.is_empty()
-                    {
-                        return Err(invalid(&format!("tool_calls[{call_index}]")));
-                    }
-                    content.push(ChatContent::ToolCall {
-                        call: ToolCall {
-                            id: call.id,
-                            name: call.function.name,
-                            arguments: call.function.arguments,
-                        },
-                    });
-                }
-                if !has_nonempty_text(&content)
-                    && !content
-                        .iter()
-                        .any(|item| matches!(item, ChatContent::ToolCall { .. }))
-                {
-                    if content_given {
-                        return Ok(None);
-                    }
-                    return Err(invalid("content"));
-                }
-                // An empty replay carries nothing; reasoning leads the turn's other parts.
-                if let OptionalField::Value(text) = reasoning_content
-                    && !text.is_empty()
-                {
-                    content.insert(0, ChatContent::ReasoningText { text });
-                }
+                let Some(assistant) = assistant_content(
+                    content,
+                    tool_calls,
+                    reasoning_content,
+                    content_given,
+                    index,
+                )?
+                else {
+                    return Ok(None);
+                };
+                content = assistant;
             }
             ChatRole::Tool => {
                 if tool_calls_present {
                     return Err(invalid("tool_calls"));
                 }
-                let OptionalField::Value(call_id) = tool_call_id else {
-                    return Err(invalid("tool_call_id"));
-                };
-                if call_id.is_empty() {
-                    return Err(invalid("tool_call_id"));
-                }
-                // An empty result (`""` or `[]`) is a valid tool outcome; absent content is not.
-                if !content_present {
-                    return Err(invalid("content"));
-                }
-                content = vec![ChatContent::ToolResult {
-                    call_id,
-                    content: text_content(&content),
-                }];
+                content = tool_result(&content, tool_call_id, content_present, index)?;
             }
             ChatRole::User => {
-                if tool_calls_present {
-                    return Err(invalid("tool_calls"));
-                }
-                if tool_call_id_present {
-                    return Err(invalid("tool_call_id"));
-                }
+                reject_call_fields(tool_calls_present, tool_call_id_present, index)?;
                 if !has_user_content(&content) {
                     return Err(invalid("content"));
                 }
             }
             ChatRole::System | ChatRole::Developer => {
-                if tool_calls_present {
-                    return Err(invalid("tool_calls"));
-                }
-                if tool_call_id_present {
-                    return Err(invalid("tool_call_id"));
-                }
+                reject_call_fields(tool_calls_present, tool_call_id_present, index)?;
                 if !has_nonempty_text(&content) {
                     return Err(invalid("content"));
                 }
@@ -173,6 +116,123 @@ impl MessageWire {
         }
         Ok(Some(ChatMessage { role, content }))
     }
+}
+
+fn member_error(index: usize, member: &str) -> ChatWireError {
+    ChatWireError::param(format!("messages[{index}].{member}"))
+}
+
+/// IR content of a message's `content` member.
+fn content_parts(
+    content: OptionalField<ContentWire>,
+    role: ChatRole,
+    index: usize,
+    max_audio_bytes: usize,
+    total_audio_bytes: &mut usize,
+    image_budget: &mut ImageBudget,
+) -> Result<Vec<ChatContent>, ChatWireError> {
+    Ok(match content {
+        OptionalField::Missing | OptionalField::Null => Vec::new(),
+        OptionalField::Value(ContentWire::Text(text)) => {
+            vec![ChatContent::Text { text }]
+        }
+        OptionalField::Value(ContentWire::Parts(parts)) => parts
+            .into_iter()
+            .enumerate()
+            .map(|(part_index, part)| {
+                part.into_core(role, max_audio_bytes, total_audio_bytes, image_budget)
+                    .map_err(|error| match error {
+                        PartError::TooLarge => ChatWireError::TooLarge,
+                        PartError::Invalid => {
+                            member_error(index, &format!("content[{part_index}]"))
+                        }
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+/// Assistant content with tool calls appended and replayed reasoning first; `None` for a
+/// replayed empty answer.
+fn assistant_content(
+    mut content: Vec<ChatContent>,
+    tool_calls: Vec<ToolCallWire>,
+    reasoning_content: OptionalField<String>,
+    content_given: bool,
+    index: usize,
+) -> Result<Option<Vec<ChatContent>>, ChatWireError> {
+    // Same per-message cap as reasoning Kanata emits.
+    if matches!(&reasoning_content, OptionalField::Value(text) if text.len() > MAX_REASONING_BYTES)
+    {
+        return Err(member_error(index, "reasoning_content"));
+    }
+    for (call_index, call) in tool_calls.into_iter().enumerate() {
+        if call.kind != "function" || !valid_name(&call.function.name) || call.id.is_empty() {
+            return Err(member_error(index, &format!("tool_calls[{call_index}]")));
+        }
+        content.push(ChatContent::ToolCall {
+            call: ToolCall {
+                id: call.id,
+                name: call.function.name,
+                arguments: call.function.arguments,
+            },
+        });
+    }
+    if !has_nonempty_text(&content)
+        && !content
+            .iter()
+            .any(|item| matches!(item, ChatContent::ToolCall { .. }))
+    {
+        if content_given {
+            return Ok(None);
+        }
+        return Err(member_error(index, "content"));
+    }
+    // An empty replay carries nothing; reasoning leads the turn's other parts.
+    if let OptionalField::Value(text) = reasoning_content
+        && !text.is_empty()
+    {
+        content.insert(0, ChatContent::ReasoningText { text });
+    }
+    Ok(Some(content))
+}
+
+/// The single tool-result part of a `tool` message.
+fn tool_result(
+    content: &[ChatContent],
+    tool_call_id: OptionalField<String>,
+    content_present: bool,
+    index: usize,
+) -> Result<Vec<ChatContent>, ChatWireError> {
+    let OptionalField::Value(call_id) = tool_call_id else {
+        return Err(member_error(index, "tool_call_id"));
+    };
+    if call_id.is_empty() {
+        return Err(member_error(index, "tool_call_id"));
+    }
+    // An empty result (`""` or `[]`) is a valid tool outcome; absent content is not.
+    if !content_present {
+        return Err(member_error(index, "content"));
+    }
+    Ok(vec![ChatContent::ToolResult {
+        call_id,
+        content: text_content(content),
+    }])
+}
+
+/// `tool_calls` and `tool_call_id` are refused outside assistant and tool turns.
+fn reject_call_fields(
+    tool_calls_present: bool,
+    tool_call_id_present: bool,
+    index: usize,
+) -> Result<(), ChatWireError> {
+    if tool_calls_present {
+        return Err(member_error(index, "tool_calls"));
+    }
+    if tool_call_id_present {
+        return Err(member_error(index, "tool_call_id"));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]

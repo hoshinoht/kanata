@@ -17,6 +17,7 @@ mod extensions;
 mod keepalive;
 mod lifecycle;
 mod messages;
+mod models;
 mod multipart;
 mod responses;
 mod serialization;
@@ -27,7 +28,11 @@ mod transcription;
 mod upload;
 mod wire;
 
-use axum::{Router, middleware::map_response, routing::post};
+use axum::{
+    Router,
+    middleware::map_response,
+    routing::{get, post},
+};
 
 use crate::core::{Capabilities, ChatContent, Request as CoreRequest};
 use crate::server::ClientState;
@@ -36,6 +41,8 @@ pub(super) use extensions::validate_extensions;
 
 pub(crate) fn routes() -> Router<ClientState> {
     Router::new()
+        .route("/models", get(models::list))
+        .route("/models/{id}", get(models::retrieve))
         .route("/chat/completions", post(chat::chat_completions))
         .route("/responses", post(responses::create))
         .route(

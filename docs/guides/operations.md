@@ -68,6 +68,18 @@ Timing labels use a fixed endpoint set. Key/model counters retain current key ID
 
 A sustained queue indicates demand above inference capacity. Upload refusals indicate input reservations are exhausted. A ready process with unhealthy key reload may still be using old grants. Readiness describes the gateway's lifecycle; it does not probe every backend.
 
+## Request ids
+
+Every response on the private and public listeners, including authentication failures, `404`s, the guide page and streams, carries one `x-request-id` header. The admin listener does not set it. To find the access line (`kanata::access`) for a reported id:
+
+| Listener | Header value | Access-line field |
+| --- | --- | --- |
+| Private, caller sent one valid `x-request-id` (1–128 of `A-Z a-z 0-9 - _`) | The caller's id | `client_request_id` |
+| Private, no caller id, or a repeated or unsafe one | A generated id (32 lowercase hex characters) | `request_id` |
+| Public | Always a generated id; a caller's `x-request-id` is ignored and never logged | `request_id` |
+
+`request_id` is always the gateway-generated id and also names the request's log span. `client_request_id` is `-` unless a valid private caller id was used. Inference endpoints on the private listener still reject a repeated or unsafe caller id with `400 invalid_request`; that response carries a generated id.
+
 ## Token accounting
 
 `kanata key show <id> --config <path>` displays token totals. `key show --json` and `key list --json` expose a `tokens` object:

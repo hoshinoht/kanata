@@ -13,7 +13,8 @@ use kanata::{
     config::{SecretReference, ValidatedConfig, load},
     core::{
         Capabilities, ChatMessage, ChatResponse, ErrorKind, FinishReason, GatewayError, ModelAlias,
-        Operation, Request as CoreRequest, Response as CoreResponse, RoutedRequest, Usage,
+        NormalizedEvent, Operation, Request as CoreRequest, Response as CoreResponse,
+        RoutedRequest, Usage,
     },
     server::{Readiness, ServerBuildError, TwoPlaneServer},
 };
@@ -51,6 +52,8 @@ pub enum Outcome {
     InvalidAssistant,
     Transcription,
     Error(ErrorKind),
+    /// Streamed chat events, for `"stream": true` requests.
+    Stream(Vec<NormalizedEvent>),
 }
 
 pub struct AdapterSpec {
@@ -139,6 +142,9 @@ impl Adapter for RecordingAdapter {
                 },
             ))),
             Outcome::Error(kind) => Err(GatewayError { kind }),
+            Outcome::Stream(events) => Ok(AdapterOutput::Events(Box::pin(
+                futures_util::stream::iter(events.into_iter().map(Ok)),
+            ))),
         };
         self.requests.lock().expect("request lock").push(request);
         Box::pin(async move { result })

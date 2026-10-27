@@ -8,35 +8,18 @@ use serde_json::{Value, json};
 use crate::core::{ErrorKind, GatewayError};
 use crate::routing::admission::AdmissionError;
 use crate::server::{ClientState, ErrorDetails, error_response, error_response_with_param};
-use crate::telemetry::{Observer, observe_draining, observe_error};
+use crate::telemetry::{Listener, Observer, observe_draining, observe_error};
 
+/// Upstream request id: the caller's valid `x-request-id` on the private listener, else
+/// a gateway sequence id; `None` rejects a repeated or unsafe private caller id.
 pub(super) fn request_id(headers: &HeaderMap, state: &ClientState) -> Option<String> {
-    let mut values = headers.get_all("x-request-id").iter();
-    let Some(value) = values.next() else {
+    if state.listener() == Listener::Public {
         return Some(state.next_request_id());
-    };
-    if values.next().is_some() {
-        return None;
     }
-    let value = value.to_str().ok()?;
-    (value.len() <= 128
-        && !value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
-    .then(|| value.into())
-}
-
-/// Logs `id` only when the caller supplied it; `id` comes from [`request_id`].
-pub(super) fn annotate_client_request_id(
-    observer: Option<&Observer>,
-    headers: &HeaderMap,
-    id: &str,
-) {
-    if let Some(observer) = observer
-        && headers.contains_key("x-request-id")
-    {
-        observer.annotate_client_request_id(id);
+    match crate::telemetry::sanitize::request_id(headers) {
+        Ok(Some(id)) => Some(id.to_owned()),
+        Ok(None) => Some(state.next_request_id()),
+        Err(()) => None,
     }
 }
 

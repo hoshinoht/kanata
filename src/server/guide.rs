@@ -58,7 +58,9 @@ pub(super) async fn protect_discovery(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let discovery = matches!(request.uri().path(), "/v1" | "/v1/" | "/v1/models");
+    let path = request.uri().path();
+    let discovery =
+        matches!(path, "/v1" | "/v1/" | "/v1/models") || path.starts_with("/v1/models/");
     let mut response = next.run(request).await;
     if discovery {
         response

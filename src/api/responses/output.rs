@@ -14,7 +14,7 @@ use super::super::{
 use crate::{
     core::{
         ChatContent, ChatRequest, ChatResponse, ChatRole, ErrorKind, FinishReason, GatewayError,
-        MAX_REASONING_BYTES, ModelAlias, NormalizedEvent, Usage,
+        MAX_REASONING_BYTES, ModelAlias, NormalizedEvent, ReasoningItem, Usage,
     },
     telemetry::Observer,
 };
@@ -103,7 +103,7 @@ pub(in crate::api) fn complete(
             observer.first_content();
             observer.record_usage(response.usage);
         }
-        Ok(output.response)
+        Ok(output.into_response())
     })();
     match result {
         Ok(value) => Json(value).into_response(),
@@ -112,7 +112,10 @@ pub(in crate::api) fn complete(
 }
 
 pub(in crate::api) struct Output {
-    pub(super) response: Value,
+    /// Response object; its `output` member is filled from `items` when emitted.
+    response: Value,
+    id: String,
+    items: Vec<Value>,
     sequence: u64,
     bytes: usize,
     message_index: Option<usize>,
@@ -128,7 +131,7 @@ impl Output {
         let id = super::super::serialization::next_chat_id().replace("chatcmpl_", "resp_");
         Self {
             response: json!({
-                "id":id,"object":"response","created_at":crate::keys::time::now(),"completed_at":null,
+                "id":&id,"object":"response","created_at":crate::keys::time::now(),"completed_at":null,
                 "status":"in_progress","model":options.model.0,"output":[],"error":null,"incomplete_details":null,
                 "store":false,"background":false,"previous_response_id":null,"instructions":null,
                 "max_output_tokens":options.max_output_tokens,"parallel_tool_calls":true,"tool_choice":options.tool_choice,
@@ -136,6 +139,8 @@ impl Output {
                 "text":{"format":{"type":"text"}},"reasoning":{"effort":options.reasoning_effort,"summary":options.reasoning_summary},
                 "truncation":"disabled","usage":null,"metadata":{},"user":null
             }),
+            id,
+            items: Vec::new(),
             sequence: 0,
             bytes: 0,
             message_index: None,
@@ -149,9 +154,21 @@ impl Output {
 
     pub(super) fn start(&self) -> Vec<Value> {
         vec![
-            json!({"type":"response.created","response":self.response}),
-            json!({"type":"response.in_progress","response":self.response}),
+            json!({"type":"response.created","response":self.snapshot()}),
+            json!({"type":"response.in_progress","response":self.snapshot()}),
         ]
+    }
+
+    /// The response object with its current output items.
+    fn snapshot(&self) -> Value {
+        let mut response = self.response.clone();
+        response["output"] = Value::Array(self.items.clone());
+        response
+    }
+
+    fn into_response(mut self) -> Value {
+        self.response["output"] = Value::Array(self.items);
+        self.response
     }
 
     pub(super) fn accept(
@@ -161,129 +178,169 @@ impl Output {
     ) -> Result<Vec<Value>, GatewayError> {
         let mut frames = Vec::new();
         match event {
-            NormalizedEvent::ChatTextDelta { text } => {
-                if text.is_empty() {
-                    return Ok(frames);
-                }
-                self.reserve(text.len())?;
-                let index = match self.message_index {
-                    Some(index) => index,
-                    None => self.open_message(&mut frames),
-                };
-                let item = &mut self.response["output"][index];
-                frames.push(json!({"type":"response.output_text.delta","item_id":item["id"],"output_index":index,"content_index":0,"delta":text,"logprobs":[]}));
-                item["content"][0]["text"].as_str().ok_or_else(failure)?;
-                if let Value::String(current) = &mut item["content"][0]["text"] {
-                    current.push_str(&text);
-                }
-            }
+            NormalizedEvent::ChatTextDelta { text } => self.accept_text(text, &mut frames)?,
             NormalizedEvent::ChatToolCallDelta {
                 call_id,
                 name,
                 arguments_delta,
-            } => {
-                if call_id.is_empty()
-                    || call_id.len() > 128
-                    || !call_id.bytes().all(|b| b.is_ascii_graphic())
-                    || (streamed && arguments_delta.len() > 16 * 1024)
-                {
-                    return Err(failure());
-                }
-                self.reserve(arguments_delta.len())?;
-                let index = if let Some(index) = self.tools.get(&call_id) {
-                    if name.as_deref().is_some_and(|name| {
-                        Some(name) != self.response["output"][*index]["name"].as_str()
-                    }) {
-                        return Err(failure());
-                    }
-                    *index
-                } else {
-                    let name = name
-                        .filter(|name| {
-                            !name.is_empty()
-                                && name.len() <= 64
-                                && name
-                                    .bytes()
-                                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-                        })
-                        .ok_or_else(failure)?;
-                    if self.tools.len() >= 64 {
-                        return Err(failure());
-                    }
-                    let index = self.items().len();
-                    let id = format!("{}_fc_{index}", self.response["id"].as_str().expect("id"));
-                    let item = json!({"type":"function_call","id":id,"call_id":call_id,"name":name,"arguments":"","status":"in_progress"});
-                    frames.push(json!({"type":"response.output_item.added","output_index":index,"item":item}));
-                    self.items().push(item);
-                    self.tools.insert(call_id, index);
-                    index
-                };
-                let item = &mut self.response["output"][index];
-                frames.push(json!({"type":"response.function_call_arguments.delta","item_id":item["id"],"output_index":index,"delta":arguments_delta}));
-                if let Value::String(current) = &mut item["arguments"] {
-                    current.push_str(&arguments_delta);
-                }
+            } => self.accept_tool_call(call_id, name, arguments_delta, streamed, &mut frames)?,
+            NormalizedEvent::ChatReasoningDelta { text } => {
+                self.accept_reasoning_delta(text, &mut frames)?;
             }
-            NormalizedEvent::ChatReasoningDelta { mut text } => {
-                if !self.expose_reasoning {
-                    return Ok(frames);
-                }
-                super::super::serialization::truncate_at_char_boundary(
-                    &mut text,
-                    MAX_REASONING_BYTES.saturating_sub(self.reasoning_bytes),
-                );
-                if text.is_empty() {
-                    return Ok(frames);
-                }
-                self.reserve(text.len())?;
-                self.reasoning_bytes += text.len();
-                let index = match self.reasoning_index {
-                    Some(index) => index,
-                    None => {
-                        let index = self.items().len();
-                        let id =
-                            format!("{}_rs_{index}", self.response["id"].as_str().expect("id"));
-                        let item =
-                            json!({"id":id,"type":"reasoning","status":"in_progress","summary":[]});
-                        frames.push(json!({"type":"response.output_item.added","output_index":index,"item":item}));
-                        let part = json!({"type":"summary_text","text":""});
-                        frames.push(json!({"type":"response.reasoning_summary_part.added","item_id":id,"output_index":index,"summary_index":0,"part":part}));
-                        self.items().push(item);
-                        self.response["output"][index]["summary"] = json!([part]);
-                        self.reasoning_index = Some(index);
-                        index
-                    }
-                };
-                let item = &mut self.response["output"][index];
-                frames.push(json!({"type":"response.reasoning_summary_text.delta","item_id":item["id"],"output_index":index,"summary_index":0,"delta":text}));
-                if let Value::String(current) = &mut item["summary"][0]["text"] {
-                    current.push_str(&text);
-                }
-            }
-            // One output item per upstream reasoning item, apart from the summary item:
-            // its id was streamed before the upstream id was known, and a replayed item
-            // must carry the upstream id.
             NormalizedEvent::ChatReasoningItem { item } => {
-                if !self.encrypted_reasoning {
-                    return Ok(frames);
-                }
-                self.reserve(item.encrypted_content().len())?;
-                let index = self.items().len();
-                let id = match item.id() {
-                    Some(id) => id.to_owned(),
-                    None => format!("{}_rs_{index}", self.response["id"].as_str().expect("id")),
-                };
-                let added = json!({"id":id,"type":"reasoning","status":"in_progress","summary":[]});
-                frames.push(
-                    json!({"type":"response.output_item.added","output_index":index,"item":added}),
-                );
-                let mut stored = added;
-                stored["encrypted_content"] = json!(item.encrypted_content());
-                self.items().push(stored);
+                self.accept_reasoning_item(&item, &mut frames)?;
             }
             _ => return Err(failure()),
         }
         Ok(frames)
+    }
+
+    fn accept_text(&mut self, text: String, frames: &mut Vec<Value>) -> Result<(), GatewayError> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        self.reserve(text.len())?;
+        let index = match self.message_index {
+            Some(index) => index,
+            None => self.open_message(frames),
+        };
+        let item = &mut self.items[index];
+        frames.push(json!({"type":"response.output_text.delta","item_id":item["id"],"output_index":index,"content_index":0,"delta":text,"logprobs":[]}));
+        item["content"][0]["text"].as_str().ok_or_else(failure)?;
+        if let Value::String(current) = &mut item["content"][0]["text"] {
+            current.push_str(&text);
+        }
+        Ok(())
+    }
+
+    fn accept_tool_call(
+        &mut self,
+        call_id: String,
+        name: Option<String>,
+        arguments_delta: String,
+        streamed: bool,
+        frames: &mut Vec<Value>,
+    ) -> Result<(), GatewayError> {
+        if call_id.is_empty()
+            || call_id.len() > 128
+            || !call_id.bytes().all(|b| b.is_ascii_graphic())
+            || (streamed && arguments_delta.len() > 16 * 1024)
+        {
+            return Err(failure());
+        }
+        self.reserve(arguments_delta.len())?;
+        let index = match self.tools.get(&call_id) {
+            Some(&index) => {
+                if name
+                    .as_deref()
+                    .is_some_and(|name| Some(name) != self.items[index]["name"].as_str())
+                {
+                    return Err(failure());
+                }
+                index
+            }
+            None => self.open_tool_call(call_id, name, frames)?,
+        };
+        let item = &mut self.items[index];
+        frames.push(json!({"type":"response.function_call_arguments.delta","item_id":item["id"],"output_index":index,"delta":arguments_delta}));
+        if let Value::String(current) = &mut item["arguments"] {
+            current.push_str(&arguments_delta);
+        }
+        Ok(())
+    }
+
+    fn open_tool_call(
+        &mut self,
+        call_id: String,
+        name: Option<String>,
+        frames: &mut Vec<Value>,
+    ) -> Result<usize, GatewayError> {
+        let name = name
+            .filter(|name| {
+                !name.is_empty()
+                    && name.len() <= 64
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            })
+            .ok_or_else(failure)?;
+        if self.tools.len() >= 64 {
+            return Err(failure());
+        }
+        let index = self.items.len();
+        let id = format!("{}_fc_{index}", self.id);
+        let item = json!({"type":"function_call","id":id,"call_id":call_id,"name":name,"arguments":"","status":"in_progress"});
+        frames.push(json!({"type":"response.output_item.added","output_index":index,"item":item}));
+        self.items.push(item);
+        self.tools.insert(call_id, index);
+        Ok(index)
+    }
+
+    fn accept_reasoning_delta(
+        &mut self,
+        mut text: String,
+        frames: &mut Vec<Value>,
+    ) -> Result<(), GatewayError> {
+        if !self.expose_reasoning {
+            return Ok(());
+        }
+        super::super::serialization::truncate_at_char_boundary(
+            &mut text,
+            MAX_REASONING_BYTES.saturating_sub(self.reasoning_bytes),
+        );
+        if text.is_empty() {
+            return Ok(());
+        }
+        self.reserve(text.len())?;
+        self.reasoning_bytes += text.len();
+        let index = match self.reasoning_index {
+            Some(index) => index,
+            None => self.open_reasoning_summary(frames),
+        };
+        let item = &mut self.items[index];
+        frames.push(json!({"type":"response.reasoning_summary_text.delta","item_id":item["id"],"output_index":index,"summary_index":0,"delta":text}));
+        if let Value::String(current) = &mut item["summary"][0]["text"] {
+            current.push_str(&text);
+        }
+        Ok(())
+    }
+
+    fn open_reasoning_summary(&mut self, frames: &mut Vec<Value>) -> usize {
+        let index = self.items.len();
+        let id = format!("{}_rs_{index}", self.id);
+        let item = json!({"id":id,"type":"reasoning","status":"in_progress","summary":[]});
+        frames.push(json!({"type":"response.output_item.added","output_index":index,"item":item}));
+        let part = json!({"type":"summary_text","text":""});
+        frames.push(json!({"type":"response.reasoning_summary_part.added","item_id":id,"output_index":index,"summary_index":0,"part":part}));
+        self.items.push(item);
+        self.items[index]["summary"] = json!([part]);
+        self.reasoning_index = Some(index);
+        index
+    }
+
+    // One output item per upstream reasoning item, apart from the summary item:
+    // its id was streamed before the upstream id was known, and a replayed item
+    // must carry the upstream id.
+    fn accept_reasoning_item(
+        &mut self,
+        item: &ReasoningItem,
+        frames: &mut Vec<Value>,
+    ) -> Result<(), GatewayError> {
+        if !self.encrypted_reasoning {
+            return Ok(());
+        }
+        self.reserve(item.encrypted_content().len())?;
+        let index = self.items.len();
+        let id = match item.id() {
+            Some(id) => id.to_owned(),
+            None => format!("{}_rs_{index}", self.id),
+        };
+        let added = json!({"id":id,"type":"reasoning","status":"in_progress","summary":[]});
+        frames.push(json!({"type":"response.output_item.added","output_index":index,"item":added}));
+        let mut stored = added;
+        stored["encrypted_content"] = json!(item.encrypted_content());
+        self.items.push(stored);
+        Ok(())
     }
 
     pub(super) fn finish(
@@ -307,7 +364,7 @@ impl Output {
         if reason == FinishReason::Stop && self.message_index.is_none() && self.tools.is_empty() {
             self.open_message(&mut frames);
         }
-        for (index, item) in self.items().iter_mut().enumerate() {
+        for (index, item) in self.items.iter_mut().enumerate() {
             item["status"] = json!(if incomplete.is_some() {
                 "incomplete"
             } else {
@@ -350,28 +407,23 @@ impl Output {
             if let Some(tokens) = usage.cached_input_tokens { value["input_tokens_details"] = json!({"cached_tokens":tokens}); }
             value
         }).unwrap_or(Value::Null);
-        frames.push(json!({"type":if incomplete.is_some() { "response.incomplete" } else { "response.completed" },"response":self.response}));
+        frames.push(json!({"type":if incomplete.is_some() { "response.incomplete" } else { "response.completed" },"response":self.snapshot()}));
         Ok(frames)
     }
 
     fn open_message(&mut self, frames: &mut Vec<Value>) -> usize {
-        let index = self.items().len();
-        let id = format!("{}_msg", self.response["id"].as_str().expect("id"));
+        let index = self.items.len();
+        let id = format!("{}_msg", self.id);
         let item = json!({"id":id,"type":"message","role":"assistant","status":"in_progress","content":[]});
         frames.push(json!({"type":"response.output_item.added","output_index":index,"item":item}));
         let part = json!({"type":"output_text","text":"","annotations":[],"logprobs":[]});
         frames.push(json!({"type":"response.content_part.added","item_id":id,"output_index":index,"content_index":0,"part":part}));
-        self.items().push(item);
-        self.response["output"][index]["content"] = json!([part]);
+        self.items.push(item);
+        self.items[index]["content"] = json!([part]);
         self.message_index = Some(index);
         index
     }
 
-    fn items(&mut self) -> &mut Vec<Value> {
-        self.response["output"]
-            .as_array_mut()
-            .expect("output items")
-    }
     fn reserve(&mut self, bytes: usize) -> Result<(), GatewayError> {
         self.bytes = self
             .bytes
@@ -411,7 +463,7 @@ impl EventOutput for Output {
     fn failed(&mut self, error: GatewayError) -> Value {
         self.response["status"] = json!("failed");
         self.response["error"] = sse_error_data(error)["error"].clone();
-        json!({"type":"response.failed","response":self.response})
+        json!({"type":"response.failed","response":self.snapshot()})
     }
 
     fn frame(&mut self, mut value: Value) -> Bytes {

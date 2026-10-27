@@ -7,7 +7,7 @@ use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::{
     Arc, Mutex, PoisonError,
-    atomic::{AtomicBool, AtomicU16, Ordering},
+    atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
 };
 use std::task::{Context, Poll};
 use tokio::time::Instant;
@@ -18,7 +18,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use http::{HeaderMap, StatusCode};
+use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use tracing::Instrument;
 
@@ -30,6 +30,7 @@ use self::metrics::Metrics;
 
 const NO_EXPLICIT_OUTCOME: u16 = 0;
 const UNSET: &str = "-";
+const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
 str_enum! {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,7 +96,7 @@ impl Telemetry {
                     status: AtomicU16::new(0),
                     explicit: AtomicU16::new(NO_EXPLICIT_OUTCOME),
                     completed: AtomicBool::new(false),
-                    request_id: random_request_id(),
+                    request_id: generate_request_id(),
                     meta,
                     annotations: Mutex::new(Annotations::default()),
                 }),
@@ -264,8 +265,7 @@ impl Observer {
         annotations.provider = Some(provider.to_owned());
     }
 
-    /// `id` must already be validated as a safe caller-supplied `x-request-id`.
-    /// Recorded on the private listener only.
+    /// `id` must already pass [`sanitize::request_id`]. Recorded on the private listener only.
     pub(crate) fn annotate_client_request_id(&self, id: &str) {
         if self.state.meta.listener == Listener::Private {
             self.annotations().client_request_id = Some(id.to_owned());
@@ -547,11 +547,27 @@ pub(crate) async fn middleware(
             Listener::Private => None,
         },
     };
+    let caller = match listener {
+        Listener::Private => sanitize::request_id(request.headers())
+            .ok()
+            .flatten()
+            .map(str::to_owned),
+        Listener::Public => None,
+    };
     let guard = state.telemetry().begin(endpoint, meta);
     let observer = guard.observer();
     let span = tracing::info_span!("req", id = %observer.state.request_id);
+    if let Some(id) = &caller {
+        observer.annotate_client_request_id(id);
+    }
+    let response_id =
+        HeaderValue::from_str(caller.as_deref().unwrap_or(&observer.state.request_id));
     request.extensions_mut().insert(observer);
-    guard.wrap_response(next.run(request).instrument(span).await)
+    let mut response = next.run(request).instrument(span).await;
+    if let Ok(id) = response_id {
+        response.headers_mut().insert(REQUEST_ID, id);
+    }
+    guard.wrap_response(response)
 }
 
 /// Client address as asserted by the Cloudflare edge; only trusted on the public listener.
@@ -564,10 +580,12 @@ fn connecting_ip(headers: &HeaderMap) -> Option<IpAddr> {
     value.to_str().ok()?.trim().parse().ok()
 }
 
-fn random_request_id() -> String {
-    let mut bytes = [0u8; 6];
+/// 16 random bytes as lowercase hex; a process counter if the OS source fails.
+fn generate_request_id() -> String {
+    static FALLBACK: AtomicU64 = AtomicU64::new(1);
+    let mut bytes = [0u8; 16];
     if getrandom::fill(&mut bytes).is_err() {
-        return UNSET.to_owned();
+        return format!("{:032x}", FALLBACK.fetch_add(1, Ordering::Relaxed));
     }
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

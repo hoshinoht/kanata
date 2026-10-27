@@ -24,6 +24,32 @@ pub(super) async fn parse_multipart(
     max_audio: usize,
     body_limit: usize,
 ) -> Result<MultipartWire, MultipartInputError> {
+    let mut multipart = reader(request, max_audio, body_limit)?;
+    let mut fields = Fields::default();
+    while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
+        let name = field.name().ok_or(MultipartInputError::Invalid)?.to_owned();
+        let file_name = field.file_name().map(str::to_owned);
+        let media_type = field.content_type().map(ToString::to_string);
+        if name != "file" && file_name.is_some() {
+            return Err(MultipartInputError::Invalid);
+        }
+        let limit = if name == "file" {
+            max_audio
+        } else {
+            MAX_TEXT_FIELD_BYTES
+        };
+        let bytes = read_field(&mut field, limit).await?;
+        fields.accept(&name, file_name, media_type, bytes)?;
+    }
+    fields.finish()
+}
+
+/// Multipart stream over the request body, with per-field and envelope size limits.
+fn reader(
+    request: Request,
+    max_audio: usize,
+    body_limit: usize,
+) -> Result<multer::Multipart<'static>, MultipartInputError> {
     let max_envelope_bytes = max_audio
         .checked_add(crate::core::MAX_TRANSCRIPTION_OVERHEAD_BYTES)
         .ok_or(MultipartInputError::TooLarge)?;
@@ -56,93 +82,111 @@ pub(super) async fn parse_multipart(
             "response_format",
             "extensions",
         ]);
-    let mut multipart = multer::Multipart::with_constraints(
+    Ok(multer::Multipart::with_constraints(
         request.into_body().into_data_stream(),
         boundary,
         constraints,
-    );
-    let mut model = None;
-    let mut file = None;
-    let mut language = None;
-    let mut prompt = None;
-    let mut response_format = None;
-    let mut extensions = None;
-    while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
-        let name = field.name().ok_or(MultipartInputError::Invalid)?.to_owned();
-        let file_name = field.file_name().map(str::to_owned);
-        let media_type = field.content_type().map(ToString::to_string);
-        if name != "file" && file_name.is_some() {
-            return Err(MultipartInputError::Invalid);
+    ))
+}
+
+/// A field's bytes, refused once they exceed `limit`.
+async fn read_field(
+    field: &mut multer::Field<'_>,
+    limit: usize,
+) -> Result<Vec<u8>, MultipartInputError> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
+        if bytes
+            .len()
+            .checked_add(chunk.len())
+            .is_none_or(|length| length > limit)
+        {
+            return Err(MultipartInputError::TooLarge);
         }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
-            let limit = if name == "file" {
-                max_audio
-            } else {
-                MAX_TEXT_FIELD_BYTES
-            };
-            if bytes
-                .len()
-                .checked_add(chunk.len())
-                .is_none_or(|length| length > limit)
-            {
-                return Err(MultipartInputError::TooLarge);
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        match name.as_str() {
-            "file" if file.is_none() => {
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+/// Fields read so far; each may occur once.
+#[derive(Default)]
+struct Fields {
+    model: Option<String>,
+    file: Option<ValidatedFile>,
+    language: Option<String>,
+    prompt: Option<String>,
+    response_format: Option<String>,
+    extensions: Option<Extensions>,
+}
+
+impl Fields {
+    fn accept(
+        &mut self,
+        name: &str,
+        file_name: Option<String>,
+        media_type: Option<String>,
+        bytes: Vec<u8>,
+    ) -> Result<(), MultipartInputError> {
+        match name {
+            "file" if self.file.is_none() => {
                 let filename = file_name.ok_or(MultipartInputError::Invalid)?;
                 let media_type = media_type.ok_or(MultipartInputError::Invalid)?;
                 if !safe_filename(&filename) || !accepted_audio_type(&media_type) {
                     return Err(MultipartInputError::Invalid);
                 }
-                file = Some(
+                self.file = Some(
                     ValidatedFile::new(filename, media_type, bytes)
                         .map_err(|_| MultipartInputError::Invalid)?,
                 );
             }
-            "model" if model.is_none() => model = Some(text_field(bytes)?),
-            "language" if language.is_none() => language = Some(text_field(bytes)?),
-            "prompt" if prompt.is_none() => prompt = Some(text_field(bytes)?),
-            "response_format" if response_format.is_none() => {
-                response_format = Some(text_field(bytes)?)
+            "model" if self.model.is_none() => self.model = Some(text_field(bytes)?),
+            "language" if self.language.is_none() => self.language = Some(text_field(bytes)?),
+            "prompt" if self.prompt.is_none() => self.prompt = Some(text_field(bytes)?),
+            "response_format" if self.response_format.is_none() => {
+                self.response_format = Some(text_field(bytes)?)
             }
-            "extensions" if extensions.is_none() => {
-                extensions = Some(
+            "extensions" if self.extensions.is_none() => {
+                self.extensions = Some(
                     serde_json::from_str(&text_field(bytes)?)
                         .map_err(|_| MultipartInputError::Invalid)?,
                 )
             }
             _ => return Err(MultipartInputError::Invalid),
         }
+        Ok(())
     }
-    let model = model
-        .filter(|value: &String| valid_metadata(value))
-        .ok_or(MultipartInputError::Invalid)?;
-    if language
-        .as_deref()
-        .is_some_and(|value| !valid_metadata(value))
-        || prompt
+
+    fn finish(self) -> Result<MultipartWire, MultipartInputError> {
+        let model = self
+            .model
+            .filter(|value: &String| valid_metadata(value))
+            .ok_or(MultipartInputError::Invalid)?;
+        if self
+            .language
             .as_deref()
             .is_some_and(|value| !valid_metadata(value))
-    {
-        return Err(MultipartInputError::Invalid);
+            || self
+                .prompt
+                .as_deref()
+                .is_some_and(|value| !valid_metadata(value))
+        {
+            return Err(MultipartInputError::Invalid);
+        }
+        if !matches!(
+            self.response_format.as_deref(),
+            None | Some("json") | Some("text")
+        ) {
+            return Err(MultipartInputError::Invalid);
+        }
+        Ok(MultipartWire {
+            model,
+            file: self.file.ok_or(MultipartInputError::Invalid)?,
+            language: self.language,
+            prompt: self.prompt,
+            response_format: self.response_format,
+            extensions: self.extensions.unwrap_or_default(),
+        })
     }
-    if !matches!(
-        response_format.as_deref(),
-        None | Some("json") | Some("text")
-    ) {
-        return Err(MultipartInputError::Invalid);
-    }
-    Ok(MultipartWire {
-        model,
-        file: file.ok_or(MultipartInputError::Invalid)?,
-        language,
-        prompt,
-        response_format,
-        extensions: extensions.unwrap_or_default(),
-    })
 }
 
 fn multipart_error(error: multer::Error) -> MultipartInputError {

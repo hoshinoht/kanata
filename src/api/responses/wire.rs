@@ -32,6 +32,9 @@ enum Placement {
     Before { message: usize },
 }
 
+/// Encrypted reasoning items with where each lands.
+type Placements = Vec<(Placement, ReasoningItem)>;
+
 pub(in crate::api) fn parse(
     bytes: &[u8],
     max_audio_bytes: usize,
@@ -40,6 +43,45 @@ pub(in crate::api) fn parse(
     let Value::Object(mut value) = value else {
         return Err(ChatWireError::Malformed);
     };
+    reject_unsupported(&mut value)?;
+    let include_encrypted_reasoning = take_include(&mut value)?;
+    validate_bookkeeping(&mut value)?;
+    let mut chat = Map::new();
+    take_reasoning(&mut value, &mut chat)?;
+    for name in [
+        "model",
+        "stream",
+        "temperature",
+        "top_p",
+        "store",
+        "parallel_tool_calls",
+        "prompt_cache_key",
+    ] {
+        if let Some(value) = value.remove(name) {
+            chat.insert(name.into(), value);
+        }
+    }
+    if let Some(value) = value.remove("max_output_tokens") {
+        chat.insert("max_completion_tokens".into(), value);
+    }
+    let (messages, origins, placements) = take_messages(&mut value)?;
+    chat.insert("messages".into(), Value::Array(messages));
+    take_tools(&mut value, &mut chat)?;
+    if let Some(key) = value.keys().next() {
+        return Err(ChatWireError::member("", key));
+    }
+    let rename = |error| responses_param(error, &origins);
+    let wire: ChatWire = serde_path_to_error::deserialize(Value::Object(chat))
+        .map_err(|error| rename(serde_error(error)))?;
+    let (mut chat, _) = wire.into_core(max_audio_bytes).map_err(rename)?;
+    chat.options.max_output_tokens_param = MaxTokensParam::MaxOutputTokens;
+    chat.include_encrypted_reasoning = include_encrypted_reasoning;
+    place_reasoning(&mut chat.messages, placements);
+    Ok((chat, true))
+}
+
+/// Stateful and hosted features with no stateless equivalent.
+fn reject_unsupported(value: &mut Map<String, Value>) -> Result<(), ChatWireError> {
     for (name, expected) in [
         ("background", json!(false)),
         ("truncation", json!("disabled")),
@@ -61,17 +103,26 @@ pub(in crate::api) fn parse(
             return Err(ChatWireError::param(name));
         }
     }
-    let include_encrypted_reasoning = match value.remove("include") {
-        None => false,
+    Ok(())
+}
+
+/// Whether `include` asks for encrypted reasoning, the only accepted value.
+fn take_include(value: &mut Map<String, Value>) -> Result<bool, ChatWireError> {
+    match value.remove("include") {
+        None => Ok(false),
         Some(Value::Array(items))
             if items
                 .iter()
                 .all(|item| item.as_str() == Some(ENCRYPTED_REASONING)) =>
         {
-            !items.is_empty()
+            Ok(!items.is_empty())
         }
-        Some(_) => return Err(ChatWireError::param("include")),
-    };
+        Some(_) => Err(ChatWireError::param("include")),
+    }
+}
+
+/// Validates and drops `client_metadata`, `metadata`, `user` and `text`.
+fn validate_bookkeeping(value: &mut Map<String, Value>) -> Result<(), ChatWireError> {
     // Client bookkeeping: validated for size, then dropped; never forwarded or logged.
     if value
         .remove("client_metadata")
@@ -95,7 +146,14 @@ pub(in crate::api) fn parse(
     if let Some(text) = value.remove("text") {
         validate_text(text)?;
     }
-    let mut chat = Map::new();
+    Ok(())
+}
+
+/// Moves `reasoning.effort` to the chat request.
+fn take_reasoning(
+    value: &mut Map<String, Value>,
+    chat: &mut Map<String, Value>,
+) -> Result<(), ChatWireError> {
     match value.remove("reasoning") {
         None | Some(Value::Null) => {}
         Some(Value::Object(mut reasoning)) => {
@@ -115,22 +173,13 @@ pub(in crate::api) fn parse(
         }
         Some(_) => return Err(ChatWireError::param("reasoning")),
     }
-    for name in [
-        "model",
-        "stream",
-        "temperature",
-        "top_p",
-        "store",
-        "parallel_tool_calls",
-        "prompt_cache_key",
-    ] {
-        if let Some(value) = value.remove(name) {
-            chat.insert(name.into(), value);
-        }
-    }
-    if let Some(value) = value.remove("max_output_tokens") {
-        chat.insert("max_completion_tokens".into(), value);
-    }
+    Ok(())
+}
+
+/// Chat messages from `instructions` and `input`, with their origins and reasoning placements.
+fn take_messages(
+    value: &mut Map<String, Value>,
+) -> Result<(Vec<Value>, Vec<Origin>, Placements), ChatWireError> {
     let mut messages = Vec::new();
     let mut origins = Vec::new();
     if let Some(instructions) = value.remove("instructions") {
@@ -140,17 +189,17 @@ pub(in crate::api) fn parse(
         messages.push(json!({"role":"system","content":instructions}));
         origins.push(Origin::Instructions);
     }
-    let mut placements = Vec::new();
     match value.remove("input") {
         Some(Value::String(text)) => {
             messages.push(json!({"role":"user","content":text}));
             origins.push(Origin::Input);
+            Ok((messages, origins, Vec::new()))
         }
         Some(Value::Array(items)) if !items.is_empty() => {
             let mut history = History {
                 messages,
                 origins,
-                placements,
+                placements: Vec::new(),
                 pending_calls: BTreeSet::new(),
                 seen_calls: BTreeSet::new(),
                 pending_reasoning: Vec::new(),
@@ -162,16 +211,17 @@ pub(in crate::api) fn parse(
                 return Err(ChatWireError::param("input"));
             }
             history.flush_orphans();
-            History {
-                messages,
-                origins,
-                placements,
-                ..
-            } = history;
+            Ok((history.messages, history.origins, history.placements))
         }
-        _ => return Err(ChatWireError::param("input")),
+        _ => Err(ChatWireError::param("input")),
     }
-    chat.insert("messages".into(), Value::Array(messages));
+}
+
+/// Converts function `tools` and `tool_choice` to their chat shapes.
+fn take_tools(
+    value: &mut Map<String, Value>,
+    chat: &mut Map<String, Value>,
+) -> Result<(), ChatWireError> {
     if let Some(tools) = value.remove("tools") {
         let Value::Array(tools) = tools else {
             return Err(ChatWireError::param("tools"));
@@ -202,24 +252,14 @@ pub(in crate::api) fn parse(
         }
         chat.insert("tool_choice".into(), choice);
     }
-    if let Some(key) = value.keys().next() {
-        return Err(ChatWireError::member("", key));
-    }
-    let rename = |error| responses_param(error, &origins);
-    let wire: ChatWire = serde_path_to_error::deserialize(Value::Object(chat))
-        .map_err(|error| rename(serde_error(error)))?;
-    let (mut chat, _) = wire.into_core(max_audio_bytes).map_err(rename)?;
-    chat.options.max_output_tokens_param = MaxTokensParam::MaxOutputTokens;
-    chat.include_encrypted_reasoning = include_encrypted_reasoning;
-    place_reasoning(&mut chat.messages, placements);
-    Ok((chat, true))
+    Ok(())
 }
 
 /// Input items converted to chat messages, plus encrypted reasoning held for placement.
 struct History {
     messages: Vec<Value>,
     origins: Vec<Origin>,
-    placements: Vec<(Placement, ReasoningItem)>,
+    placements: Placements,
     pending_calls: BTreeSet<String>,
     seen_calls: BTreeSet<String>,
     /// Encrypted reasoning not yet followed by assistant output.
@@ -229,9 +269,8 @@ struct History {
 impl History {
     fn push(&mut self, index: usize, item: Value) -> Result<(), ChatWireError> {
         let path = format!("input[{index}]");
-        let invalid = || ChatWireError::param(path.clone());
         let Value::Object(mut item) = item else {
-            return Err(invalid());
+            return Err(ChatWireError::param(path.to_owned()));
         };
         let kind = match item.remove("type") {
             None => "message".to_owned(),
@@ -239,123 +278,156 @@ impl History {
             Some(_) => return Err(ChatWireError::member(&path, "type")),
         };
         match kind.as_str() {
-            "reasoning" => {
-                let id = replay_metadata(&mut item, &path)?;
-                let Some(Value::Array(parts)) = item.remove("summary") else {
-                    return Err(ChatWireError::member(&path, "summary"));
-                };
-                for part in parts {
-                    let Value::Object(mut part) = part else {
-                        return Err(ChatWireError::member(&path, "summary"));
-                    };
-                    if part.remove("type") != Some(json!("summary_text"))
-                        || !part.remove("text").is_some_and(|text| text.is_string())
-                        || !part.is_empty()
-                    {
-                        return Err(ChatWireError::member(&path, "summary"));
-                    }
-                }
-                // Summary-only items are discarded; encrypted ones are replayed.
-                let encrypted = match item.remove("encrypted_content") {
-                    None | Some(Value::Null) => None,
-                    Some(Value::String(encrypted)) => Some(encrypted),
-                    Some(_) => return Err(ChatWireError::member(&path, "encrypted_content")),
-                };
-                reject_leftover(&item, &path)?;
-                if let Some(encrypted) = encrypted {
-                    let reasoning = ReasoningItem::new(id, encrypted)
-                        .map_err(|_| ChatWireError::member(&path, "encrypted_content"))?;
-                    self.pending_reasoning.push(reasoning);
-                }
-            }
-            "message" => {
-                if !self.pending_calls.is_empty() {
-                    return Err(invalid());
-                }
-                let role = item
-                    .remove("role")
-                    .ok_or_else(|| ChatWireError::member(&path, "role"))?;
-                let assistant = role == "assistant";
-                if !matches!(
-                    role.as_str(),
-                    Some("system" | "developer" | "user" | "assistant")
-                ) {
-                    return Err(ChatWireError::member(&path, "role"));
-                }
-                replay_metadata(&mut item, &path)?;
-                let content = text_content(item.remove("content"), assistant)
-                    .ok_or_else(|| ChatWireError::member(&path, "content"))?;
-                reject_leftover(&item, &path)?;
-                // A replayed empty answer maps to no turn; held reasoning waits for the
-                // next assistant output or the end of its turn.
-                if assistant && is_empty_text(&content) {
-                    return Ok(());
-                }
-                if assistant {
-                    self.place_pending(self.messages.len(), 0);
-                } else {
-                    self.flush_orphans();
-                }
-                self.messages.push(json!({"role":role,"content":content}));
-                self.origins.push(Origin::Item(index));
-            }
-            "function_call" => {
-                let last_is_assistant = self
-                    .messages
-                    .last()
-                    .is_some_and(|message| message["role"] == "assistant");
-                if !self.pending_calls.is_empty() && !last_is_assistant {
-                    return Err(invalid());
-                }
-                replay_metadata(&mut item, &path)?;
-                let call_id = take_string(&mut item, "call_id", &path)?;
-                let name = take_string(&mut item, "name", &path)?;
-                let arguments = take_string(&mut item, "arguments", &path)?;
-                reject_leftover(&item, &path)?;
-                if !self.seen_calls.insert(call_id.clone()) {
-                    return Err(ChatWireError::member(&path, "call_id"));
-                }
-                self.pending_calls.insert(call_id.clone());
-                let call = json!({"id":call_id,"type":"function","function":{"name":name,"arguments":arguments}});
-                if last_is_assistant {
-                    let message = self.messages.len() - 1;
-                    self.place_pending(message, ir_len(&self.messages[message]));
-                    let last = &mut self.messages[message];
-                    if last.get("tool_calls").is_none() {
-                        last["tool_calls"] = json!([]);
-                    }
-                    last["tool_calls"]
-                        .as_array_mut()
-                        .ok_or_else(invalid)?
-                        .push(call);
-                } else {
-                    self.place_pending(self.messages.len(), 0);
-                    self.messages
-                        .push(json!({"role":"assistant","content":null,"tool_calls":[call]}));
-                    self.origins.push(Origin::Item(index));
-                }
-            }
-            "function_call_output" => {
-                replay_metadata(&mut item, &path)?;
-                let call_id = take_string(&mut item, "call_id", &path)?;
-                let output = match item.remove("output") {
-                    Some(Value::String(output)) => output,
-                    Some(Value::Array(parts)) => {
-                        input_text(parts).ok_or_else(|| ChatWireError::member(&path, "output"))?
-                    }
-                    _ => return Err(ChatWireError::member(&path, "output")),
-                };
-                reject_leftover(&item, &path)?;
-                if !self.pending_calls.remove(&call_id) {
-                    return Err(ChatWireError::member(&path, "call_id"));
-                }
-                self.flush_orphans();
-                self.messages
-                    .push(json!({"role":"tool","tool_call_id":call_id,"content":output}));
-                self.origins.push(Origin::Item(index));
-            }
-            _ => return Err(ChatWireError::member(&path, "type")),
+            "reasoning" => self.push_reasoning(item, &path),
+            "message" => self.push_message(index, item, &path),
+            "function_call" => self.push_function_call(index, item, &path),
+            "function_call_output" => self.push_function_call_output(index, item, &path),
+            _ => Err(ChatWireError::member(&path, "type")),
         }
+    }
+
+    /// Validates the summary; holds encrypted content for placement.
+    fn push_reasoning(
+        &mut self,
+        mut item: Map<String, Value>,
+        path: &str,
+    ) -> Result<(), ChatWireError> {
+        let id = replay_metadata(&mut item, path)?;
+        let Some(Value::Array(parts)) = item.remove("summary") else {
+            return Err(ChatWireError::member(path, "summary"));
+        };
+        for part in parts {
+            let Value::Object(mut part) = part else {
+                return Err(ChatWireError::member(path, "summary"));
+            };
+            if part.remove("type") != Some(json!("summary_text"))
+                || !part.remove("text").is_some_and(|text| text.is_string())
+                || !part.is_empty()
+            {
+                return Err(ChatWireError::member(path, "summary"));
+            }
+        }
+        // Summary-only items are discarded; encrypted ones are replayed.
+        let encrypted = match item.remove("encrypted_content") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(encrypted)) => Some(encrypted),
+            Some(_) => return Err(ChatWireError::member(path, "encrypted_content")),
+        };
+        reject_leftover(&item, path)?;
+        if let Some(encrypted) = encrypted {
+            let reasoning = ReasoningItem::new(id, encrypted)
+                .map_err(|_| ChatWireError::member(path, "encrypted_content"))?;
+            self.pending_reasoning.push(reasoning);
+        }
+        Ok(())
+    }
+
+    fn push_message(
+        &mut self,
+        index: usize,
+        mut item: Map<String, Value>,
+        path: &str,
+    ) -> Result<(), ChatWireError> {
+        if !self.pending_calls.is_empty() {
+            return Err(ChatWireError::param(path.to_owned()));
+        }
+        let role = item
+            .remove("role")
+            .ok_or_else(|| ChatWireError::member(path, "role"))?;
+        let assistant = role == "assistant";
+        if !matches!(
+            role.as_str(),
+            Some("system" | "developer" | "user" | "assistant")
+        ) {
+            return Err(ChatWireError::member(path, "role"));
+        }
+        replay_metadata(&mut item, path)?;
+        let content = text_content(item.remove("content"), assistant)
+            .ok_or_else(|| ChatWireError::member(path, "content"))?;
+        reject_leftover(&item, path)?;
+        // A replayed empty answer maps to no turn; held reasoning waits for the
+        // next assistant output or the end of its turn.
+        if assistant && is_empty_text(&content) {
+            return Ok(());
+        }
+        if assistant {
+            self.place_pending(self.messages.len(), 0);
+        } else {
+            self.flush_orphans();
+        }
+        self.messages.push(json!({"role":role,"content":content}));
+        self.origins.push(Origin::Item(index));
+        Ok(())
+    }
+
+    /// Appends to the open assistant turn, or starts one.
+    fn push_function_call(
+        &mut self,
+        index: usize,
+        mut item: Map<String, Value>,
+        path: &str,
+    ) -> Result<(), ChatWireError> {
+        let last_is_assistant = self
+            .messages
+            .last()
+            .is_some_and(|message| message["role"] == "assistant");
+        if !self.pending_calls.is_empty() && !last_is_assistant {
+            return Err(ChatWireError::param(path.to_owned()));
+        }
+        replay_metadata(&mut item, path)?;
+        let call_id = take_string(&mut item, "call_id", path)?;
+        let name = take_string(&mut item, "name", path)?;
+        let arguments = take_string(&mut item, "arguments", path)?;
+        reject_leftover(&item, path)?;
+        if !self.seen_calls.insert(call_id.clone()) {
+            return Err(ChatWireError::member(path, "call_id"));
+        }
+        self.pending_calls.insert(call_id.clone());
+        let call =
+            json!({"id":call_id,"type":"function","function":{"name":name,"arguments":arguments}});
+        if last_is_assistant {
+            let message = self.messages.len() - 1;
+            self.place_pending(message, ir_len(&self.messages[message]));
+            let last = &mut self.messages[message];
+            if last.get("tool_calls").is_none() {
+                last["tool_calls"] = json!([]);
+            }
+            last["tool_calls"]
+                .as_array_mut()
+                .ok_or_else(|| ChatWireError::param(path.to_owned()))?
+                .push(call);
+        } else {
+            self.place_pending(self.messages.len(), 0);
+            self.messages
+                .push(json!({"role":"assistant","content":null,"tool_calls":[call]}));
+            self.origins.push(Origin::Item(index));
+        }
+        Ok(())
+    }
+
+    fn push_function_call_output(
+        &mut self,
+        index: usize,
+        mut item: Map<String, Value>,
+        path: &str,
+    ) -> Result<(), ChatWireError> {
+        replay_metadata(&mut item, path)?;
+        let call_id = take_string(&mut item, "call_id", path)?;
+        let output = match item.remove("output") {
+            Some(Value::String(output)) => output,
+            Some(Value::Array(parts)) => {
+                input_text(parts).ok_or_else(|| ChatWireError::member(path, "output"))?
+            }
+            _ => return Err(ChatWireError::member(path, "output")),
+        };
+        reject_leftover(&item, path)?;
+        if !self.pending_calls.remove(&call_id) {
+            return Err(ChatWireError::member(path, "call_id"));
+        }
+        self.flush_orphans();
+        self.messages
+            .push(json!({"role":"tool","tool_call_id":call_id,"content":output}));
+        self.origins.push(Origin::Item(index));
         Ok(())
     }
 
@@ -414,7 +486,7 @@ fn ir_len(message: &Value) -> usize {
 
 /// Placements are recorded in input order, so applying them in reverse keeps every
 /// recorded index valid.
-fn place_reasoning(messages: &mut Vec<ChatMessage>, placements: Vec<(Placement, ReasoningItem)>) {
+fn place_reasoning(messages: &mut Vec<ChatMessage>, placements: Placements) {
     let mut inserted_before = None;
     for (placement, item) in placements.into_iter().rev() {
         let item = ChatContent::Reasoning { item };

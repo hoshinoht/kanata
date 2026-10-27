@@ -25,6 +25,7 @@ impl Endpoint {
             "/v1/responses" => Self::Responses,
             "/v1/audio/speech" => Self::Speech,
             "/v1/messages" => Self::Messages,
+            _ if path.starts_with("/v1/models/") => Self::Models,
             _ => Self::Other,
         }
     }

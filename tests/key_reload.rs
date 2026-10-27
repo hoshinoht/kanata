@@ -90,7 +90,8 @@ fn pending_server(config: &ValidatedConfig) -> (Arc<TwoPlaneServer>, pending::Pe
 
 async fn parts(response: Response) -> (StatusCode, HeaderMap, Bytes) {
     let status = response.status();
-    let headers = response.headers().clone();
+    let mut headers = response.headers().clone();
+    headers.remove("x-request-id");
     (status, headers, support::response_body(response).await)
 }
 

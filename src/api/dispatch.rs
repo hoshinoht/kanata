@@ -39,7 +39,6 @@ pub(super) fn inbound(
     let deadline = RequestDeadline::new(state.overall_ms())
         .map_err(|error| Box::new(gateway_error_observed(error, observer.as_ref())))?;
     let request_id = request_id(request.headers(), state).ok_or_else(|| Box::new(invalid()))?;
-    annotate_client_request_id(observer.as_ref(), request.headers(), &request_id);
     Ok((Inbound { observer, deadline }, request_id))
 }
 

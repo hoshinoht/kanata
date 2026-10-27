@@ -325,3 +325,219 @@ async fn upstream_failure_warns_with_adapter_and_code_but_not_prompt() {
     );
     assert!(!text.contains(PROMPT), "{text}");
 }
+
+/// Like [`captured`], also returning the response status and its one `x-request-id`.
+async fn captured_id<F>(future: F) -> (Capture, StatusCode, String)
+where
+    F: Future<Output = Response>,
+{
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let sink = slot.clone();
+    let capture = captured(async move {
+        let response = future.await;
+        let ids: Vec<_> = response
+            .headers()
+            .get_all("x-request-id")
+            .iter()
+            .map(|value| value.to_str().expect("ascii id").to_owned())
+            .collect();
+        *sink.lock().unwrap() = Some((response.status(), ids));
+        response
+    })
+    .await;
+    let (status, ids) = slot.lock().unwrap().take().expect("response seen");
+    assert_eq!(ids.len(), 1, "one x-request-id: {ids:?}");
+    (capture, status, ids.into_iter().next().unwrap())
+}
+
+fn assert_generated(id: &str) {
+    assert_eq!(id.len(), 32, "{id}");
+    assert!(
+        id.bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')),
+        "{id}"
+    );
+}
+
+fn chat_with_ids(ids: &[&str]) -> Request<Body> {
+    support::chat_request_with(
+        &chat_body(),
+        Some(support::CHAT_CONTENT_TYPE),
+        Some("Bearer test-key"),
+        ids,
+    )
+}
+
+fn models_with_id(id: &str) -> Request<Body> {
+    let mut request = support::models_request();
+    request
+        .headers_mut()
+        .insert("x-request-id", id.parse().expect("header"));
+    request
+}
+
+fn private_chat_server(
+    config: &kanata::config::ValidatedConfig,
+    outcome: support::Outcome,
+) -> support::ServerWithRequests {
+    support::server_with(
+        config,
+        vec![support::adapter_spec(
+            "vllm-private",
+            support::capabilities(config, "vllm-private"),
+            outcome,
+        )],
+    )
+}
+
+#[tokio::test]
+async fn private_listener_echoes_a_valid_caller_request_id_and_generates_otherwise() {
+    let config = support::config();
+    let (server, requests) = private_chat_server(&config, support::chat_outcome("ok"));
+
+    let (capture, status, id) = captured_id(async {
+        server
+            .client_oneshot(chat_with_ids(&["caller-42"]))
+            .await
+            .unwrap()
+    })
+    .await;
+    assert_eq!((status, id.as_str()), (StatusCode::OK, "caller-42"));
+    assert_fields(&capture.access_line(), &["client_request_id=\"caller-42\""]);
+    assert_eq!(
+        support::take_request(&requests).context().request_id,
+        "caller-42"
+    );
+
+    let (capture, status, id) =
+        captured_id(async { server.client_oneshot(chat_with_ids(&[])).await.unwrap() }).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_generated(&id);
+    assert_fields(
+        &capture.access_line(),
+        &[&format!("request_id={id} "), "client_request_id=\"-\""],
+    );
+
+    // Unsafe ids are replaced; inference requests still reject them.
+    let (capture, status, id) = captured_id(async {
+        server
+            .client_oneshot(models_with_id("bad/id"))
+            .await
+            .unwrap()
+    })
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_generated(&id);
+    assert_fields(
+        &capture.access_line(),
+        &[&format!("request_id={id} "), "client_request_id=\"-\""],
+    );
+    for ids in [&["bad/id"][..], &["one", "two"]] {
+        let (_, status, id) =
+            captured_id(async { server.client_oneshot(chat_with_ids(ids)).await.unwrap() }).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_generated(&id);
+    }
+}
+
+#[tokio::test]
+async fn public_listener_never_uses_the_caller_request_id() {
+    let config = support::config_with_public_routes(&[("private-chat", "chat")]);
+    let (server, requests) = private_chat_server(&config, support::chat_outcome("ok"));
+    let (capture, status, id) = captured_id(async {
+        server
+            .public_oneshot(chat_with_ids(&["caller-42"]))
+            .await
+            .unwrap()
+    })
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_generated(&id);
+    assert_fields(
+        &capture.access_line(),
+        &[&format!("request_id={id} "), "client_request_id=\"-\""],
+    );
+    assert!(!capture.text().contains("caller-42"));
+    assert_ne!(
+        support::take_request(&requests).context().request_id,
+        "caller-42"
+    );
+
+    // An id the private listener would reject is ignored here.
+    let (_, status, id) = captured_id(async {
+        server
+            .public_oneshot(chat_with_ids(&["bad/id"]))
+            .await
+            .unwrap()
+    })
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_generated(&id);
+}
+
+#[tokio::test]
+async fn request_id_is_set_on_auth_rejections_guide_unknown_paths_and_streams() {
+    let config = support::config_with_public_routes(&[("private-chat", "chat")]);
+    let (server, _) = private_chat_server(
+        &config,
+        support::Outcome::Stream(vec![
+            kanata::core::NormalizedEvent::ChatStarted {
+                model: kanata::core::ModelAlias("private-chat".into()),
+            },
+            kanata::core::NormalizedEvent::ChatTextDelta { text: "hi".into() },
+            kanata::core::NormalizedEvent::ChatCompleted {
+                finish_reason: kanata::core::FinishReason::Stop,
+                usage: None,
+            },
+        ]),
+    );
+    let get = |path: &str| {
+        Request::builder()
+            .uri(path)
+            .header("x-request-id", "caller-42")
+            .body(Body::empty())
+            .expect("request")
+    };
+    for (path, expected) in [
+        ("/v1/models", StatusCode::FORBIDDEN),
+        ("/v1", StatusCode::OK),
+        ("/v1/unknown", StatusCode::FORBIDDEN),
+    ] {
+        let (capture, status, id) =
+            captured_id(async { server.public_oneshot(get(path)).await.unwrap() }).await;
+        assert_eq!(status, expected, "{path}");
+        assert_generated(&id);
+        assert_fields(&capture.access_line(), &[&format!("request_id={id} ")]);
+    }
+    for (path, expected) in [
+        ("/v1/models", StatusCode::UNAUTHORIZED),
+        ("/v1/unknown", StatusCode::NOT_FOUND),
+    ] {
+        let (_, status, id) =
+            captured_id(async { server.client_oneshot(get(path)).await.unwrap() }).await;
+        assert_eq!((status, id.as_str()), (expected, "caller-42"), "{path}");
+    }
+
+    let body =
+        r#"{"model":"private-chat","stream":true,"messages":[{"role":"user","content":"x"}]}"#;
+    let stream = || {
+        support::chat_request_with(
+            body,
+            Some(support::CHAT_CONTENT_TYPE),
+            Some("Bearer test-key"),
+            &[],
+        )
+    };
+    let (capture, status, id) =
+        captured_id(async { server.client_oneshot(stream()).await.unwrap() }).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_generated(&id);
+    assert_fields(
+        &capture.access_line(),
+        &[&format!("request_id={id} "), "stream=true"],
+    );
+    let (_, status, id) =
+        captured_id(async { server.public_oneshot(stream()).await.unwrap() }).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_generated(&id);
+}
